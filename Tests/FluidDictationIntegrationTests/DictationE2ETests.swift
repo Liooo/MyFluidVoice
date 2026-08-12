@@ -3044,6 +3044,57 @@ final class KeyboardInputSourceRoutingTests: XCTestCase {
         XCTAssertEqual(compatibleModels, [.cohereTranscribeSixBit, .whisperSmall])
     }
 
+    func testWhisperUsesEngineLanguageAliasesForLocaleCodes() {
+        let cases: [(localeIdentifier: String, engineLanguageCode: String)] = [
+            ("nb-NO", "no"),
+            ("fil-PH", "tl"),
+            ("jv-ID", "jw"),
+        ]
+
+        for item in cases {
+            XCTAssertEqual(
+                RecordingSpeechConfigurationResolver.languageBinding(
+                    for: .whisperSmall,
+                    localeIdentifier: item.localeIdentifier
+                ),
+                .whisper(languageCode: item.engineLanguageCode),
+                item.localeIdentifier
+            )
+        }
+    }
+
+    func testAppleAnalyzerReadinessDefersExactSystemCheckToRecordingStart() {
+        for isInstalled in [true, false] {
+            XCTAssertEqual(
+                VoiceEngineSettingsView.inputSourceModelReadinessLabel(
+                    model: .appleSpeechAnalyzer,
+                    usesGlobalFallback: false,
+                    isInstalled: isInstalled
+                ),
+                "Assigned • System availability checked at recording start"
+            )
+        }
+    }
+
+    func testOtherModelReadinessStillReflectsInstallation() {
+        XCTAssertEqual(
+            VoiceEngineSettingsView.inputSourceModelReadinessLabel(
+                model: .whisperSmall,
+                usesGlobalFallback: false,
+                isInstalled: true
+            ),
+            "Assigned • Ready"
+        )
+        XCTAssertEqual(
+            VoiceEngineSettingsView.inputSourceModelReadinessLabel(
+                model: .whisperSmall,
+                usesGlobalFallback: true,
+                isInstalled: false
+            ),
+            "Global default • Download required"
+        )
+    }
+
     func testAssignedAvailableModelResolvesWithDetectedLocaleAndMatchingBinding() throws {
         let source = self.source(
             id: "com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese",
