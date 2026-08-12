@@ -12,7 +12,10 @@ let package = Package(
         .package(url: "https://github.com/altic-dev/FluidAudio.git", branch: "B/cohere-coreml-asr"),
         .package(url: "https://github.com/altic-dev/DynamicNotchKit.git", branch: "main"),
         .package(url: "https://github.com/altic-dev/transcribe-cpp-swift.git", exact: "0.1.2"),
-        .package(url: "https://github.com/ejbills/mediaremote-adapter", branch: "master"),
+        .package(
+            url: "https://github.com/ejbills/mediaremote-adapter",
+            revision: "3529aa25023082a2ceadebcd2c9c4a9430ee96b9"
+        ),
     ],
     targets: [
         .target(

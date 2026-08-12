@@ -33,8 +33,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/ejbills/mediaremote-adapter",
       "state" : {
-        "branch" : "master",
-        "revision" : "78aae86c03adab11a7b352211cc82381737cf854"
+        "revision" : "3529aa25023082a2ceadebcd2c9c4a9430ee96b9"
       }
     },
     {

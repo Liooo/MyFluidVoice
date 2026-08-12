@@ -24,6 +24,7 @@
 		7CFA1D0B2F500000C0DEF001 /* TypingServiceTransientPasteboardTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7CFA1D0B2F500000C0DEF002 /* TypingServiceTransientPasteboardTests.swift */; };
 		E817C11C2F68000100000002 /* OutsideClickMonitorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E817C11C2F68000100000001 /* OutsideClickMonitorTests.swift */; };
 		534E44012F71000100000001 /* TranscriptionSoundSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 534E44022F71000100000002 /* TranscriptionSoundSettingsTests.swift */; };
+		7C4E4F544943450000000002 /* THIRD_PARTY_NOTICES.txt in Resources */ = {isa = PBXBuildFile; fileRef = 7C4E4F544943450000000001 /* THIRD_PARTY_NOTICES.txt */; };
 		7CDB0A2F2F3C4D5600FB7CAD /* dictation_fixture.wav in Resources */ = {isa = PBXBuildFile; fileRef = 7CDB0A2B2F3C4D5600FB7CAD /* dictation_fixture.wav */; };
 		7CDB0A302F3C4D5600FB7CAD /* XCTest.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7CDB0A2C2F3C4D5600FB7CAD /* XCTest.framework */; };
 		86CAA2D4EF18433096185602 /* LLMClientRequestBodyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 343B29013F4441D6A797D12D /* LLMClientRequestBodyTests.swift */; };
@@ -70,11 +71,25 @@
 		7CDB0A2C2F3C4D5600FB7CAD /* XCTest.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = XCTest.framework; path = Platforms/MacOSX.platform/Developer/Library/Frameworks/XCTest.framework; sourceTree = DEVELOPER_DIR; };
 		E817C11C2F68000100000001 /* OutsideClickMonitorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OutsideClickMonitorTests.swift; sourceTree = "<group>"; };
 		534E44022F71000100000002 /* TranscriptionSoundSettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptionSoundSettingsTests.swift; sourceTree = "<group>"; };
+		7C4E4F544943450000000001 /* THIRD_PARTY_NOTICES.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = Sources/Fluid/Resources/THIRD_PARTY_NOTICES.txt; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		7C4E4F544943450000000003 /* Exceptions for "Sources/Fluid" folder in "fluid" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Resources/THIRD_PARTY_NOTICES.txt,
+			);
+			target = 7C078D8E2E3B339200FB7CAC /* fluid */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		7C078D912E3B339200FB7CAC /* Sources/Fluid */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				7C4E4F544943450000000003 /* Exceptions for "Sources/Fluid" folder in "fluid" target */,
+			);
 			path = Sources/Fluid;
 			sourceTree = "<group>";
 		};
@@ -270,6 +285,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				7C4E4F544943450000000002 /* THIRD_PARTY_NOTICES.txt in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -660,8 +676,8 @@
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/ejbills/mediaremote-adapter";
 			requirement = {
-				branch = master;
-				kind = branch;
+				kind = revision;
+				revision = 3529aa25023082a2ceadebcd2c9c4a9430ee96b9;
 			};
 		};
 		7C9A71002F58B00000FB7CAF /* XCRemoteSwiftPackageReference "transcribe-cpp-swift" */ = {
