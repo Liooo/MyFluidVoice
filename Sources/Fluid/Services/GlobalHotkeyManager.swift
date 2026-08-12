@@ -870,17 +870,19 @@ final class GlobalHotkeyManager: NSObject {
             if SettingsStore.shared.cancelRecordingHotkeyShortcut.matches(keyCode: keyCode, modifiers: eventModifiers) {
                 var handled = false
 
-                if self.asrService.isRunning || self.asrService.isStarting {
+                // Let the app-level policy decide whether Escape should paste, discard, or do
+                // nothing for the active dictation session. Direct cancellation remains only as
+                // a fallback for embedders that do not install a callback.
+                if let callback = cancelCallback {
+                    if callback() {
+                        DebugLogger.shared.info("Cancel shortcut pressed - cancel callback handled", source: "GlobalHotkeyManager")
+                        handled = true
+                    }
+                } else if self.asrService.isRunning || self.asrService.isStarting {
                     DebugLogger.shared.info("Cancel shortcut pressed - cancelling recording", source: "GlobalHotkeyManager")
                     Task { @MainActor in
                         await self.asrService.stopWithoutTranscription()
                     }
-                    handled = true
-                }
-
-                // Trigger cancel callback to close mode views / reset state
-                if let callback = cancelCallback, callback() {
-                    DebugLogger.shared.info("Cancel shortcut pressed - cancel callback handled", source: "GlobalHotkeyManager")
                     handled = true
                 }
 
@@ -1278,47 +1280,15 @@ final class GlobalHotkeyManager: NSObject {
         changedKeyCode: UInt16,
         modifiers: NSEvent.ModifierFlags
     ) -> Set<UInt16> {
-        guard let changedFlag = HotkeyShortcut.modifierFlag(forKeyCode: changedKeyCode) else {
-            return self.pressedModifierKeyCodes
-        }
-
-        let activeModifiers = modifiers.intersection(HotkeyShortcut.relevantModifierMask)
-        let activeModifierGroups: [(NSEvent.ModifierFlags, [UInt16])] = [
-            (.function, [63]),
-            (.command, [55, 54]),
-            (.option, [58, 61]),
-            (.control, [59, 62]),
-            (.shift, [56, 60]),
-        ]
-
-        // Flags tell us a modifier family is active, not which physical side. Preserve the
-        // side-specific keys we already observed instead of rediscovering them from keyState.
-        var synchronizedKeyCodes = self.pressedModifierKeyCodes.filter { keyCode in
-            guard let flag = HotkeyShortcut.modifierFlag(forKeyCode: keyCode) else { return false }
-            return activeModifiers.contains(flag)
-        }
-
-        guard let changedGroup = activeModifierGroups.first(where: { $0.0 == changedFlag }) else {
-            return synchronizedKeyCodes
-        }
-
-        if activeModifiers.contains(changedFlag) {
-            if synchronizedKeyCodes.contains(changedKeyCode) {
-                let siblingKeyCodes = changedGroup.1.filter { $0 != changedKeyCode }
-                let siblingIsTracked = siblingKeyCodes.contains { synchronizedKeyCodes.contains($0) }
-                if siblingIsTracked,
-                   !CGEventSource.keyState(.combinedSessionState, key: CGKeyCode(changedKeyCode))
-                {
-                    synchronizedKeyCodes.remove(changedKeyCode)
-                }
-            } else {
-                synchronizedKeyCodes.insert(changedKeyCode)
-            }
-        } else {
-            synchronizedKeyCodes.subtract(changedGroup.1)
-        }
-
-        return synchronizedKeyCodes
+        PressedModifierKeyCodesDecision.synchronize(
+            previous: self.pressedModifierKeyCodes,
+            changedKeyCode: changedKeyCode,
+            modifiers: modifiers,
+            changedKeyIsPhysicallyPressed: CGEventSource.keyState(
+                .combinedSessionState,
+                key: CGKeyCode(changedKeyCode)
+            )
+        )
     }
 
     private func markModifierOnlyPressInterrupted(message: String) {

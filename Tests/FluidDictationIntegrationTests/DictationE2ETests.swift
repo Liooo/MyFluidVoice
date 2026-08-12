@@ -2372,6 +2372,51 @@ final class DictationSessionCoordinatorTests: XCTestCase {
         languageBinding: .appleSpeech(localeIdentifier: "en-US")
     )!
 
+    func testCoordinatorRecordsTerminalOutputOutcome() {
+        let coordinator = DictationSessionCoordinator()
+        let session = coordinator.begin(
+            activationStyle: .toggle,
+            speechConfiguration: self.englishConfiguration
+        )
+
+        XCTAssertTrue(coordinator.hasActiveSession)
+        XCTAssertTrue(coordinator.beginFinalization(for: session.id))
+        XCTAssertTrue(coordinator.claimOutputDelivery(for: session.id))
+        XCTAssertTrue(coordinator.complete(for: session.id, outcome: .copied))
+
+        XCTAssertEqual(coordinator.state(for: session.id), .completed)
+        XCTAssertEqual(coordinator.outputOutcome(for: session.id), .copied)
+        XCTAssertFalse(coordinator.hasActiveSession)
+    }
+
+    func testDiscardRecordsOutcomeAndBlocksDelivery() {
+        let coordinator = DictationSessionCoordinator()
+        let session = coordinator.begin(
+            activationStyle: .toggle,
+            speechConfiguration: self.englishConfiguration
+        )
+
+        XCTAssertEqual(coordinator.requestExit(.discard, for: session.id), .discard)
+
+        XCTAssertEqual(coordinator.outputOutcome(for: session.id), .discarded)
+        XCTAssertFalse(coordinator.claimOutputDelivery(for: session.id))
+        XCTAssertFalse(coordinator.hasActiveSession)
+    }
+
+    func testEmptyFinalizationCanCompleteWithoutDelivery() {
+        let coordinator = DictationSessionCoordinator()
+        let session = coordinator.begin(
+            activationStyle: .toggle,
+            speechConfiguration: self.englishConfiguration
+        )
+
+        XCTAssertTrue(coordinator.beginFinalization(for: session.id))
+        XCTAssertTrue(coordinator.completeWithoutDelivery(for: session.id))
+
+        XCTAssertEqual(coordinator.state(for: session.id), .completed)
+        XCTAssertNil(coordinator.outputOutcome(for: session.id))
+    }
+
     func testBeginFreezesSpeechConfigurationForSession() {
         let coordinator = DictationSessionCoordinator()
 
@@ -3119,6 +3164,59 @@ final class KeyboardInputSourceRoutingTests: XCTestCase {
         XCTAssertEqual(resolved.localeIdentifier, "ja-JP")
         XCTAssertEqual(resolved.model, .whisperSmall)
         XCTAssertEqual(resolved.languageBinding, .whisper(languageCode: "ja"))
+    }
+
+    func testGlobalFallbackSnapshotsWhisperLanguageWithoutMutatingSettings() throws {
+        let configuration = try XCTUnwrap(
+            RecordingSpeechConfigurationResolver.globalFallbackConfiguration(
+                model: .whisperSmall,
+                selectedLanguageID: "ja",
+                appleLocaleIdentifier: "en-US",
+                cohereLanguage: .english,
+                nemotronLanguage: .english
+            )
+        )
+
+        XCTAssertEqual(configuration.localeIdentifier, "ja-JP")
+        XCTAssertEqual(configuration.model, .whisperSmall)
+        XCTAssertEqual(configuration.languageBinding, .whisper(languageCode: "ja"))
+    }
+
+    func testGlobalFallbackUsesProviderSpecificLanguageBindings() throws {
+        let apple = try XCTUnwrap(
+            RecordingSpeechConfigurationResolver.globalFallbackConfiguration(
+                model: .appleSpeech,
+                selectedLanguageID: "en",
+                appleLocaleIdentifier: "fr-CA",
+                cohereLanguage: .english,
+                nemotronLanguage: .english
+            )
+        )
+        let cohere = try XCTUnwrap(
+            RecordingSpeechConfigurationResolver.globalFallbackConfiguration(
+                model: .cohereTranscribeSixBit,
+                selectedLanguageID: "es",
+                appleLocaleIdentifier: "en-US",
+                cohereLanguage: .spanish,
+                nemotronLanguage: .english
+            )
+        )
+
+        XCTAssertEqual(apple.languageBinding, .appleSpeech(localeIdentifier: "fr-CA"))
+        XCTAssertEqual(cohere.languageBinding, .cohere(.spanish))
+        XCTAssertEqual(cohere.localeIdentifier, "es-ES")
+    }
+
+    func testGlobalFallbackRejectsUnavailableQwenRoute() {
+        XCTAssertNil(
+            RecordingSpeechConfigurationResolver.globalFallbackConfiguration(
+                model: .qwen3Asr,
+                selectedLanguageID: "en",
+                appleLocaleIdentifier: "en-US",
+                cohereLanguage: .english,
+                nemotronLanguage: .english
+            )
+        )
     }
 
     func testMissingAssignmentPreservesWholeGlobalLanguageAndModelRoute() throws {

@@ -115,6 +115,7 @@ final class DictationSessionCoordinator {
     private struct ActiveSession {
         let session: Session
         var state: DictationSessionState
+        var outputOutcome: DictationOutputOutcome?
     }
 
     enum ExitDisposition: Equatable {
@@ -129,6 +130,15 @@ final class DictationSessionCoordinator {
         self.activeSession?.session
     }
 
+    var hasActiveSession: Bool {
+        switch self.activeSession?.state {
+        case .capturing, .finalizing, .delivering:
+            return true
+        case .cancelled, .completed, .none:
+            return false
+        }
+    }
+
     @discardableResult
     func begin(
         activationStyle: DictationActivationStyle,
@@ -139,7 +149,11 @@ final class DictationSessionCoordinator {
             activationStyle: activationStyle,
             speechConfiguration: speechConfiguration
         )
-        self.activeSession = ActiveSession(session: session, state: .capturing)
+        self.activeSession = ActiveSession(
+            session: session,
+            state: .capturing,
+            outputOutcome: nil
+        )
         return session
     }
 
@@ -148,6 +162,13 @@ final class DictationSessionCoordinator {
               activeSession.session.id == id
         else { return nil }
         return activeSession.state
+    }
+
+    func outputOutcome(for id: RecordingSessionID) -> DictationOutputOutcome? {
+        guard let activeSession = self.activeSession,
+              activeSession.session.id == id
+        else { return nil }
+        return activeSession.outputOutcome
     }
 
     func isCapturing(_ id: RecordingSessionID) -> Bool {
@@ -178,6 +199,7 @@ final class DictationSessionCoordinator {
         else { return false }
 
         activeSession.state = .cancelled
+        activeSession.outputOutcome = .discarded
         self.activeSession = activeSession
         return true
     }
@@ -195,10 +217,26 @@ final class DictationSessionCoordinator {
     }
 
     @discardableResult
-    func complete(for id: RecordingSessionID) -> Bool {
+    func complete(
+        for id: RecordingSessionID,
+        outcome: DictationOutputOutcome = .typed
+    ) -> Bool {
         guard var activeSession = self.activeSession,
               activeSession.session.id == id,
               activeSession.state == .delivering
+        else { return false }
+
+        activeSession.state = .completed
+        activeSession.outputOutcome = outcome
+        self.activeSession = activeSession
+        return true
+    }
+
+    @discardableResult
+    func completeWithoutDelivery(for id: RecordingSessionID) -> Bool {
+        guard var activeSession = self.activeSession,
+              activeSession.session.id == id,
+              activeSession.state == .finalizing
         else { return false }
 
         activeSession.state = .completed

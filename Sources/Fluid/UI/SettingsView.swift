@@ -657,6 +657,36 @@ struct SettingsView: View {
                                     }
                                     Divider().opacity(0.2)
 
+                                    self.optionToggleRow(
+                                        title: "Copy When No Text Field Is Focused",
+                                        description: "Keep the final processed transcript on the clipboard when MyFluidVoice cannot find a writable text field.",
+                                        isOn: Binding(
+                                            get: { SettingsStore.shared.copyWhenNoWritableInputFocused },
+                                            set: { SettingsStore.shared.copyWhenNoWritableInputFocused = $0 }
+                                        )
+                                    )
+                                    Divider().opacity(0.2)
+
+                                    self.dictationExitActionRow(
+                                        title: "Escape During Toggle Dictation",
+                                        description: "Choose what Escape does while a toggle-style recording is active.",
+                                        selection: Binding(
+                                            get: { SettingsStore.shared.escapeExitAction },
+                                            set: { SettingsStore.shared.escapeExitAction = $0 }
+                                        )
+                                    )
+                                    Divider().opacity(0.2)
+
+                                    self.dictationExitActionRow(
+                                        title: "Click Outside During Toggle Dictation",
+                                        description: "Choose what an external click does; clicks inside MyFluidVoice are ignored.",
+                                        selection: Binding(
+                                            get: { SettingsStore.shared.outsideClickExitAction },
+                                            set: { SettingsStore.shared.outsideClickExitAction = $0 }
+                                        )
+                                    )
+                                    Divider().opacity(0.2)
+
                                     HStack(alignment: .center) {
                                         VStack(alignment: .leading, spacing: 2) {
                                             Text("Text Insertion Mode")
@@ -1843,6 +1873,34 @@ struct SettingsView: View {
                             .stroke(.primary.opacity(0.15), lineWidth: 1)
                     )
             )
+    }
+
+    private func dictationExitActionRow(
+        title: String,
+        description: String,
+        selection: Binding<DictationExitAction>
+    ) -> some View {
+        HStack(alignment: .center, spacing: 16) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(self.theme.typography.bodyStrong)
+                    .foregroundStyle(self.settingsTitleText)
+                Text(description)
+                    .font(self.theme.typography.bodySmall)
+                    .foregroundStyle(self.settingsSecondaryText)
+            }
+
+            Spacer()
+
+            Picker("", selection: selection) {
+                ForEach(DictationExitAction.allCases) { action in
+                    Text(action.displayName).tag(action)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .frame(width: 180, alignment: .trailing)
+        }
     }
 
     @ViewBuilder

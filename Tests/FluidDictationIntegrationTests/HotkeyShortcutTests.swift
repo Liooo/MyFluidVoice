@@ -17,6 +17,93 @@ final class HotkeyShortcutTests: XCTestCase {
     private let microphoneSelectionMigrationVersionKey = "AppOnlyMicrophoneSelectionMigrationVersion"
     private let experimentalDirectAudioCaptureEnabledKey = "ExperimentalDirectAudioCaptureEnabled"
 
+    func testShortcutRecorderRecognizesSamePhysicalModifierDoubleTap() {
+        var replay = ShortcutModifierTapCaptureReplay()
+
+        XCTAssertEqual(replay.flagsChanged(keyCode: 56, pressed: [56], timestamp: 1.0), .observeChord)
+        XCTAssertEqual(replay.flagsChanged(keyCode: 56, pressed: [], timestamp: 1.05), .waitForSecondPress(deadline: 1.3))
+        XCTAssertEqual(replay.flagsChanged(keyCode: 56, pressed: [56], timestamp: 1.2), .handled)
+        XCTAssertEqual(replay.flagsChanged(keyCode: 56, pressed: [], timestamp: 1.24), .recordDouble(keyCode: 56))
+    }
+
+    func testShortcutRecorderCommitsSingleModifierAtStrictDeadline() {
+        var replay = ShortcutModifierTapCaptureReplay()
+
+        XCTAssertEqual(replay.flagsChanged(keyCode: 56, pressed: [56], timestamp: 4.0), .observeChord)
+        XCTAssertEqual(replay.flagsChanged(keyCode: 56, pressed: [], timestamp: 4.05), .waitForSecondPress(deadline: 4.3))
+        XCTAssertEqual(replay.deadline(timestamp: 4.299), .handled)
+        XCTAssertEqual(replay.deadline(timestamp: 4.3), .recordSingle(keyCode: 56))
+    }
+
+    func testShortcutRecorderRejectsOppositeSideAndAdditionalModifier() {
+        var oppositeSide = ShortcutModifierTapCaptureReplay()
+        _ = oppositeSide.flagsChanged(keyCode: 56, pressed: [56], timestamp: 10.0)
+        _ = oppositeSide.flagsChanged(keyCode: 56, pressed: [], timestamp: 10.04)
+        XCTAssertEqual(
+            oppositeSide.flagsChanged(keyCode: 60, pressed: [60], timestamp: 10.1),
+            .cancelCandidateAndObserveChord
+        )
+
+        var chord = ShortcutModifierTapCaptureReplay()
+        _ = chord.flagsChanged(keyCode: 56, pressed: [56], timestamp: 20.0)
+        XCTAssertEqual(
+            chord.flagsChanged(keyCode: 59, pressed: [56, 59], timestamp: 20.05),
+            .cancelCandidateAndObserveChord
+        )
+    }
+
+    func testShortcutRecorderInterruptCancelsPendingTap() {
+        var replay = ShortcutModifierTapCaptureReplay()
+        _ = replay.flagsChanged(keyCode: 56, pressed: [56], timestamp: 30.0)
+        _ = replay.flagsChanged(keyCode: 56, pressed: [], timestamp: 30.04)
+
+        XCTAssertEqual(replay.interrupt(), .handled)
+        XCTAssertEqual(replay.deadline(timestamp: 30.3), .handled)
+    }
+
+    func testPressedModifierTrackingIgnoresDuplicateFlagsChangedEvents() {
+        let firstPress = PressedModifierKeyCodesDecision.synchronize(
+            previous: [],
+            changedKeyCode: 56,
+            modifiers: .shift,
+            changedKeyIsPhysicallyPressed: true
+        )
+        let duplicate = PressedModifierKeyCodesDecision.synchronize(
+            previous: firstPress,
+            changedKeyCode: 56,
+            modifiers: .shift,
+            changedKeyIsPhysicallyPressed: true
+        )
+
+        XCTAssertEqual(firstPress, [56])
+        XCTAssertEqual(duplicate, [56])
+    }
+
+    func testPressedModifierTrackingKeepsPhysicalSidesDistinct() {
+        let bothSides = PressedModifierKeyCodesDecision.synchronize(
+            previous: [56],
+            changedKeyCode: 60,
+            modifiers: .shift,
+            changedKeyIsPhysicallyPressed: true
+        )
+        let leftOnly = PressedModifierKeyCodesDecision.synchronize(
+            previous: bothSides,
+            changedKeyCode: 60,
+            modifiers: .shift,
+            changedKeyIsPhysicallyPressed: false
+        )
+        let released = PressedModifierKeyCodesDecision.synchronize(
+            previous: leftOnly,
+            changedKeyCode: 56,
+            modifiers: [],
+            changedKeyIsPhysicallyPressed: false
+        )
+
+        XCTAssertEqual(bothSides, [56, 60])
+        XCTAssertEqual(leftOnly, [56])
+        XCTAssertTrue(released.isEmpty)
+    }
+
     @MainActor
     func testBottomOverlayRapidStopStartStopDoesNotDropFinalHide() async {
         let audioPublisher = Just(CGFloat.zero).eraseToAnyPublisher()
@@ -1887,5 +1974,44 @@ private struct DoubleModifierReplay {
             state: self.state
         )
         self.state = decision.state
+    }
+}
+
+private struct ShortcutModifierTapCaptureReplay {
+    private(set) var state = ShortcutModifierTapCaptureDecision.State()
+
+    mutating func flagsChanged(
+        keyCode: UInt16,
+        pressed: Set<UInt16>,
+        timestamp: TimeInterval
+    ) -> ShortcutModifierTapCaptureDecision.Outcome {
+        let decision = ShortcutModifierTapCaptureDecision.evaluate(
+            event: .flagsChanged(
+                keyCode: keyCode,
+                pressedModifierKeyCodes: pressed,
+                timestamp: timestamp
+            ),
+            state: self.state
+        )
+        self.state = decision.state
+        return decision.outcome
+    }
+
+    mutating func deadline(timestamp: TimeInterval) -> ShortcutModifierTapCaptureDecision.Outcome {
+        let decision = ShortcutModifierTapCaptureDecision.evaluate(
+            event: .deadline(timestamp: timestamp),
+            state: self.state
+        )
+        self.state = decision.state
+        return decision.outcome
+    }
+
+    mutating func interrupt() -> ShortcutModifierTapCaptureDecision.Outcome {
+        let decision = ShortcutModifierTapCaptureDecision.evaluate(
+            event: .interrupt,
+            state: self.state
+        )
+        self.state = decision.state
+        return decision.outcome
     }
 }

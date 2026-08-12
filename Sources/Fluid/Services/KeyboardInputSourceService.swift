@@ -250,6 +250,75 @@ nonisolated enum KeyboardInputSourceLocaleResolver {
 }
 
 enum RecordingSpeechConfigurationResolver {
+    static func globalFallbackConfiguration(
+        model: SettingsStore.SpeechModel,
+        selectedLanguageID: String,
+        appleLocaleIdentifier: String,
+        cohereLanguage: SettingsStore.CohereLanguage,
+        nemotronLanguage: SettingsStore.NemotronLanguage
+    ) -> RecordingSpeechConfiguration? {
+        guard model != .qwen3Asr else { return nil }
+
+        let selectedLocaleIdentifier = self.localeIdentifier(forLanguageID: selectedLanguageID)
+        let localeIdentifier: String
+        let binding: VoiceEngineLanguageRoute.LanguageBinding?
+
+        switch model {
+        case .appleSpeech, .appleSpeechAnalyzer:
+            localeIdentifier = appleLocaleIdentifier.replacingOccurrences(of: "_", with: "-")
+            binding = .appleSpeech(localeIdentifier: localeIdentifier)
+        case .cohereTranscribeSixBit:
+            localeIdentifier = self.localeIdentifier(forLanguageID: cohereLanguage.rawValue)
+            binding = .cohere(cohereLanguage)
+        case .nemotronOffline, .nemotronStreaming, .nemotronStreaming320:
+            localeIdentifier = nemotronLanguage == .auto
+                ? selectedLocaleIdentifier
+                : self.localeIdentifier(forLanguageID: nemotronLanguage.rawValue)
+            binding = .nemotron(nemotronLanguage)
+        case .whisperTiny, .whisperBase, .whisperSmall, .whisperMedium, .whisperLargeTurbo, .whisperLarge:
+            localeIdentifier = selectedLocaleIdentifier
+            binding = self.languageBinding(for: model, localeIdentifier: localeIdentifier)
+        case .parakeetTDT, .parakeetTDTv2, .parakeetRealtime:
+            localeIdentifier = selectedLocaleIdentifier
+            binding = self.languageBinding(for: model, localeIdentifier: localeIdentifier)
+                ?? self.languageBinding(for: model, localeIdentifier: "en-US")
+        case .qwen3Asr:
+            return nil
+        }
+
+        guard let binding else { return nil }
+        return RecordingSpeechConfiguration(
+            inputSourceID: nil,
+            localeIdentifier: localeIdentifier,
+            model: model,
+            languageBinding: binding
+        )
+    }
+
+    static func currentGlobalFallbackConfiguration(
+        settings: SettingsStore = .shared
+    ) -> RecordingSpeechConfiguration {
+        if let configuration = self.globalFallbackConfiguration(
+            model: settings.selectedSpeechModel,
+            selectedLanguageID: settings.onboardingSelectedLanguageID,
+            appleLocaleIdentifier: settings.selectedAppleSpeechLocale.identifier,
+            cohereLanguage: settings.selectedCohereLanguage,
+            nemotronLanguage: settings.selectedNemotronLanguage
+        ) {
+            return configuration
+        }
+
+        guard let safeFallback = RecordingSpeechConfiguration(
+            inputSourceID: nil,
+            localeIdentifier: "en-US",
+            model: .parakeetTDT,
+            languageBinding: .automatic
+        ) else {
+            preconditionFailure("Built-in Parakeet fallback configuration must be valid")
+        }
+        return safeFallback
+    }
+
     static func compatibleModels(
         for inputSource: KeyboardInputSourceSnapshot,
         availableModels: [SettingsStore.SpeechModel] = SettingsStore.SpeechModel.availableModels,
@@ -350,6 +419,17 @@ enum RecordingSpeechConfigurationResolver {
             model: fallback.model,
             languageBinding: fallback.languageBinding
         ) ?? fallback
+    }
+
+    private static func localeIdentifier(forLanguageID languageID: String) -> String {
+        KeyboardInputSourceLocaleResolver.localeIdentifier(
+            for: KeyboardInputSourceSnapshot(
+                id: "com.myfluidvoice.language.\(languageID)",
+                localizedName: languageID,
+                languages: [languageID]
+            ),
+            fallbackLocaleIdentifier: "en-US"
+        )
     }
 
     private static func nemotronLanguage(
