@@ -27,8 +27,8 @@ nonisolated struct DoubleModifierTapDecision: Equatable {
     nonisolated struct State: Equatable {
         fileprivate nonisolated enum Phase: Equatable {
             case idle
-            case firstPress(Owner)
-            case waitingForSecondPress(Owner, firstReleaseTimestamp: TimeInterval)
+            case firstPress(Owner, firstPressTimestamp: TimeInterval)
+            case waitingForSecondPress(Owner, firstPressTimestamp: TimeInterval)
             case secondPress(Owner)
             case canceledUntilModifiersReleased(Owner)
         }
@@ -90,7 +90,7 @@ nonisolated struct DoubleModifierTapDecision: Equatable {
 
         let owner: State.Owner?
         switch state.phase {
-        case let .firstPress(currentOwner),
+        case let .firstPress(currentOwner, _),
              let .waitingForSecondPress(currentOwner, _),
              let .canceledUntilModifiersReleased(currentOwner):
             owner = currentOwner
@@ -119,10 +119,13 @@ nonisolated struct DoubleModifierTapDecision: Equatable {
         state: State
     ) -> DoubleModifierTapDecision {
         var phase = state.phase
-        if case let .waitingForSecondPress(_, firstReleaseTimestamp) = phase,
-           timestamp - firstReleaseTimestamp > self.interval
-        {
-            phase = .idle
+        if case let .waitingForSecondPress(_, firstPressTimestamp) = phase {
+            if !self.isWithinRecognitionWindow(
+                firstPressTimestamp: firstPressTimestamp,
+                currentTimestamp: timestamp
+            ) {
+                phase = .idle
+            }
         }
 
         if case let .canceledUntilModifiersReleased(owner) = phase {
@@ -147,7 +150,7 @@ nonisolated struct DoubleModifierTapDecision: Equatable {
             return .init(state: State(), outcome: .secondRelease)
         }
 
-        if case let .firstPress(owner) = phase {
+        if case let .firstPress(owner, firstPressTimestamp) = phase {
             guard self.isOwner(owner, shortcut: shortcut, holdModeType: holdModeType) else {
                 return .init(state: State(phase: phase), outcome: .ignore)
             }
@@ -163,13 +166,19 @@ nonisolated struct DoubleModifierTapDecision: Equatable {
             if !pressedModifierKeyCodes.isEmpty {
                 return .init(state: State(phase: .canceledUntilModifiersReleased(owner)), outcome: .handled)
             }
+            guard self.isWithinRecognitionWindow(
+                firstPressTimestamp: firstPressTimestamp,
+                currentTimestamp: timestamp
+            ) else {
+                return .init(state: State(), outcome: .handled)
+            }
             return .init(
-                state: State(phase: .waitingForSecondPress(owner, firstReleaseTimestamp: timestamp)),
+                state: State(phase: .waitingForSecondPress(owner, firstPressTimestamp: firstPressTimestamp)),
                 outcome: .handled
             )
         }
 
-        if case let .waitingForSecondPress(owner, firstReleaseTimestamp) = phase {
+        if case let .waitingForSecondPress(owner, firstPressTimestamp) = phase {
             guard self.isOwner(owner, shortcut: shortcut, holdModeType: holdModeType) else {
                 return .init(state: State(phase: phase), outcome: .ignore)
             }
@@ -183,7 +192,7 @@ nonisolated struct DoubleModifierTapDecision: Equatable {
             }
             guard pressedModifierKeyCodes.contains(keyCode) else {
                 return .init(
-                    state: State(phase: .waitingForSecondPress(owner, firstReleaseTimestamp: firstReleaseTimestamp)),
+                    state: State(phase: .waitingForSecondPress(owner, firstPressTimestamp: firstPressTimestamp)),
                     outcome: .handled
                 )
             }
@@ -210,7 +219,18 @@ nonisolated struct DoubleModifierTapDecision: Equatable {
             holdModeType: holdModeType,
             physicalKeyCode: keyCode
         )
-        return .init(state: State(phase: .firstPress(owner)), outcome: .handled)
+        return .init(
+            state: State(phase: .firstPress(owner, firstPressTimestamp: timestamp)),
+            outcome: .handled
+        )
+    }
+
+    private static func isWithinRecognitionWindow(
+        firstPressTimestamp: TimeInterval,
+        currentTimestamp: TimeInterval
+    ) -> Bool {
+        let elapsedSinceFirstPress = currentTimestamp - firstPressTimestamp
+        return elapsedSinceFirstPress >= 0 && elapsedSinceFirstPress < self.interval
     }
 
     private static func isOwner(

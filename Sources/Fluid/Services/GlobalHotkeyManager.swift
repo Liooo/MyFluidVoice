@@ -198,6 +198,25 @@ struct ModifierOnlyShortcutFlagsDecision: Equatable {
     }
 }
 
+/// Pure reset policy for press-owned activation modes. Calling the stop action before clearing
+/// the physical-press state preserves a way to terminate a recording whose asynchronous start is
+/// already in flight.
+nonisolated struct ModifierOnlyResetDecision: Equatable {
+    let shouldStopBeforeClearingPressState: Bool
+
+    static func evaluate(
+        isMomentaryMode: Bool,
+        isRunningOrStarting: Bool,
+        hasActivePress: Bool
+    ) -> ModifierOnlyResetDecision {
+        .init(
+            shouldStopBeforeClearingPressState: isMomentaryMode
+                && isRunningOrStarting
+                && hasActivePress
+        )
+    }
+}
+
 private final nonisolated class HotkeyState: @unchecked Sendable {
     private let lock = NSLock()
     var isKeyPressed = false
@@ -639,6 +658,7 @@ final class GlobalHotkeyManager: NSObject {
 
     @discardableResult
     private func setupGlobalHotkey() -> Bool {
+        self.resetModifierOnlyShortcutTracking(reason: .reinitialize)
         self.cleanupEventTap()
 
         if !AXIsProcessTrusted() {
@@ -1563,9 +1583,30 @@ final class GlobalHotkeyManager: NSObject {
     }
 
     func resetModifierOnlyShortcutTracking(reason: ModifierTrackingResetReason = .shortcutCapture) {
-        let shouldStopActiveHold = self.hotkeyMode != .toggle
-            && self.asrService.isRunning
-            && (self.isKeyPressed || self.isPromptModeKeyPressed || self.isCommandModeKeyPressed || self.isRewriteKeyPressed || self.isPromptAssignmentKeyPressed)
+        let hasActivePress = self.isKeyPressed
+            || self.isPromptModeKeyPressed
+            || self.isCommandModeKeyPressed
+            || self.isRewriteKeyPressed
+            || self.isPromptAssignmentKeyPressed
+        let resetDecision = ModifierOnlyResetDecision.evaluate(
+            isMomentaryMode: self.hotkeyMode != .toggle,
+            isRunningOrStarting: self.asrService.isRunningOrStarting,
+            hasActivePress: hasActivePress
+        )
+
+        if resetDecision.shouldStopBeforeClearingPressState {
+            switch reason {
+            case .shortcutCapture:
+                DebugLogger.shared.debug("Shortcut capture active - stopping active hold recording before reset", source: "GlobalHotkeyManager")
+            case .tapDisabled:
+                DebugLogger.shared.warning("Event tap disabled during active hold - stopping recording before reset", source: "GlobalHotkeyManager")
+            case .reinitialize:
+                DebugLogger.shared.info("Hotkey manager reinitializing - stopping active hold recording before reset", source: "GlobalHotkeyManager")
+            case .configurationChange:
+                DebugLogger.shared.info("Hotkey configuration changed - stopping active hold recording before reset", source: "GlobalHotkeyManager")
+            }
+            self.stopRecordingIfNeeded()
+        }
 
         self.pressedModifierKeyCodes = []
         self.modifierOnlyKeyDown = false
@@ -1581,20 +1622,6 @@ final class GlobalHotkeyManager: NSObject {
         self.isRewriteKeyPressed = false
         self.isPromptAssignmentKeyPressed = false
         self.activePrimaryShortcutPress = nil
-
-        if shouldStopActiveHold {
-            switch reason {
-            case .shortcutCapture:
-                DebugLogger.shared.debug("Shortcut capture active - stopping active hold recording before reset", source: "GlobalHotkeyManager")
-            case .tapDisabled:
-                DebugLogger.shared.warning("Event tap disabled during active hold - stopping recording before reset", source: "GlobalHotkeyManager")
-            case .reinitialize:
-                DebugLogger.shared.info("Hotkey manager reinitializing - stopping active hold recording before reset", source: "GlobalHotkeyManager")
-            case .configurationChange:
-                DebugLogger.shared.info("Hotkey configuration changed - stopping active hold recording before reset", source: "GlobalHotkeyManager")
-            }
-            self.stopRecordingIfNeeded()
-        }
     }
 
     private func handlePromptModeKeyDown(keyCode: UInt16, modifiers: NSEvent.ModifierFlags) -> Bool {
@@ -1979,9 +2006,20 @@ final class GlobalHotkeyManager: NSObject {
     }
 
     func setHotkeyMode(_ mode: HotkeyActivationMode) {
-        let shouldStopActivePress = self.hotkeyMode != .toggle
-            && self.asrService.isRunning
-            && (self.isKeyPressed || self.isPromptModeKeyPressed || self.isCommandModeKeyPressed || self.isRewriteKeyPressed || self.isPromptAssignmentKeyPressed)
+        let hasActivePress = self.isKeyPressed
+            || self.isPromptModeKeyPressed
+            || self.isCommandModeKeyPressed
+            || self.isRewriteKeyPressed
+            || self.isPromptAssignmentKeyPressed
+        let resetDecision = ModifierOnlyResetDecision.evaluate(
+            isMomentaryMode: self.hotkeyMode != .toggle,
+            isRunningOrStarting: self.asrService.isRunningOrStarting,
+            hasActivePress: hasActivePress
+        )
+
+        if resetDecision.shouldStopBeforeClearingPressState {
+            self.stopRecordingIfNeeded()
+        }
 
         self.hotkeyMode = mode
         self.resetDoubleModifierTapTracking()
@@ -1992,10 +2030,6 @@ final class GlobalHotkeyManager: NSObject {
         self.isRewriteKeyPressed = false
         self.isPromptAssignmentKeyPressed = false
         self.activePrimaryShortcutPress = nil
-
-        if shouldStopActivePress {
-            self.stopRecordingIfNeeded()
-        }
         DebugLogger.shared.info("Hotkey activation mode set to \(mode.displayName)", source: "GlobalHotkeyManager")
     }
 

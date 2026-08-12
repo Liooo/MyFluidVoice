@@ -548,6 +548,71 @@ final class HotkeyShortcutTests: XCTestCase {
         XCTAssertEqual(timeoutReplay.flagsChanged(keyCode: 56, pressed: [], timestamp: 1.40), .handled)
     }
 
+    func testDoubleModifierLongFirstHoldConsumesRecognitionWindow() {
+        var replay = DoubleModifierReplay(shortcut: Self.doubleShiftShortcut)
+
+        _ = replay.flagsChanged(keyCode: 56, pressed: [56], timestamp: 0.000)
+        _ = replay.flagsChanged(
+            keyCode: 56,
+            pressed: [],
+            timestamp: DoubleModifierTapDecision.interval + 0.001
+        )
+        XCTAssertEqual(replay.state, DoubleModifierTapDecision.State())
+
+        XCTAssertEqual(
+            replay.flagsChanged(
+                keyCode: 56,
+                pressed: [56],
+                timestamp: DoubleModifierTapDecision.interval + 0.010
+            ),
+            .handled,
+            "The window is measured from the first press, so a long first hold cannot become a double tap"
+        )
+    }
+
+    func testDoubleModifierSecondPressAtExactBoundaryDoesNotTrigger() {
+        var replay = DoubleModifierReplay(shortcut: Self.doubleShiftShortcut)
+
+        _ = replay.flagsChanged(keyCode: 56, pressed: [56], timestamp: 0.000)
+        _ = replay.flagsChanged(keyCode: 56, pressed: [], timestamp: 0.050)
+
+        XCTAssertEqual(
+            replay.flagsChanged(
+                keyCode: 56,
+                pressed: [56],
+                timestamp: DoubleModifierTapDecision.interval
+            ),
+            .handled,
+            "Only a second press strictly before 0.300 seconds is recognized"
+        )
+    }
+
+    func testModifierOnlyResetStopsAsyncStartBeforeClearingPressOwnership() {
+        let decision = ModifierOnlyResetDecision.evaluate(
+            isMomentaryMode: true,
+            isRunningOrStarting: true,
+            hasActivePress: true
+        )
+
+        XCTAssertTrue(decision.shouldStopBeforeClearingPressState)
+        XCTAssertFalse(
+            ModifierOnlyResetDecision.evaluate(
+                isMomentaryMode: false,
+                isRunningOrStarting: true,
+                hasActivePress: true
+            ).shouldStopBeforeClearingPressState,
+            "Toggle recording is not owned by a physical release"
+        )
+        XCTAssertFalse(
+            ModifierOnlyResetDecision.evaluate(
+                isMomentaryMode: true,
+                isRunningOrStarting: true,
+                hasActivePress: false
+            ).shouldStopBeforeClearingPressState,
+            "Reconfiguration must not stop an unrelated recording"
+        )
+    }
+
     func testDoubleModifierInterruptedFirstReleaseWaitsForAllModifiersAndNeverTriggers() {
         var replay = DoubleModifierReplay(shortcut: Self.doubleShiftShortcut)
 
