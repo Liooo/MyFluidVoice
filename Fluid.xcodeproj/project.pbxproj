@@ -477,7 +477,7 @@
 				);
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				MARKETING_VERSION = 1.5.1;
-				PRODUCT_BUNDLE_IDENTIFIER = com.liooo.MyFluidVoice;
+				PRODUCT_BUNDLE_IDENTIFIER = com.FluidApp.app;
 				PRODUCT_MODULE_NAME = FluidVoice_Debug;
 				PRODUCT_NAME = "MyFluidVoice Debug";
 				PROVISIONING_PROFILE_SPECIFIER = "";
@@ -533,7 +533,7 @@
 				);
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				MARKETING_VERSION = 1.5.1;
-				PRODUCT_BUNDLE_IDENTIFIER = com.liooo.MyFluidVoice;
+				PRODUCT_BUNDLE_IDENTIFIER = com.FluidApp.app;
 				PRODUCT_MODULE_NAME = FluidVoice_Debug;
 				PRODUCT_NAME = MyFluidVoice;
 				PROVISIONING_PROFILE_SPECIFIER = "";
@@ -567,7 +567,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.liooo.MyFluidVoice.FluidDictationIntegrationTests;
+				PRODUCT_BUNDLE_IDENTIFIER = com.FluidApp.FluidDictationIntegrationTests;
 				PRODUCT_NAME = FluidDictationIntegrationTests;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
 				SWIFT_VERSION = 5.0;
@@ -592,7 +592,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.liooo.MyFluidVoice.FluidDictationIntegrationTests;
+				PRODUCT_BUNDLE_IDENTIFIER = com.FluidApp.FluidDictationIntegrationTests;
 				PRODUCT_NAME = FluidDictationIntegrationTests;
 				SWIFT_VERSION = 5.0;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/MyFluidVoice.app/Contents/MacOS/MyFluidVoice";

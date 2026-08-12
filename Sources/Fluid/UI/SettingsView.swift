@@ -263,12 +263,21 @@ struct SettingsView: View {
                             }
                             Divider().opacity(0.2)
 
+                            self.settingsToggleRow(
+                                title: "Transcription Sounds",
+                                description: "Play non-blocking feedback when recording starts and ends.",
+                                isOn: Binding(
+                                    get: { SettingsStore.shared.enableTranscriptionSounds },
+                                    set: { SettingsStore.shared.enableTranscriptionSounds = $0 }
+                                )
+                            )
+
                             HStack {
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text("Transcription Sounds")
+                                    Text("Start Sound")
                                         .font(self.theme.typography.bodyStrong)
                                         .foregroundStyle(self.settingsTitleText)
-                                    Text("Choose the sound cue for recording. Some cues include an end sound.")
+                                    Text("Plays after audio capture has started.")
                                         .font(self.theme.typography.bodySmall)
                                         .foregroundStyle(self.settingsSecondaryText)
                                 }
@@ -288,9 +297,41 @@ struct SettingsView: View {
                                 }
                                 .pickerStyle(.menu)
                                 .frame(width: 170, alignment: .trailing)
+                                .disabled(!SettingsStore.shared.enableTranscriptionSounds)
                             }
 
-                            if SettingsStore.shared.transcriptionStartSound != .none {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("End Sound")
+                                        .font(self.theme.typography.bodyStrong)
+                                        .foregroundStyle(self.settingsTitleText)
+                                    Text("Plays immediately when capture stops.")
+                                        .font(self.theme.typography.bodySmall)
+                                        .foregroundStyle(self.settingsSecondaryText)
+                                }
+
+                                Spacer()
+
+                                Picker("", selection: Binding(
+                                    get: { SettingsStore.shared.transcriptionEndSound },
+                                    set: { newValue in
+                                        SettingsStore.shared.transcriptionEndSound = newValue
+                                        TranscriptionSoundPlayer.shared.playPreview(sound: newValue)
+                                    }
+                                )) {
+                                    ForEach(SettingsStore.TranscriptionEndSound.allCases) { option in
+                                        Text(option.displayName).tag(option)
+                                    }
+                                }
+                                .pickerStyle(.menu)
+                                .frame(width: 170, alignment: .trailing)
+                                .disabled(!SettingsStore.shared.enableTranscriptionSounds)
+                            }
+
+                            if SettingsStore.shared.enableTranscriptionSounds,
+                               SettingsStore.shared.transcriptionStartSound != .none ||
+                               SettingsStore.shared.transcriptionEndSound != .none
+                            {
                                 HStack {
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text("Volume")

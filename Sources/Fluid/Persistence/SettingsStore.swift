@@ -30,10 +30,10 @@ final class SettingsStore: ObservableObject {
     private(set) var launchAtStartupEnabled = false
     private(set) var launchAtStartupErrorMessage: String?
     private(set) var launchAtStartupStatusMessage =
-        "FluidVoice reflects the actual macOS login item state. Unsigned or development builds may fail to enable this."
+        "MyFluidVoice reflects the actual macOS login item state. Unsigned or development builds may fail to enable this."
 
     private init() {
-        self.migrateTranscriptionStartSoundIfNeeded()
+        self.migrateTranscriptionEndSoundIfNeeded()
         self.ensureDebugLoggingDefaults()
         self.migrateProviderAPIKeysIfNeeded()
         self.scrubSavedProviderAPIKeys()
@@ -2327,10 +2327,30 @@ final class SettingsStore: ObservableObject {
             }
         }
 
-        var stopSoundFileName: String? {
+    }
+
+    enum TranscriptionEndSound: String, CaseIterable, Identifiable, Codable {
+        case none
+        case fluidSfx0 = "fluid_end_0"
+        case fluidSfx1 = "fluid_end_1"
+
+        var id: String {
+            self.rawValue
+        }
+
+        var displayName: String {
             switch self {
+            case .none: return "None"
+            case .fluidSfx0: return "Fluid End 0"
+            case .fluidSfx1: return "Fluid End 1"
+            }
+        }
+
+        var soundFileName: String? {
+            switch self {
+            case .none: return nil
             case .fluidSfx0: return "FV_end_0"
-            case .none, .fluidSfx1, .fluidSfx2, .fluidSfx3, .fluidSfx4: return nil
+            case .fluidSfx1: return "FV_end"
             }
         }
     }
@@ -2405,7 +2425,6 @@ final class SettingsStore: ObservableObject {
 
     var transcriptionStartSound: TranscriptionStartSound {
         get {
-            self.migrateTranscriptionStartSoundIfNeeded()
             guard let raw = self.defaults.string(forKey: Keys.transcriptionStartSound),
                   let option = TranscriptionStartSound(rawValue: raw)
             else {
@@ -2416,6 +2435,22 @@ final class SettingsStore: ObservableObject {
         set {
             objectWillChange.send()
             self.defaults.set(newValue.rawValue, forKey: Keys.transcriptionStartSound)
+        }
+    }
+
+    var transcriptionEndSound: TranscriptionEndSound {
+        get {
+            self.migrateTranscriptionEndSoundIfNeeded()
+            guard let raw = self.defaults.string(forKey: Keys.transcriptionEndSound),
+                  let option = TranscriptionEndSound(rawValue: raw)
+            else {
+                return .fluidSfx0
+            }
+            return option
+        }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue.rawValue, forKey: Keys.transcriptionEndSound)
         }
     }
 
@@ -3252,7 +3287,9 @@ final class SettingsStore: ObservableObject {
             hideFromDockAndAppSwitcher: self.hideFromDockAndAppSwitcher,
             showMainWindowAtLoginLaunch: self.showMainWindowAtLoginLaunch,
             accentColorOption: self.accentColorOption,
+            enableTranscriptionSounds: self.enableTranscriptionSounds,
             transcriptionStartSound: self.transcriptionStartSound,
+            transcriptionEndSound: self.transcriptionEndSound,
             transcriptionSoundVolume: self.transcriptionSoundVolume,
             transcriptionSoundIndependentVolume: self.transcriptionSoundIndependentVolume,
             autoUpdateCheckEnabled: self.autoUpdateCheckEnabled,
@@ -3380,7 +3417,13 @@ final class SettingsStore: ObservableObject {
         self.hideFromDockAndAppSwitcher = payload.hideFromDockAndAppSwitcher
         self.showMainWindowAtLoginLaunch = payload.showMainWindowAtLoginLaunch ?? true
         self.accentColorOption = payload.accentColorOption
+        if let enableTranscriptionSounds = payload.enableTranscriptionSounds {
+            self.enableTranscriptionSounds = enableTranscriptionSounds
+        }
         self.transcriptionStartSound = payload.transcriptionStartSound
+        if let transcriptionEndSound = payload.transcriptionEndSound {
+            self.transcriptionEndSound = transcriptionEndSound
+        }
         self.transcriptionSoundVolume = payload.transcriptionSoundVolume
         self.transcriptionSoundIndependentVolume = payload.transcriptionSoundIndependentVolume
         self.autoUpdateCheckEnabled = payload.autoUpdateCheckEnabled
@@ -3501,12 +3544,12 @@ final class SettingsStore: ObservableObject {
         )
     }
 
-    private func migrateTranscriptionStartSoundIfNeeded() {
-        guard let legacyEnabled = self.defaults.object(forKey: Keys.enableTranscriptionSounds) as? Bool else { return }
-        if legacyEnabled == false {
-            self.defaults.set(TranscriptionStartSound.none.rawValue, forKey: Keys.transcriptionStartSound)
-        }
-        self.defaults.removeObject(forKey: Keys.enableTranscriptionSounds)
+    private func migrateTranscriptionEndSoundIfNeeded() {
+        guard self.defaults.object(forKey: Keys.transcriptionEndSound) == nil else { return }
+        let legacyStartSound = self.defaults.string(forKey: Keys.transcriptionStartSound)
+            .flatMap(TranscriptionStartSound.init(rawValue:)) ?? .fluidSfx0
+        let endSound: TranscriptionEndSound = legacyStartSound == .fluidSfx0 ? .fluidSfx0 : .none
+        self.defaults.set(endSound.rawValue, forKey: Keys.transcriptionEndSound)
     }
 
     private func migrateProviderAPIKeysIfNeeded() {
@@ -4809,11 +4852,11 @@ final class SettingsStore: ObservableObject {
             }
         }
 
-        /// Optional badge text for the card (e.g., "FluidVoice Pick")
+        /// Optional badge text for the card (e.g., "MyFluidVoice Pick")
         var badgeText: String? {
             switch self {
-            case .parakeetTDT: return "FluidVoice Pick"
-            case .parakeetTDTv2: return "FluidVoice Pick"
+            case .parakeetTDT: return "MyFluidVoice Pick"
+            case .parakeetTDTv2: return "MyFluidVoice Pick"
             case .parakeetRealtime: return "Beta"
             case .qwen3Asr: return "Beta"
             case .cohereTranscribeSixBit: return "New"
@@ -5171,6 +5214,7 @@ private extension SettingsStore {
         static let themePreference = "ThemePreference"
         static let enableTranscriptionSounds = "EnableTranscriptionSounds"
         static let transcriptionStartSound = "TranscriptionStartSound"
+        static let transcriptionEndSound = "TranscriptionEndSound"
         static let transcriptionSoundVolume = "TranscriptionSoundVolume"
         static let transcriptionSoundIndependentVolume = "TranscriptionSoundIndependentVolume"
         static let pressAndHoldMode = "PressAndHoldMode"

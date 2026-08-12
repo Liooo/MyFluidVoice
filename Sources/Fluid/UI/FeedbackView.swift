@@ -1,275 +1,62 @@
-//
-//  FeedbackView.swift
-//  fluid
-//
-//  Extracted from ContentView.swift to reduce monolithic architecture.
-//  Created: 2025-12-14
-//
-
-import AppKit
 import SwiftUI
 
 struct FeedbackView: View {
     @Environment(\.theme) private var theme
 
-    // MARK: - State Variables (moved from ContentView)
-
-    @State private var feedbackText: String = ""
-    @State private var feedbackEmail: String = ""
-    @State private var includeDebugLogs: Bool = false
-    @State private var isSendingFeedback: Bool = false
-    @State private var showFeedbackConfirmation: Bool = false
-    @State private var showFeedbackError: Bool = false
-    @State private var feedbackErrorMessage: String = ""
-    @State private var appear: Bool = false
+    private let issueURL = URL(string: "https://github.com/Liooo/MyFluidVoice/issues/new/choose")!
+    private let repositoryURL = URL(string: "https://github.com/Liooo/MyFluidVoice")!
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                // Header
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Image(systemName: "envelope.fill")
-                            .font(.system(size: 32))
-                            .foregroundStyle(self.theme.palette.accent)
-                        VStack(alignment: .leading) {
-                            Text("Send Feedback")
-                                .font(.system(size: 28, weight: .bold))
-                            Text("Help us improve MyFluidVoice")
-                                .font(.system(size: 16))
-                                .foregroundStyle(.secondary)
-                        }
+                HStack(spacing: 12) {
+                    Image(systemName: "bubble.left.and.exclamationmark.bubble.right.fill")
+                        .font(.system(size: 32))
+                        .foregroundStyle(self.theme.palette.accent)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Feedback")
+                            .font(.system(size: 28, weight: .bold))
+                        Text("Help improve MyFluidVoice on GitHub")
+                            .font(.system(size: 16))
+                            .foregroundStyle(.secondary)
                     }
                 }
-                .padding(.bottom, 8)
 
-                // Friendly Message & GitHub CTA
                 ThemedCard(style: .prominent, hoverEffect: false) {
-                    VStack(alignment: .leading, spacing: 12) {
-                        HStack(spacing: 12) {
-                            Image(systemName: "heart.fill")
-                                .font(.system(size: 28))
-                                .foregroundStyle(.pink)
-
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("We'd love to hear from you!")
-                                    .font(.system(size: 18, weight: .semibold))
-                                    .foregroundStyle(self.theme.palette.primaryText)
-
-                                Text("Your feedback helps us make MyFluidVoice even better")
-                                    .font(.system(size: 14))
-                                    .foregroundStyle(self.theme.palette.secondaryText)
-                            }
-                        }
-
-                        Divider()
-                            .padding(.vertical, 4)
-
-                        HStack(spacing: 12) {
-                            Image(systemName: "star.fill")
-                                .font(.system(size: 24))
-                                .foregroundStyle(.yellow)
-
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text("Loving MyFluidVoice?")
-                                    .font(.system(size: 16, weight: .semibold))
-                                    .foregroundStyle(self.theme.palette.primaryText)
-
-                                Text("Give us a star on GitHub, or support continued free development to help make local dictation even better.")
-                                    .font(.system(size: 13))
-                                    .foregroundStyle(self.theme.palette.secondaryText)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-
-                            Spacer()
-
-                            HStack(spacing: 10) {
-                                if let githubURL = URL(string: "https://github.com/Liooo/MyFluidVoice") {
-                                    Link(destination: githubURL) {
-                                        HStack(spacing: 8) {
-                                            Image(systemName: "star.fill")
-                                            Text("Star on GitHub")
-                                                .fontWeight(.semibold)
-                                        }
-                                        .font(.system(size: 14))
-                                        .padding(.horizontal, 20)
-                                        .padding(.vertical, 10)
-                                    }
-                                    .fluidButton(.glass, size: .medium)
-                                    .buttonHoverEffect()
-                                }
-
-                            }
-                        }
-                    }
-                    .padding(20)
-                }
-
-                // Feedback Form
-                ThemedCard(style: .standard, hoverEffect: false) {
                     VStack(alignment: .leading, spacing: 16) {
-                        VStack(alignment: .leading, spacing: 12) {
-                            Text("Email")
-                                .font(.headline)
-                                .fontWeight(.semibold)
+                        Text("Report a bug or suggest a feature")
+                            .font(.system(size: 18, weight: .semibold))
 
-                            TextField("your.email@example.com", text: self.$feedbackEmail)
-                                .textFieldStyle(.roundedBorder)
-                                .font(.system(size: 14))
+                        Text("MyFluidVoice does not operate a private feedback endpoint. GitHub Issues is the public, reviewable place for reports and ideas. Review your issue before submitting it, and do not include transcripts, API keys, or debug logs that contain private information.")
+                            .font(.system(size: 14))
+                            .foregroundStyle(self.theme.palette.secondaryText)
+                            .fixedSize(horizontal: false, vertical: true)
 
-                            Text("Feedback")
-                                .font(.headline)
-                                .fontWeight(.semibold)
-                                .padding(.top, 8)
-
-                            TextEditor(text: self.$feedbackText)
-                                .font(.system(size: 14))
-                                .frame(height: 120)
-                                .padding(12)
-                                .background(RoundedRectangle(cornerRadius: 8)
-                                    .fill(self.theme.palette.contentBackground)
-                                    .overlay(RoundedRectangle(cornerRadius: 8)
-                                        .strokeBorder(self.theme.palette.cardBorder.opacity(0.45), lineWidth: 1.2)))
-                                .scrollContentBackground(.hidden)
-                                .overlay(
-                                    Group {
-                                        if self.feedbackText.isEmpty {
-                                            Text("Share your thoughts, report bugs, or suggest features...")
-                                                .font(.subheadline)
-                                                .foregroundStyle(.secondary)
-                                                .padding(.leading, 4)
-                                        }
-                                    }
-                                    .allowsHitTesting(false)
-                                )
-
-                            // Debug logs option
-                            Toggle("Include debug logs", isOn: self.$includeDebugLogs)
-                                .toggleStyle(GlassToggleStyle())
-
-                            // Send Button
-                            HStack {
-                                Spacer()
-
-                                Button(action: {
-                                    Task {
-                                        await self.sendFeedback()
-                                    }
-                                }) {
-                                    HStack(spacing: 8) {
-                                        if self.isSendingFeedback {
-                                            ProgressView()
-                                                .fixedSize()
-                                                .scaleEffect(0.8)
-                                        } else {
-                                            Image(systemName: "paperplane.fill")
-                                        }
-                                        Text(self.isSendingFeedback ? "Sending..." : "Send Feedback")
-                                            .fontWeight(.semibold)
-                                    }
-                                    .padding(.horizontal, 20)
+                        HStack(spacing: 12) {
+                            Link(destination: self.issueURL) {
+                                Label("Open GitHub Issues", systemImage: "exclamationmark.bubble.fill")
+                                    .fontWeight(.semibold)
+                                    .padding(.horizontal, 18)
                                     .padding(.vertical, 10)
-                                }
-                                .fluidButton(.glass, size: .medium)
-                                .disabled(self.feedbackText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
-                                    self.feedbackEmail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
-                                    self.isSendingFeedback)
-                                .buttonHoverEffect()
                             }
+                            .fluidButton(.glass, size: .medium)
+                            .buttonHoverEffect()
+
+                            Link(destination: self.repositoryURL) {
+                                Label("View Repository", systemImage: "star.fill")
+                                    .fontWeight(.semibold)
+                                    .padding(.horizontal, 18)
+                                    .padding(.vertical, 10)
+                            }
+                            .fluidButton(.glass, size: .medium)
+                            .buttonHoverEffect()
                         }
                     }
                     .padding(20)
                 }
-                .modifier(CardAppearAnimation(delay: 0.1, appear: self.$appear))
             }
             .padding(24)
         }
-        .onAppear {
-            self.appear = true
-        }
-        .alert("Feedback Sent", isPresented: self.$showFeedbackConfirmation) {
-            Button("OK") {}
-        } message: {
-            Text("Thank you for helping us improve MyFluidVoice.")
-        }
-        .alert("Feedback Failed", isPresented: self.$showFeedbackError) {
-            Button("Try Again") {
-                Task {
-                    await self.sendFeedback()
-                }
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text(self.feedbackErrorMessage)
-        }
-    }
-
-    // MARK: - Feedback Functions
-
-    private func sendFeedback() async {
-        guard !self.feedbackEmail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              !self.feedbackText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        else {
-            return
-        }
-
-        await MainActor.run {
-            self.isSendingFeedback = true
-        }
-
-        let feedbackData = self.createFeedbackData()
-        let success = await submitFeedback(data: feedbackData)
-
-        await MainActor.run {
-            self.isSendingFeedback = false
-            if success {
-                // Show confirmation and clear form
-                self.showFeedbackConfirmation = true
-                self.feedbackText = ""
-                self.feedbackEmail = ""
-                self.includeDebugLogs = false
-            } else {
-                // Show error to user - inputs are preserved for retry
-                self.feedbackErrorMessage = "Feedback submission is not configured yet. Please open a GitHub issue instead."
-                self.showFeedbackError = true
-            }
-        }
-    }
-
-    private func createFeedbackData() -> [String: Any] {
-        var feedbackContent = self.feedbackText.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        if self.includeDebugLogs {
-            feedbackContent += "\n\n--- Debug Information ---\n"
-            feedbackContent += "App Version: \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "Unknown")\n"
-            feedbackContent += "Build: \(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "Unknown")\n"
-            feedbackContent += "macOS Version: \(ProcessInfo.processInfo.operatingSystemVersionString)\n"
-            feedbackContent += "Date: \(Date().formatted())\n\n"
-
-            // Add recent log entries
-            let logFileURL = FileLogger.shared.currentLogFileURL()
-            if FileManager.default.fileExists(atPath: logFileURL.path) {
-                do {
-                    let logContent = try String(contentsOf: logFileURL)
-                    let lines = logContent.components(separatedBy: .newlines)
-                    let recentLines = Array(lines.suffix(30)) // Last 30 lines
-                    feedbackContent += "Recent Log Entries:\n"
-                    feedbackContent += recentLines.joined(separator: "\n")
-                } catch {
-                    feedbackContent += "Could not read log file: \(error.localizedDescription)\n"
-                }
-            }
-        }
-
-        return [
-            "email_id": self.feedbackEmail.trimmingCharacters(in: .whitespacesAndNewlines),
-            "feedback": feedbackContent,
-        ]
-    }
-
-    private func submitFeedback(data _: [String: Any]) async -> Bool {
-        DebugLogger.shared.info("Feedback submission skipped: fork endpoint is not configured", source: "FeedbackView")
-        return false
     }
 }
 

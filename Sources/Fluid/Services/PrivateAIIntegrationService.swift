@@ -292,7 +292,7 @@ actor PrivateAIIntegrationService {
         let modelDirectoryPath = modelDirectoryURL.path
         let targetURLs = Array(Set(urls.map { $0.resolvingSymlinksInPath().standardizedFileURL }))
         guard targetURLs.allSatisfy({ $0.path.hasPrefix(modelDirectoryPath + "/") }) else {
-            throw PrivateAIModelRemovalError(message: "A model file is not in FluidVoice's model folder.")
+            throw PrivateAIModelRemovalError(message: "A model file is not in MyFluidVoice's model folder.")
         }
         return targetURLs
     }

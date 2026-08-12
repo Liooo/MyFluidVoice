@@ -6,6 +6,7 @@ import XCTest
 final class DictationE2ETests: XCTestCase {
     private let enableTranscriptionSoundsKey = "EnableTranscriptionSounds"
     private let transcriptionStartSoundKey = "TranscriptionStartSound"
+    private let transcriptionEndSoundKey = "TranscriptionEndSound"
     private let dictationPromptProfilesKey = "DictationPromptProfiles"
     private let appPromptBindingsKey = "AppPromptBindings"
     private let selectedDictationPromptIDKey = "SelectedDictationPromptID"
@@ -99,33 +100,62 @@ final class DictationE2ETests: XCTestCase {
     func testTranscriptionStartSound_noneOptionHasNoFile() {
         XCTAssertEqual(SettingsStore.TranscriptionStartSound.none.displayName, "None")
         XCTAssertNil(SettingsStore.TranscriptionStartSound.none.startSoundFileName)
+        XCTAssertEqual(SettingsStore.TranscriptionEndSound.none.displayName, "None")
+        XCTAssertNil(SettingsStore.TranscriptionEndSound.none.soundFileName)
     }
 
-    func testTranscriptionStartSound_legacyDisabledToggleMigratesToNone() {
+    func testTranscriptionSoundMasterToggleDoesNotOverwriteSelections() {
         self.withRestoredDefaults(keys: [self.enableTranscriptionSoundsKey, self.transcriptionStartSoundKey]) {
             let defaults = UserDefaults.standard
             defaults.set(false, forKey: self.enableTranscriptionSoundsKey)
             defaults.set(SettingsStore.TranscriptionStartSound.fluidSfx1.rawValue, forKey: self.transcriptionStartSoundKey)
 
-            let value = SettingsStore.shared.transcriptionStartSound
+            XCTAssertFalse(SettingsStore.shared.enableTranscriptionSounds)
+            XCTAssertEqual(SettingsStore.shared.transcriptionStartSound, .fluidSfx1)
 
-            XCTAssertEqual(value, .none)
-            XCTAssertNil(defaults.object(forKey: self.enableTranscriptionSoundsKey))
-            XCTAssertEqual(defaults.string(forKey: self.transcriptionStartSoundKey), SettingsStore.TranscriptionStartSound.none.rawValue)
+            SettingsStore.shared.enableTranscriptionSounds = true
+            XCTAssertTrue(SettingsStore.shared.enableTranscriptionSounds)
+            XCTAssertEqual(SettingsStore.shared.transcriptionStartSound, .fluidSfx1)
         }
     }
 
-    func testTranscriptionStartSound_legacyEnabledToggleKeepsSelectedSound() {
-        self.withRestoredDefaults(keys: [self.enableTranscriptionSoundsKey, self.transcriptionStartSoundKey]) {
+    func testTranscriptionEndSoundMigratesFromLegacyPairedStartCue() {
+        self.withRestoredDefaults(keys: [self.transcriptionStartSoundKey, self.transcriptionEndSoundKey]) {
             let defaults = UserDefaults.standard
-            defaults.set(true, forKey: self.enableTranscriptionSoundsKey)
+            defaults.set(SettingsStore.TranscriptionStartSound.fluidSfx0.rawValue, forKey: self.transcriptionStartSoundKey)
+            defaults.removeObject(forKey: self.transcriptionEndSoundKey)
+
+            XCTAssertEqual(SettingsStore.shared.transcriptionEndSound, .fluidSfx0)
+            XCTAssertEqual(
+                defaults.string(forKey: self.transcriptionEndSoundKey),
+                SettingsStore.TranscriptionEndSound.fluidSfx0.rawValue
+            )
+        }
+    }
+
+    func testTranscriptionEndSoundMigratesLegacyUnpairedCueToNone() {
+        self.withRestoredDefaults(keys: [self.transcriptionStartSoundKey, self.transcriptionEndSoundKey]) {
+            let defaults = UserDefaults.standard
             defaults.set(SettingsStore.TranscriptionStartSound.fluidSfx2.rawValue, forKey: self.transcriptionStartSoundKey)
+            defaults.removeObject(forKey: self.transcriptionEndSoundKey)
 
-            let value = SettingsStore.shared.transcriptionStartSound
+            XCTAssertEqual(SettingsStore.shared.transcriptionEndSound, .none)
+        }
+    }
 
-            XCTAssertEqual(value, .fluidSfx2)
-            XCTAssertNil(defaults.object(forKey: self.enableTranscriptionSoundsKey))
-            XCTAssertEqual(defaults.string(forKey: self.transcriptionStartSoundKey), SettingsStore.TranscriptionStartSound.fluidSfx2.rawValue)
+    func testTranscriptionSoundSelectionsRemainIndependent() {
+        self.withRestoredDefaults(keys: [
+            self.enableTranscriptionSoundsKey,
+            self.transcriptionStartSoundKey,
+            self.transcriptionEndSoundKey,
+        ]) {
+            SettingsStore.shared.enableTranscriptionSounds = true
+            SettingsStore.shared.transcriptionStartSound = .fluidSfx2
+            SettingsStore.shared.transcriptionEndSound = .fluidSfx1
+
+            XCTAssertEqual(SettingsStore.shared.transcriptionStartSound, .fluidSfx2)
+            XCTAssertEqual(SettingsStore.shared.transcriptionEndSound, .fluidSfx1)
+            XCTAssertEqual(SettingsStore.shared.transcriptionEndSound.soundFileName, "FV_end")
         }
     }
 
@@ -2887,7 +2917,7 @@ final class ForkIdentityTests: XCTestCase {
     func testAppBundleUsesForkIdentity() {
         let appBundle = Bundle(for: AppDelegate.self)
 
-        XCTAssertEqual(appBundle.bundleIdentifier, "com.liooo.MyFluidVoice")
+        XCTAssertEqual(appBundle.bundleIdentifier, "com.FluidApp.app")
         XCTAssertEqual(appBundle.fluidAppDisplayName, "MyFluidVoice Debug")
     }
 }

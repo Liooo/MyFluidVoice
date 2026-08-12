@@ -19,11 +19,12 @@ enum KeychainServiceError: Error, LocalizedError {
 }
 
 /// Lightweight helper for storing provider API keys in the system Keychain.
-/// Keys are stored as generic passwords scoped to the MyFluidVoice service.
+/// Keys retain FluidVoice's service identity so existing installations keep access after upgrade.
 final class KeychainService {
     static let shared = KeychainService()
 
-    private let service = "com.liooo.MyFluidVoice.provider-api-keys"
+    // Keep the upstream service identity so an in-place fork upgrade retains API keys.
+    private let service = "com.fluidvoice.provider-api-keys"
     private let account = "fluidApiKeys"
 
     private init() {}

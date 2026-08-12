@@ -26,8 +26,8 @@ final class TranscriptionSoundPlayer {
     func playStopSound() {
         let settings = SettingsStore.shared
         guard settings.enableTranscriptionSounds else { return }
-        let selected = settings.transcriptionStartSound
-        guard let soundName = selected.stopSoundFileName else { return }
+        let selected = settings.transcriptionEndSound
+        guard let soundName = selected.soundFileName else { return }
         self.play(
             soundName: soundName,
             desiredVolume: settings.transcriptionSoundVolume,
@@ -46,14 +46,26 @@ final class TranscriptionSoundPlayer {
         )
     }
 
+    func playPreview(sound: SettingsStore.TranscriptionEndSound) {
+        guard let soundName = sound.soundFileName else { return }
+        let settings = SettingsStore.shared
+        self.play(
+            soundName: soundName,
+            desiredVolume: settings.transcriptionSoundVolume,
+            independentVolume: settings.transcriptionSoundIndependentVolume
+        )
+    }
+
     /// Preview current sound at a specific volume (used when slider is released).
     func playPreviewAtVolume(_ volume: Float) {
-        let selected = SettingsStore.shared.transcriptionStartSound
-        guard let soundName = selected.startSoundFileName else { return }
+        let settings = SettingsStore.shared
+        guard let soundName = settings.transcriptionStartSound.startSoundFileName
+            ?? settings.transcriptionEndSound.soundFileName
+        else { return }
         self.play(
             soundName: soundName,
             desiredVolume: volume,
-            independentVolume: SettingsStore.shared.transcriptionSoundIndependentVolume
+            independentVolume: settings.transcriptionSoundIndependentVolume
         )
     }
 

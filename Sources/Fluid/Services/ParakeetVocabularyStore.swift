@@ -319,7 +319,7 @@ final class ParakeetVocabularyStore {
           "minTermLength": 3,
           "terms": [
             {
-              "text": "FluidVoice",
+              "text": "MyFluidVoice",
               "aliases": ["fluid voice", "fluid boys"],
               "weight": 10.0
             }
