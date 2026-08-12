@@ -327,8 +327,14 @@ enum RecordingSpeechConfigurationResolver {
             guard self.appleSpeechAnalyzerLanguageCodes.contains(languageCode) else { return nil }
             return .appleSpeech(localeIdentifier: normalizedLocale)
         case .whisperTiny, .whisperBase, .whisperSmall, .whisperMedium, .whisperLargeTurbo, .whisperLarge:
+            let engineLanguageCode = switch languageCode {
+            case "nb": "no"
+            case "fil": "tl"
+            case "jv": "jw"
+            default: languageCode
+            }
             return VoiceEngineLanguageCatalog.routes(
-                forLanguageID: languageCode,
+                forLanguageID: engineLanguageCode,
                 availableModels: [.whisperSmall]
             ).first?.binding
         }

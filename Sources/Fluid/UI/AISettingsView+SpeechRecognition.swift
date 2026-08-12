@@ -289,12 +289,17 @@ extension VoiceEngineSettingsView {
                 .menuStyle(.borderlessButton)
                 .frame(maxWidth: 260, alignment: .trailing)
 
-                Text(self.inputSourceModelReadinessLabel(
+                Text(Self.inputSourceModelReadinessLabel(
                     model: readinessModel,
-                    usesGlobalFallback: usesGlobalFallback
+                    usesGlobalFallback: usesGlobalFallback,
+                    isInstalled: readinessModel.isInstalled
                 ))
                 .font(self.theme.typography.bodySmall)
-                .foregroundStyle(readinessModel.isInstalled ? Color.fluidGreen : .orange)
+                .foregroundStyle(
+                    readinessModel == .appleSpeechAnalyzer
+                        ? self.voiceEngineSecondaryText
+                        : (readinessModel.isInstalled ? Color.fluidGreen : .orange)
+                )
             }
         }
         .padding(.horizontal, 10)
@@ -305,12 +310,15 @@ extension VoiceEngineSettingsView {
         )
     }
 
-    private func inputSourceModelReadinessLabel(
+    static func inputSourceModelReadinessLabel(
         model: SettingsStore.SpeechModel,
-        usesGlobalFallback: Bool
+        usesGlobalFallback: Bool,
+        isInstalled: Bool
     ) -> String {
         let source = usesGlobalFallback ? "Global default" : "Assigned"
-        let readiness = model.isInstalled ? "Ready" : "Download required"
+        let readiness = model == .appleSpeechAnalyzer
+            ? "System availability checked at recording start"
+            : (isInstalled ? "Ready" : "Download required")
         return "\(source) • \(readiness)"
     }
 
