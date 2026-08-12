@@ -1817,6 +1817,76 @@ final class SettingsStore: ObservableObject {
         set { self.defaults.set(newValue, forKey: Keys.copyTranscriptionToClipboard) }
     }
 
+    var copyWhenNoWritableInputFocused: Bool {
+        get { self.defaults.object(forKey: Keys.copyWhenNoWritableInputFocused) as? Bool ?? true }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.copyWhenNoWritableInputFocused)
+        }
+    }
+
+    var escapeExitAction: DictationExitAction {
+        get {
+            self.defaults.string(forKey: Keys.escapeExitAction)
+                .flatMap(DictationExitAction.init(rawValue:)) ?? .paste
+        }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue.rawValue, forKey: Keys.escapeExitAction)
+        }
+    }
+
+    var outsideClickExitAction: DictationExitAction {
+        get {
+            self.defaults.string(forKey: Keys.outsideClickExitAction)
+                .flatMap(DictationExitAction.init(rawValue:)) ?? .paste
+        }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue.rawValue, forKey: Keys.outsideClickExitAction)
+        }
+    }
+
+    var speechModelAssignmentsByInputSourceID: [String: SpeechModel] {
+        get {
+            self.rawSpeechModelAssignmentsByInputSourceID.reduce(into: [:]) { result, entry in
+                guard let model = SpeechModel(rawValue: entry.value) else { return }
+                result[entry.key] = model
+            }
+        }
+        set {
+            objectWillChange.send()
+            self.storeSpeechModelAssignments(newValue.mapValues(\.rawValue))
+        }
+    }
+
+    func speechModelAssignment(forInputSourceID inputSourceID: String) -> SpeechModel? {
+        self.speechModelAssignmentsByInputSourceID[inputSourceID]
+    }
+
+    func setSpeechModelAssignment(_ model: SpeechModel?, forInputSourceID inputSourceID: String) {
+        var assignments = self.rawSpeechModelAssignmentsByInputSourceID
+        assignments[inputSourceID] = model?.rawValue
+        objectWillChange.send()
+        self.storeSpeechModelAssignments(assignments)
+    }
+
+    private var rawSpeechModelAssignmentsByInputSourceID: [String: String] {
+        guard let data = self.defaults.data(forKey: Keys.speechModelAssignmentsByInputSourceID),
+              let assignments = try? JSONDecoder().decode([String: String].self, from: data)
+        else { return [:] }
+        return assignments
+    }
+
+    private func storeSpeechModelAssignments(_ assignments: [String: String]) {
+        guard !assignments.isEmpty else {
+            self.defaults.removeObject(forKey: Keys.speechModelAssignmentsByInputSourceID)
+            return
+        }
+        guard let data = try? JSONEncoder().encode(assignments) else { return }
+        self.defaults.set(data, forKey: Keys.speechModelAssignmentsByInputSourceID)
+    }
+
     var preferredInputDeviceUID: String? {
         get { self.defaults.string(forKey: Keys.preferredInputDeviceUID) }
         set { self.defaults.set(newValue, forKey: Keys.preferredInputDeviceUID) }
@@ -3157,6 +3227,7 @@ final class SettingsStore: ObservableObject {
             selectedCohereLanguage: self.selectedCohereLanguage,
             selectedNemotronLanguage: self.selectedNemotronLanguage,
             selectedAppleSpeechLocaleIdentifier: self.selectedAppleSpeechLocaleIdentifier,
+            speechModelAssignmentsByInputSourceID: self.speechModelAssignmentsByInputSourceID,
             hotkeyShortcut: self.hotkeyShortcut,
             primaryDictationShortcuts: self.primaryDictationShortcuts,
             promptModeHotkeyShortcut: self.promptModeHotkeyShortcut,
@@ -3194,6 +3265,9 @@ final class SettingsStore: ObservableObject {
             skipSilentRecordingsEnabled: self.skipSilentRecordingsEnabled,
             enableAIStreaming: self.enableAIStreaming,
             copyTranscriptionToClipboard: self.copyTranscriptionToClipboard,
+            copyWhenNoWritableInputFocused: self.copyWhenNoWritableInputFocused,
+            escapeExitAction: self.escapeExitAction,
+            outsideClickExitAction: self.outsideClickExitAction,
             textInsertionMode: self.textInsertionMode,
             preferredInputDeviceUID: self.preferredInputDeviceUID,
             microphonePriority: self.microphonePriority,
@@ -3276,6 +3350,9 @@ final class SettingsStore: ObservableObject {
         if let selectedAppleSpeechLocaleIdentifier = payload.selectedAppleSpeechLocaleIdentifier {
             self.selectedAppleSpeechLocaleIdentifier = selectedAppleSpeechLocaleIdentifier
         }
+        if let speechModelAssignmentsByInputSourceID = payload.speechModelAssignmentsByInputSourceID {
+            self.speechModelAssignmentsByInputSourceID = speechModelAssignmentsByInputSourceID
+        }
         self.primaryDictationShortcuts = payload.primaryDictationShortcuts ?? [payload.hotkeyShortcut]
         self.promptModeHotkeyShortcut = payload.promptModeHotkeyShortcut
         self.promptModeShortcutEnabled = payload.promptModeShortcutEnabled
@@ -3317,6 +3394,15 @@ final class SettingsStore: ObservableObject {
         }
         self.enableAIStreaming = payload.enableAIStreaming
         self.copyTranscriptionToClipboard = payload.copyTranscriptionToClipboard
+        if let copyWhenNoWritableInputFocused = payload.copyWhenNoWritableInputFocused {
+            self.copyWhenNoWritableInputFocused = copyWhenNoWritableInputFocused
+        }
+        if let escapeExitAction = payload.escapeExitAction {
+            self.escapeExitAction = escapeExitAction
+        }
+        if let outsideClickExitAction = payload.outsideClickExitAction {
+            self.outsideClickExitAction = outsideClickExitAction
+        }
         self.textInsertionMode = payload.textInsertionMode
         self.preferredInputDeviceUID = payload.preferredInputDeviceUID
         self.suppressedMicrophoneUIDs = Set(payload.suppressedMicrophoneUIDs ?? [])
@@ -5093,6 +5179,10 @@ private extension SettingsStore {
         static let skipSilentRecordingsEnabled = "SkipSilentRecordingsEnabled"
         static let enableAIStreaming = "EnableAIStreaming"
         static let copyTranscriptionToClipboard = "CopyTranscriptionToClipboard"
+        static let copyWhenNoWritableInputFocused = "CopyWhenNoWritableInputFocused"
+        static let speechModelAssignmentsByInputSourceID = "SpeechModelAssignmentsByInputSourceID"
+        static let escapeExitAction = "EscapeExitAction"
+        static let outsideClickExitAction = "OutsideClickExitAction"
         static let textInsertionMode = "TextInsertionMode"
         static let autoUpdateCheckEnabled = "AutoUpdateCheckEnabled"
         static let betaReleasesEnabled = "BetaReleasesEnabled"

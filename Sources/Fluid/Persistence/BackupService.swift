@@ -20,6 +20,9 @@ struct SettingsBackupPayload: Codable, Equatable {
     let selectedCohereLanguage: SettingsStore.CohereLanguage
     let selectedNemotronLanguage: SettingsStore.NemotronLanguage?
     let selectedAppleSpeechLocaleIdentifier: String?
+    // Optional so backups created before per-input-source model routing still decode.
+    // swiftlint:disable:next discouraged_optional_collection
+    let speechModelAssignmentsByInputSourceID: [String: SettingsStore.SpeechModel]?
     let hotkeyShortcut: HotkeyShortcut
     // Older backup files only contain hotkeyShortcut; nil restores that legacy single shortcut.
     // swiftlint:disable:next discouraged_optional_collection
@@ -61,6 +64,9 @@ struct SettingsBackupPayload: Codable, Equatable {
     let skipSilentRecordingsEnabled: Bool?
     let enableAIStreaming: Bool
     let copyTranscriptionToClipboard: Bool
+    let copyWhenNoWritableInputFocused: Bool?
+    let escapeExitAction: DictationExitAction?
+    let outsideClickExitAction: DictationExitAction?
     let textInsertionMode: SettingsStore.TextInsertionMode
     let preferredInputDeviceUID: String?
     // Optional so backups created before microphone priority ordering still decode.

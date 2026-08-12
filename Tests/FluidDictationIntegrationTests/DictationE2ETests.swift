@@ -2478,6 +2478,183 @@ final class DictationSessionCoordinatorTests: XCTestCase {
             languageBinding: .appleSpeech(localeIdentifier: "en-US")
         ))
     }
+
+    func testRejectsIncompatibleSpeechModelAndLanguageBindings() {
+        let incompatiblePairs: [(SettingsStore.SpeechModel, VoiceEngineLanguageRoute.LanguageBinding)] = [
+            (.whisperTiny, .appleSpeech(localeIdentifier: "en-US")),
+            (.appleSpeech, .whisper(languageCode: "en")),
+            (.cohereTranscribeSixBit, .automatic),
+            (.parakeetTDT, .cohere(.english)),
+            (.nemotronOffline, .automatic),
+        ]
+
+        for (model, binding) in incompatiblePairs {
+            XCTAssertNil(
+                RecordingSpeechConfiguration(
+                    inputSourceID: nil,
+                    localeIdentifier: "en-US",
+                    model: model,
+                    languageBinding: binding
+                ),
+                "Expected \(model) with \(binding) to be rejected"
+            )
+        }
+    }
+}
+
+@MainActor
+final class WorkflowSettingsTests: XCTestCase {
+    private let modelAssignmentsKey = "SpeechModelAssignmentsByInputSourceID"
+    private let escapeExitActionKey = "EscapeExitAction"
+    private let outsideClickExitActionKey = "OutsideClickExitAction"
+    private let copyWhenNoWritableInputFocusedKey = "CopyWhenNoWritableInputFocused"
+
+    func testPerInputSourceModelAssignmentsRoundTripWithoutPruningMissingSources() {
+        self.withRestoredDefaults(keys: [self.modelAssignmentsKey]) {
+            let settings = SettingsStore.shared
+            let assignments: [String: SettingsStore.SpeechModel] = [
+                "com.apple.keylayout.US": .appleSpeech,
+                "com.example.disabled-ime": .whisperSmall,
+            ]
+
+            settings.speechModelAssignmentsByInputSourceID = assignments
+
+            XCTAssertEqual(settings.speechModelAssignmentsByInputSourceID, assignments)
+        }
+    }
+
+    func testPerInputSourceModelAssignmentsIgnoreUnknownModelsButKeepValidEntries() throws {
+        try self.withRestoredDefaults(keys: [self.modelAssignmentsKey]) {
+            let rawAssignments = [
+                "com.apple.keylayout.US": SettingsStore.SpeechModel.appleSpeech.rawValue,
+                "com.example.future-ime": "future-model",
+            ]
+            UserDefaults.standard.set(
+                try JSONEncoder().encode(rawAssignments),
+                forKey: self.modelAssignmentsKey
+            )
+
+            XCTAssertEqual(
+                SettingsStore.shared.speechModelAssignmentsByInputSourceID,
+                ["com.apple.keylayout.US": .appleSpeech]
+            )
+        }
+    }
+
+    func testUpdatingOneModelAssignmentPreservesUnknownFutureModels() throws {
+        try self.withRestoredDefaults(keys: [self.modelAssignmentsKey]) {
+            let rawAssignments = [
+                "com.apple.keylayout.US": SettingsStore.SpeechModel.appleSpeech.rawValue,
+                "com.example.future-ime": "future-model",
+            ]
+            UserDefaults.standard.set(
+                try JSONEncoder().encode(rawAssignments),
+                forKey: self.modelAssignmentsKey
+            )
+
+            SettingsStore.shared.setSpeechModelAssignment(
+                .whisperSmall,
+                forInputSourceID: "com.apple.keylayout.US"
+            )
+
+            let data = try XCTUnwrap(UserDefaults.standard.data(forKey: self.modelAssignmentsKey))
+            let stored = try JSONDecoder().decode([String: String].self, from: data)
+            XCTAssertEqual(stored["com.apple.keylayout.US"], SettingsStore.SpeechModel.whisperSmall.rawValue)
+            XCTAssertEqual(stored["com.example.future-ime"], "future-model")
+        }
+    }
+
+    func testExitPoliciesDefaultToPasteAndPersistIndependently() {
+        self.withRestoredDefaults(keys: [self.escapeExitActionKey, self.outsideClickExitActionKey]) {
+            let settings = SettingsStore.shared
+            UserDefaults.standard.removeObject(forKey: self.escapeExitActionKey)
+            UserDefaults.standard.removeObject(forKey: self.outsideClickExitActionKey)
+
+            XCTAssertEqual(settings.escapeExitAction, .paste)
+            XCTAssertEqual(settings.outsideClickExitAction, .paste)
+
+            settings.escapeExitAction = .discard
+            settings.outsideClickExitAction = .doNothing
+
+            XCTAssertEqual(settings.escapeExitAction, .discard)
+            XCTAssertEqual(settings.outsideClickExitAction, .doNothing)
+        }
+    }
+
+    func testCopyWhenNoWritableInputFocusedDefaultsEnabledAndPersists() {
+        self.withRestoredDefaults(keys: [self.copyWhenNoWritableInputFocusedKey]) {
+            let settings = SettingsStore.shared
+            UserDefaults.standard.removeObject(forKey: self.copyWhenNoWritableInputFocusedKey)
+
+            XCTAssertTrue(settings.copyWhenNoWritableInputFocused)
+
+            settings.copyWhenNoWritableInputFocused = false
+
+            XCTAssertFalse(settings.copyWhenNoWritableInputFocused)
+        }
+    }
+
+    func testWorkflowSettingsAreIncludedInBackupPayload() {
+        self.withRestoredDefaults(keys: [
+            self.modelAssignmentsKey,
+            self.escapeExitActionKey,
+            self.outsideClickExitActionKey,
+            self.copyWhenNoWritableInputFocusedKey,
+        ]) {
+            let settings = SettingsStore.shared
+            let assignments = ["com.apple.keylayout.US": SettingsStore.SpeechModel.appleSpeech]
+            settings.speechModelAssignmentsByInputSourceID = assignments
+            settings.escapeExitAction = .discard
+            settings.outsideClickExitAction = .doNothing
+            settings.copyWhenNoWritableInputFocused = false
+
+            let payload = settings.makeBackupPayload()
+
+            XCTAssertEqual(payload.speechModelAssignmentsByInputSourceID, assignments)
+            XCTAssertEqual(payload.escapeExitAction, .discard)
+            XCTAssertEqual(payload.outsideClickExitAction, .doNothing)
+            XCTAssertEqual(payload.copyWhenNoWritableInputFocused, false)
+        }
+    }
+
+    func testLegacyBackupWithoutWorkflowSettingsStillDecodes() throws {
+        let payload = SettingsStore.shared.makeBackupPayload()
+        let encoded = try JSONEncoder().encode(payload)
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+        )
+        object.removeValue(forKey: "speechModelAssignmentsByInputSourceID")
+        object.removeValue(forKey: "escapeExitAction")
+        object.removeValue(forKey: "outsideClickExitAction")
+        object.removeValue(forKey: "copyWhenNoWritableInputFocused")
+
+        let legacyData = try JSONSerialization.data(withJSONObject: object)
+        let decoded = try JSONDecoder().decode(SettingsBackupPayload.self, from: legacyData)
+
+        XCTAssertNil(decoded.speechModelAssignmentsByInputSourceID)
+        XCTAssertNil(decoded.escapeExitAction)
+        XCTAssertNil(decoded.outsideClickExitAction)
+        XCTAssertNil(decoded.copyWhenNoWritableInputFocused)
+    }
+
+    private func withRestoredDefaults(keys: [String], run: () throws -> Void) rethrows {
+        let defaults = UserDefaults.standard
+        let snapshot = Dictionary(uniqueKeysWithValues: keys.compactMap { key in
+            defaults.object(forKey: key).map { (key, $0) }
+        })
+
+        defer {
+            for key in keys {
+                if let value = snapshot[key] {
+                    defaults.set(value, forKey: key)
+                } else {
+                    defaults.removeObject(forKey: key)
+                }
+            }
+        }
+
+        try run()
+    }
 }
 
 @MainActor

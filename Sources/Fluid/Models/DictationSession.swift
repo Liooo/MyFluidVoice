@@ -20,6 +20,9 @@ struct RecordingSpeechConfiguration: Equatable {
         model: SettingsStore.SpeechModel,
         languageBinding: VoiceEngineLanguageRoute.LanguageBinding
     ) {
+        guard Self.isCompatible(model: model, languageBinding: languageBinding) else {
+            return nil
+        }
         if case let .appleSpeech(bindingLocaleIdentifier) = languageBinding,
            Self.normalizedLocaleIdentifier(bindingLocaleIdentifier) !=
            Self.normalizedLocaleIdentifier(localeIdentifier)
@@ -35,6 +38,33 @@ struct RecordingSpeechConfiguration: Equatable {
 
     private static func normalizedLocaleIdentifier(_ identifier: String) -> String {
         identifier.replacingOccurrences(of: "_", with: "-").lowercased()
+    }
+
+    private static func isCompatible(
+        model: SettingsStore.SpeechModel,
+        languageBinding: VoiceEngineLanguageRoute.LanguageBinding
+    ) -> Bool {
+        switch (model, languageBinding) {
+        case (.appleSpeech, .appleSpeech),
+             (.appleSpeechAnalyzer, .appleSpeech),
+             (.cohereTranscribeSixBit, .cohere),
+             (.nemotronOffline, .nemotron),
+             (.nemotronStreaming, .nemotron),
+             (.nemotronStreaming320, .nemotron),
+             (.whisperTiny, .whisper),
+             (.whisperBase, .whisper),
+             (.whisperSmall, .whisper),
+             (.whisperMedium, .whisper),
+             (.whisperLargeTurbo, .whisper),
+             (.whisperLarge, .whisper),
+             (.parakeetTDT, .automatic),
+             (.parakeetTDTv2, .automatic),
+             (.parakeetRealtime, .automatic),
+             (.qwen3Asr, .automatic):
+            return true
+        default:
+            return false
+        }
     }
 }
 
