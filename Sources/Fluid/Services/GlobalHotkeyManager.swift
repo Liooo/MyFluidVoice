@@ -273,6 +273,7 @@ final class GlobalHotkeyManager: NSObject {
     private var isRewriteRecordingProvider: (() -> Bool)?
     private var isShortcutCaptureActiveProvider: (() -> Bool)?
     private var cancelCallback: (() -> Bool)? // Returns true if handled
+    private var mouseDownObservationCallback: ((CGPoint) -> Void)?
     private var pasteLastTranscriptionCallback: (() -> Void)?
     private var hotkeyMode: HotkeyActivationMode = SettingsStore.shared.hotkeyMode
     private let automaticTapThresholdSeconds: TimeInterval = 0.4
@@ -626,6 +627,11 @@ final class GlobalHotkeyManager: NSObject {
         self.cancelCallback = callback
     }
 
+    /// Observes global mouse-down locations without participating in event consumption.
+    func setMouseDownObservationCallback(_ callback: ((CGPoint) -> Void)?) {
+        self.mouseDownObservationCallback = callback
+    }
+
     func setPasteLastTranscriptionCallback(_ callback: @escaping () -> Void) {
         self.pasteLastTranscriptionCallback = callback
     }
@@ -829,6 +835,10 @@ final class GlobalHotkeyManager: NSObject {
     private func handleKeyEvent(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
         if let tapRecoveryResult = self.handleTapDisableEvent(type: type, event: event) {
             return tapRecoveryResult
+        }
+
+        if type == .leftMouseDown || type == .rightMouseDown || type == .otherMouseDown {
+            self.mouseDownObservationCallback?(event.location)
         }
 
         if self.isShortcutCaptureActiveProvider?() ?? false {
