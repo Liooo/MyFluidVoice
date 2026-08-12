@@ -225,6 +225,35 @@ final class TypingService {
         return Self.isCurrentlyFocusedElement(element, expectedPID: pid)
     }
 
+    /// Returns whether the current or captured target is a writable text input.
+    /// This prevents dictation output from being synthesized into an arbitrary
+    /// focused control or window when no editor owns keyboard focus.
+    static func hasWritableFocusedInput(preferredTargetPID: pid_t?) -> Bool {
+        guard AXIsProcessTrusted(), !IsSecureEventInputEnabled() else { return false }
+
+        if let preferredTargetPID,
+           let snapshot = self.loadFocusSnapshot(),
+           snapshot.pid == preferredTargetPID,
+           let element = snapshot.element
+        {
+            return self.focusedInputAssessment(for: element).isWritable
+        }
+
+        let systemWideElement = AXUIElementCreateSystemWide()
+        guard let element = self.copyAXElementAttribute(
+            from: systemWideElement,
+            attribute: kAXFocusedUIElementAttribute as CFString
+        ) else { return false }
+
+        if let preferredTargetPID {
+            var focusedPID: pid_t = 0
+            AXUIElementGetPid(element, &focusedPID)
+            guard focusedPID == preferredTargetPID else { return false }
+        }
+
+        return self.focusedInputAssessment(for: element).isWritable
+    }
+
     private func isGhosttyApplication(pid: pid_t) -> Bool {
         guard pid > 0,
               let app = NSRunningApplication(processIdentifier: pid)
@@ -541,6 +570,33 @@ final class TypingService {
         let result = AXUIElementCopyAttributeValue(element, attribute, &value)
         guard result == .success else { return nil }
         return value as? String
+    }
+
+    private static func boolAXAttribute(from element: AXUIElement, attribute: CFString) -> Bool? {
+        var value: CFTypeRef?
+        let result = AXUIElementCopyAttributeValue(element, attribute, &value)
+        guard result == .success else { return nil }
+        return value as? Bool
+    }
+
+    private static func isAXAttributeSettable(_ attribute: CFString, on element: AXUIElement) -> Bool {
+        var isSettable = DarwinBoolean(false)
+        guard AXUIElementIsAttributeSettable(element, attribute, &isSettable) == .success else {
+            return false
+        }
+        return isSettable.boolValue
+    }
+
+    private static func focusedInputAssessment(for element: AXUIElement) -> FocusedInputAssessment {
+        FocusedInputAssessment(
+            role: self.stringAXAttribute(from: element, attribute: kAXRoleAttribute as CFString),
+            subrole: self.stringAXAttribute(from: element, attribute: kAXSubroleAttribute as CFString),
+            isEnabled: self.boolAXAttribute(from: element, attribute: kAXEnabledAttribute as CFString) ?? true,
+            isEditable: self.boolAXAttribute(from: element, attribute: "AXEditable" as CFString),
+            isValueSettable: self.isAXAttributeSettable(kAXValueAttribute as CFString, on: element),
+            isSelectedTextSettable: self.isAXAttributeSettable(kAXSelectedTextAttribute as CFString, on: element),
+            isSecureInputEnabled: IsSecureEventInputEnabled()
+        )
     }
 
     private static func currentFocusDebugDescription() -> String {

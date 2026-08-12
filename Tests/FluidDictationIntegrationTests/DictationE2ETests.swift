@@ -2658,6 +2658,180 @@ final class WorkflowSettingsTests: XCTestCase {
 }
 
 @MainActor
+final class DictationOutputRoutingTests: XCTestCase {
+    func testWritableExternalInputTypesWithoutPersistentClipboardMutation() {
+        let decision = DictationOutputRoutingDecision.resolve(
+            shouldPersistOutputs: true,
+            target: .writableExternal,
+            alwaysCopyToClipboard: false,
+            copyWhenNoWritableInputFocused: true
+        )
+
+        XCTAssertEqual(decision, .init(
+            shouldTypeExternally: true,
+            shouldCopyToClipboard: false,
+            outcome: .typed
+        ))
+    }
+
+    func testNoWritableInputCopiesOnlyWhenFallbackEnabled() {
+        let copied = DictationOutputRoutingDecision.resolve(
+            shouldPersistOutputs: true,
+            target: .unavailable,
+            alwaysCopyToClipboard: false,
+            copyWhenNoWritableInputFocused: true
+        )
+        let noTarget = DictationOutputRoutingDecision.resolve(
+            shouldPersistOutputs: true,
+            target: .unavailable,
+            alwaysCopyToClipboard: false,
+            copyWhenNoWritableInputFocused: false
+        )
+
+        XCTAssertEqual(copied.outcome, .copied)
+        XCTAssertTrue(copied.shouldCopyToClipboard)
+        XCTAssertEqual(noTarget.outcome, .noTarget)
+        XCTAssertFalse(noTarget.shouldCopyToClipboard)
+        XCTAssertFalse(noTarget.shouldTypeExternally)
+    }
+
+    func testExplicitAlwaysCopySettingRemainsIndependentFromFocusedInputFallback() {
+        let decision = DictationOutputRoutingDecision.resolve(
+            shouldPersistOutputs: true,
+            target: .writableExternal,
+            alwaysCopyToClipboard: true,
+            copyWhenNoWritableInputFocused: false
+        )
+
+        XCTAssertEqual(decision.outcome, .typed)
+        XCTAssertTrue(decision.shouldTypeExternally)
+        XCTAssertTrue(decision.shouldCopyToClipboard)
+    }
+
+    func testInAppEditorCountsAsTypedWithoutExternalInsertion() {
+        let decision = DictationOutputRoutingDecision.resolve(
+            shouldPersistOutputs: true,
+            target: .inAppEditor,
+            alwaysCopyToClipboard: false,
+            copyWhenNoWritableInputFocused: true
+        )
+
+        XCTAssertEqual(decision.outcome, .typed)
+        XCTAssertFalse(decision.shouldTypeExternally)
+        XCTAssertFalse(decision.shouldCopyToClipboard)
+    }
+
+    func testSandboxSuppressesEveryPersistentOutput() {
+        let decision = DictationOutputRoutingDecision.resolve(
+            shouldPersistOutputs: false,
+            target: .writableExternal,
+            alwaysCopyToClipboard: true,
+            copyWhenNoWritableInputFocused: true
+        )
+
+        XCTAssertNil(decision.outcome)
+        XCTAssertFalse(decision.shouldTypeExternally)
+        XCTAssertFalse(decision.shouldCopyToClipboard)
+    }
+
+    func testWritableInputAssessmentRejectsSecureDisabledAndStaticTargets() {
+        XCTAssertFalse(FocusedInputAssessment(
+            role: "AXTextField",
+            subrole: "AXSecureTextField",
+            isEnabled: true,
+            isEditable: true,
+            isValueSettable: true,
+            isSelectedTextSettable: true,
+            isSecureInputEnabled: false
+        ).isWritable)
+        XCTAssertFalse(FocusedInputAssessment(
+            role: "AXTextArea",
+            subrole: nil,
+            isEnabled: false,
+            isEditable: true,
+            isValueSettable: true,
+            isSelectedTextSettable: true,
+            isSecureInputEnabled: false
+        ).isWritable)
+        XCTAssertFalse(FocusedInputAssessment(
+            role: "AXStaticText",
+            subrole: nil,
+            isEnabled: true,
+            isEditable: false,
+            isValueSettable: false,
+            isSelectedTextSettable: false,
+            isSecureInputEnabled: false
+        ).isWritable)
+        XCTAssertFalse(FocusedInputAssessment(
+            role: "AXTextField",
+            subrole: nil,
+            isEnabled: true,
+            isEditable: false,
+            isValueSettable: false,
+            isSelectedTextSettable: false,
+            isSecureInputEnabled: false
+        ).isWritable)
+        XCTAssertFalse(FocusedInputAssessment(
+            role: "AXTextField",
+            subrole: nil,
+            isEnabled: true,
+            isEditable: true,
+            isValueSettable: true,
+            isSelectedTextSettable: true,
+            isSecureInputEnabled: true
+        ).isWritable)
+    }
+
+    func testWritableInputAssessmentAcceptsSemanticAndSettableTextTargets() {
+        XCTAssertTrue(FocusedInputAssessment(
+            role: "AXTextArea",
+            subrole: nil,
+            isEnabled: true,
+            isEditable: nil,
+            isValueSettable: false,
+            isSelectedTextSettable: false,
+            isSecureInputEnabled: false
+        ).isWritable)
+        XCTAssertTrue(FocusedInputAssessment(
+            role: "AXWebArea",
+            subrole: nil,
+            isEnabled: true,
+            isEditable: true,
+            isValueSettable: false,
+            isSelectedTextSettable: false,
+            isSecureInputEnabled: false
+        ).isWritable)
+        XCTAssertTrue(FocusedInputAssessment(
+            role: "AXGroup",
+            subrole: nil,
+            isEnabled: true,
+            isEditable: nil,
+            isValueSettable: false,
+            isSelectedTextSettable: true,
+            isSecureInputEnabled: false
+        ).isWritable)
+    }
+
+    func testHistoryOutputOutcomeDefaultsForLegacyPayloadAndRoundTrips() throws {
+        let entry = TranscriptionHistoryEntry(
+            rawText: "raw",
+            processedText: "processed",
+            appName: "Editor",
+            windowTitle: "Document",
+            wasAIProcessed: false,
+            outputOutcome: .copied
+        )
+        let encoded = try JSONEncoder().encode(entry)
+        XCTAssertEqual(try JSONDecoder().decode(TranscriptionHistoryEntry.self, from: encoded).outputOutcome, .copied)
+
+        var legacyObject = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        legacyObject.removeValue(forKey: "outputOutcome")
+        let legacyData = try JSONSerialization.data(withJSONObject: legacyObject)
+        XCTAssertNil(try JSONDecoder().decode(TranscriptionHistoryEntry.self, from: legacyData).outputOutcome)
+    }
+}
+
+@MainActor
 final class OverlayFailureStateTests: XCTestCase {
     func testCustomNonRetryableMessage() {
         let state = NotchContentState.shared

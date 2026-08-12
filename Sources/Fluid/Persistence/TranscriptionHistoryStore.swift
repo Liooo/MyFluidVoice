@@ -24,6 +24,7 @@ struct TranscriptionHistoryEntry: Codable, Identifiable, Equatable {
     /// back to typing the raw transcription. The string carries the error
     /// message for display / debugging.
     let aiProcessingError: String?
+    let outputOutcome: DictationOutputOutcome?
     let audio: DictationAudioMetadata?
 
     init(
@@ -36,6 +37,7 @@ struct TranscriptionHistoryEntry: Codable, Identifiable, Equatable {
         wasAIProcessed: Bool,
         processingModel: String? = nil,
         aiProcessingError: String? = nil,
+        outputOutcome: DictationOutputOutcome? = nil,
         audio: DictationAudioMetadata? = nil
     ) {
         self.id = id
@@ -48,6 +50,7 @@ struct TranscriptionHistoryEntry: Codable, Identifiable, Equatable {
         self.wasAIProcessed = wasAIProcessed
         self.processingModel = processingModel
         self.aiProcessingError = aiProcessingError
+        self.outputOutcome = outputOutcome
         self.audio = audio
     }
 
@@ -62,6 +65,7 @@ struct TranscriptionHistoryEntry: Codable, Identifiable, Equatable {
         wasAIProcessed: Bool,
         processingModel: String?,
         aiProcessingError: String?,
+        outputOutcome: DictationOutputOutcome?,
         audio: DictationAudioMetadata?
     ) {
         self.id = id
@@ -74,6 +78,7 @@ struct TranscriptionHistoryEntry: Codable, Identifiable, Equatable {
         self.wasAIProcessed = wasAIProcessed
         self.processingModel = processingModel
         self.aiProcessingError = aiProcessingError
+        self.outputOutcome = outputOutcome
         self.audio = audio
     }
 
@@ -89,12 +94,13 @@ struct TranscriptionHistoryEntry: Codable, Identifiable, Equatable {
         self.wasAIProcessed = try container.decode(Bool.self, forKey: .wasAIProcessed)
         self.processingModel = try container.decodeIfPresent(String.self, forKey: .processingModel)
         self.aiProcessingError = try container.decodeIfPresent(String.self, forKey: .aiProcessingError)
+        self.outputOutcome = try container.decodeIfPresent(DictationOutputOutcome.self, forKey: .outputOutcome)
         self.audio = try container.decodeIfPresent(DictationAudioMetadata.self, forKey: .audio)
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, timestamp, rawText, processedText, appName, windowTitle
-        case characterCount, wasAIProcessed, processingModel, aiProcessingError, audio
+        case characterCount, wasAIProcessed, processingModel, aiProcessingError, outputOutcome, audio
     }
 
     /// Preview text for list display (first 80 chars)
@@ -144,6 +150,7 @@ struct TranscriptionHistoryEntry: Codable, Identifiable, Equatable {
             wasAIProcessed: self.wasAIProcessed,
             processingModel: self.processingModel,
             aiProcessingError: self.aiProcessingError,
+            outputOutcome: self.outputOutcome,
             audio: audio
         )
     }
@@ -191,6 +198,7 @@ final class TranscriptionHistoryStore: ObservableObject {
         wasAIProcessed: Bool? = nil,
         processingModel: String? = nil,
         aiProcessingError: String? = nil,
+        outputOutcome: DictationOutputOutcome? = nil,
         audio: DictationAudioMetadata? = nil
     ) {
         // Skip empty transcriptions
@@ -206,6 +214,7 @@ final class TranscriptionHistoryStore: ObservableObject {
             wasAIProcessed: wasAIProcessed ?? (processingModel != nil && aiProcessingError == nil),
             processingModel: processingModel,
             aiProcessingError: aiProcessingError,
+            outputOutcome: outputOutcome,
             audio: audio
         )
 
