@@ -151,6 +151,10 @@ extension VoiceEngineSettingsView {
 
                         Divider().padding(.vertical, 4)
 
+                        self.inputSourceModelAssignmentsSection
+
+                        Divider().padding(.vertical, 4)
+
                         // Filler Words Section
                         self.fillerWordsSection
                     }
@@ -159,6 +163,155 @@ extension VoiceEngineSettingsView {
             .padding(14)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private var inputSourceModelAssignmentsSection: some View {
+        let inputSources = KeyboardInputSourceService.installedInputSources()
+
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "keyboard")
+                    .foregroundStyle(self.theme.palette.accent)
+                Text("Models by Keyboard Input Source")
+                    .font(self.theme.typography.sectionTitle)
+                    .foregroundStyle(self.voiceEngineTitleText)
+                Spacer()
+            }
+
+            Text("Choose a speech model for each enabled keyboard input source. Changes apply to the next recording.")
+                .font(self.theme.typography.bodySmall)
+                .foregroundStyle(self.voiceEngineSecondaryText)
+
+            if inputSources.isEmpty {
+                Label("No selectable keyboard input sources found.", systemImage: "keyboard.badge.ellipsis")
+                    .font(self.theme.typography.body)
+                    .foregroundStyle(self.voiceEngineSecondaryText)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+            } else {
+                VStack(spacing: 8) {
+                    ForEach(inputSources) { inputSource in
+                        self.inputSourceModelAssignmentRow(inputSource)
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(self.theme.palette.cardBackground.opacity(0.9))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(self.theme.palette.cardBorder.opacity(0.3), lineWidth: 1)
+                )
+        )
+    }
+
+    private func inputSourceModelAssignmentRow(
+        _ inputSource: KeyboardInputSourceSnapshot
+    ) -> some View {
+        let localeIdentifier = KeyboardInputSourceLocaleResolver.localeIdentifier(for: inputSource)
+        let compatibleModels = RecordingSpeechConfigurationResolver.compatibleModels(for: inputSource)
+        let savedModel = self.settings.speechModelAssignment(forInputSourceID: inputSource.id)
+        let selectedModel = savedModel.flatMap { model in
+            compatibleModels.contains(model) ? model : nil
+        }
+        let readinessModel = selectedModel ?? self.settings.selectedSpeechModel
+        let usesGlobalFallback = selectedModel == nil
+
+        return HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(inputSource.localizedName)
+                    .font(self.theme.typography.bodyStrong)
+                    .foregroundStyle(self.voiceEngineTitleText)
+                    .lineLimit(1)
+                Text("Detected speech locale: \(localeIdentifier)")
+                    .font(self.theme.typography.bodySmall)
+                    .foregroundStyle(self.voiceEngineSecondaryText)
+                if let savedModel, selectedModel == nil {
+                    Text("Saved \(savedModel.displayName) is unavailable here; using the global default.")
+                        .font(self.theme.typography.bodySmall)
+                        .foregroundStyle(.orange)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            VStack(alignment: .trailing, spacing: 4) {
+                Menu {
+                    Button {
+                        self.settings.setSpeechModelAssignment(nil, forInputSourceID: inputSource.id)
+                    } label: {
+                        HStack {
+                            Text("Use Global Default")
+                            if savedModel == nil {
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+
+                    Divider()
+
+                    ForEach(compatibleModels) { model in
+                        Button {
+                            self.settings.setSpeechModelAssignment(model, forInputSourceID: inputSource.id)
+                        } label: {
+                            HStack {
+                                Text(model.displayName)
+                                if !model.isInstalled {
+                                    Text("Not downloaded")
+                                }
+                                if savedModel == model {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        Text(selectedModel?.displayName ?? "Global: \(self.settings.selectedSpeechModel.displayName)")
+                            .lineLimit(1)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 9, weight: .semibold))
+                    }
+                    .font(self.theme.typography.bodySmallStrong)
+                    .foregroundStyle(self.voiceEngineTitleText)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(self.theme.palette.contentBackground.opacity(0.7))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(self.theme.palette.cardBorder.opacity(0.5), lineWidth: 1)
+                            )
+                    )
+                }
+                .menuStyle(.borderlessButton)
+                .frame(maxWidth: 260, alignment: .trailing)
+
+                Text(self.inputSourceModelReadinessLabel(
+                    model: readinessModel,
+                    usesGlobalFallback: usesGlobalFallback
+                ))
+                .font(self.theme.typography.bodySmall)
+                .foregroundStyle(readinessModel.isInstalled ? Color.fluidGreen : .orange)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 9)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(self.theme.palette.contentBackground.opacity(0.45))
+        )
+    }
+
+    private func inputSourceModelReadinessLabel(
+        model: SettingsStore.SpeechModel,
+        usesGlobalFallback: Bool
+    ) -> String {
+        let source = usesGlobalFallback ? "Global default" : "Assigned"
+        let readiness = model.isInstalled ? "Ready" : "Download required"
+        return "\(source) • \(readiness)"
     }
 
     /// Stats panel showing speed/accuracy bars that animate when model changes

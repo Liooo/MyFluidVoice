@@ -2921,3 +2921,253 @@ final class ForkIdentityTests: XCTestCase {
         XCTAssertEqual(appBundle.fluidAppDisplayName, "MyFluidVoice Debug")
     }
 }
+
+@MainActor
+final class KeyboardInputSourceRoutingTests: XCTestCase {
+    func testInstalledInputSourcesExposeStableUniqueIdentities() {
+        let inputSources = KeyboardInputSourceService.installedInputSources()
+
+        XCTAssertFalse(inputSources.isEmpty)
+        XCTAssertEqual(Set(inputSources.map(\.id)).count, inputSources.count)
+        XCTAssertTrue(inputSources.allSatisfy { !$0.id.isEmpty && !$0.localizedName.isEmpty })
+    }
+
+    func testKnownInputSourcesMapToExpectedSpeechLocales() {
+        let cases: [(String, String)] = [
+            ("com.apple.keylayout.US", "en-US"),
+            ("com.apple.keylayout.British", "en-GB"),
+            ("com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese", "ja-JP"),
+            ("com.apple.inputmethod.Kotoeri.RomajiTyping.Roman", "en-US"),
+            ("com.google.inputmethod.Japanese.base", "ja-JP"),
+            ("com.google.inputmethod.Japanese.Roman", "en-US"),
+            ("com.justsystems.inputmethod.atok33.Japanese", "ja-JP"),
+            ("com.justsystems.inputmethod.atok33.Roman", "en-US"),
+            ("com.apple.inputmethod.SCIM.ITABC", "zh-CN"),
+            ("com.apple.inputmethod.TCIM.Pinyin", "zh-TW"),
+            ("com.apple.inputmethod.Korean.2SetKorean", "ko-KR"),
+        ]
+
+        for (inputSourceID, expectedLocaleIdentifier) in cases {
+            let source = self.source(id: inputSourceID)
+
+            XCTAssertEqual(
+                KeyboardInputSourceLocaleResolver.localeIdentifier(
+                    for: source,
+                    fallbackLocaleIdentifier: "pt-BR"
+                ),
+                expectedLocaleIdentifier,
+                inputSourceID
+            )
+        }
+    }
+
+    func testLocaleResolutionUsesEachRequestedSourcesOwnLanguage() {
+        let french = self.source(id: "com.example.FrenchIME", languages: ["fr-CA"])
+        let german = self.source(id: "com.example.GermanIME", languages: ["de"])
+
+        XCTAssertEqual(
+            KeyboardInputSourceLocaleResolver.localeIdentifier(
+                for: french,
+                fallbackLocaleIdentifier: "ja-JP"
+            ),
+            "fr-CA"
+        )
+        XCTAssertEqual(
+            KeyboardInputSourceLocaleResolver.localeIdentifier(
+                for: german,
+                fallbackLocaleIdentifier: "ja-JP"
+            ),
+            "de-DE"
+        )
+    }
+
+    func testLocaleResolutionUsesInjectedLocaleFallbackWhenSourceHasNoLanguage() {
+        let source = self.source(id: "com.example.Unknown")
+
+        XCTAssertEqual(
+            KeyboardInputSourceLocaleResolver.localeIdentifier(
+                for: source,
+                fallbackLocaleIdentifier: "pt_BR"
+            ),
+            "pt-BR"
+        )
+    }
+
+    func testCompatibleModelsFilterByDetectedLanguageAndProvidedAvailability() {
+        let source = self.source(
+            id: "com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese",
+            languages: ["ja"]
+        )
+        let availableModels: [SettingsStore.SpeechModel] = [
+            .appleSpeech,
+            .appleSpeechAnalyzer,
+            .cohereTranscribeSixBit,
+            .nemotronOffline,
+            .parakeetTDT,
+            .parakeetTDTv2,
+            .parakeetRealtime,
+            .whisperSmall,
+        ]
+
+        let compatibleModels = RecordingSpeechConfigurationResolver.compatibleModels(
+            for: source,
+            availableModels: availableModels,
+            fallbackLocaleIdentifier: "en-US"
+        )
+
+        XCTAssertEqual(
+            Set(compatibleModels.map(\SettingsStore.SpeechModel.rawValue)),
+            Set([
+                SettingsStore.SpeechModel.appleSpeech.rawValue,
+                SettingsStore.SpeechModel.appleSpeechAnalyzer.rawValue,
+                SettingsStore.SpeechModel.cohereTranscribeSixBit.rawValue,
+                SettingsStore.SpeechModel.nemotronOffline.rawValue,
+                SettingsStore.SpeechModel.whisperSmall.rawValue,
+            ])
+        )
+    }
+
+    func testTraditionalChineseDoesNotOfferSimplifiedOnlyNemotronBinding() {
+        let source = self.source(id: "com.apple.inputmethod.TCIM.Pinyin", languages: ["zh-Hant"])
+        let availableModels: [SettingsStore.SpeechModel] = [
+            .cohereTranscribeSixBit,
+            .nemotronStreaming,
+            .whisperSmall,
+        ]
+
+        let compatibleModels = RecordingSpeechConfigurationResolver.compatibleModels(
+            for: source,
+            availableModels: availableModels,
+            fallbackLocaleIdentifier: "en-US"
+        )
+
+        XCTAssertEqual(compatibleModels, [.cohereTranscribeSixBit, .whisperSmall])
+    }
+
+    func testAssignedAvailableModelResolvesWithDetectedLocaleAndMatchingBinding() throws {
+        let source = self.source(
+            id: "com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese",
+            languages: ["ja"]
+        )
+        let fallback = try XCTUnwrap(RecordingSpeechConfiguration(
+            inputSourceID: nil,
+            localeIdentifier: "en-US",
+            model: .appleSpeech,
+            languageBinding: .appleSpeech(localeIdentifier: "en-US")
+        ))
+
+        let resolved = RecordingSpeechConfigurationResolver.resolve(
+            inputSource: source,
+            assignedModel: .whisperSmall,
+            globalFallback: fallback,
+            availableModels: [.appleSpeech, .whisperSmall],
+            fallbackLocaleIdentifier: "en-US"
+        )
+
+        XCTAssertEqual(resolved.inputSourceID, source.id)
+        XCTAssertEqual(resolved.localeIdentifier, "ja-JP")
+        XCTAssertEqual(resolved.model, .whisperSmall)
+        XCTAssertEqual(resolved.languageBinding, .whisper(languageCode: "ja"))
+    }
+
+    func testMissingAssignmentPreservesWholeGlobalLanguageAndModelRoute() throws {
+        let source = self.source(
+            id: "com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese",
+            languages: ["ja"]
+        )
+        let fallback = try XCTUnwrap(RecordingSpeechConfiguration(
+            inputSourceID: nil,
+            localeIdentifier: "en-US",
+            model: .appleSpeech,
+            languageBinding: .appleSpeech(localeIdentifier: "en-US")
+        ))
+
+        let resolved = RecordingSpeechConfigurationResolver.resolve(
+            inputSource: source,
+            assignedModel: nil,
+            globalFallback: fallback,
+            availableModels: [.appleSpeech, .whisperSmall],
+            fallbackLocaleIdentifier: "en-US"
+        )
+
+        XCTAssertEqual(resolved.inputSourceID, source.id)
+        XCTAssertEqual(resolved.localeIdentifier, "en-US")
+        XCTAssertEqual(resolved.model, .appleSpeech)
+        XCTAssertEqual(resolved.languageBinding, .appleSpeech(localeIdentifier: "en-US"))
+    }
+
+    func testUnavailableOrIncompatibleAssignmentFallsBackWithoutRemovingIt() throws {
+        let source = self.source(
+            id: "com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese",
+            languages: ["ja"]
+        )
+        let fallback = try XCTUnwrap(RecordingSpeechConfiguration(
+            inputSourceID: nil,
+            localeIdentifier: "en-US",
+            model: .appleSpeech,
+            languageBinding: .appleSpeech(localeIdentifier: "en-US")
+        ))
+
+        let unavailable = RecordingSpeechConfigurationResolver.resolve(
+            inputSource: source,
+            assignedModel: .whisperSmall,
+            globalFallback: fallback,
+            availableModels: [.appleSpeech],
+            fallbackLocaleIdentifier: "en-US"
+        )
+        let incompatible = RecordingSpeechConfigurationResolver.resolve(
+            inputSource: source,
+            assignedModel: .parakeetRealtime,
+            globalFallback: fallback,
+            availableModels: [.appleSpeech, .parakeetRealtime],
+            fallbackLocaleIdentifier: "en-US"
+        )
+
+        XCTAssertEqual(unavailable.model, .appleSpeech)
+        XCTAssertEqual(unavailable.localeIdentifier, "en-US")
+        XCTAssertEqual(incompatible.model, .appleSpeech)
+        XCTAssertEqual(incompatible.localeIdentifier, "en-US")
+    }
+
+    func testResolvedConfigurationDoesNotChangeWhenNextInputSourceSnapshotChanges() throws {
+        let fallback = try XCTUnwrap(RecordingSpeechConfiguration(
+            inputSourceID: nil,
+            localeIdentifier: "en-US",
+            model: .appleSpeech,
+            languageBinding: .appleSpeech(localeIdentifier: "en-US")
+        ))
+        let japaneseSource = self.source(
+            id: "com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese",
+            languages: ["ja"]
+        )
+        let englishSource = self.source(id: "com.apple.keylayout.US", languages: ["en"])
+
+        let first = RecordingSpeechConfigurationResolver.resolve(
+            inputSource: japaneseSource,
+            assignedModel: .whisperSmall,
+            globalFallback: fallback,
+            availableModels: [.appleSpeech, .whisperSmall],
+            fallbackLocaleIdentifier: "en-US"
+        )
+        _ = RecordingSpeechConfigurationResolver.resolve(
+            inputSource: englishSource,
+            assignedModel: .appleSpeech,
+            globalFallback: fallback,
+            availableModels: [.appleSpeech, .whisperSmall],
+            fallbackLocaleIdentifier: "en-US"
+        )
+
+        XCTAssertEqual(first.inputSourceID, japaneseSource.id)
+        XCTAssertEqual(first.localeIdentifier, "ja-JP")
+        XCTAssertEqual(first.model, .whisperSmall)
+        XCTAssertEqual(first.languageBinding, .whisper(languageCode: "ja"))
+    }
+
+    private func source(
+        id: String,
+        name: String = "Test Input Source",
+        languages: [String] = []
+    ) -> KeyboardInputSourceSnapshot {
+        KeyboardInputSourceSnapshot(id: id, localizedName: name, languages: languages)
+    }
+}
