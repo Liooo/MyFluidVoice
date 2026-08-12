@@ -832,6 +832,34 @@ final class GlobalHotkeyManager: NSObject {
         )
     }
 
+    private func handleCancelShortcutKeyDown(
+        keyCode: UInt16,
+        modifiers: NSEvent.ModifierFlags
+    ) -> Bool {
+        guard SettingsStore.shared.cancelRecordingHotkeyShortcut.matches(
+            keyCode: keyCode,
+            modifiers: modifiers
+        ) else {
+            return false
+        }
+
+        // Let the app-level policy decide whether Escape should paste, discard, or do
+        // nothing for the active dictation session. Direct cancellation remains only as
+        // a fallback for embedders that do not install a callback.
+        if let callback = self.cancelCallback {
+            guard callback() else { return false }
+            DebugLogger.shared.info("Cancel shortcut pressed - cancel callback handled", source: "GlobalHotkeyManager")
+            return true
+        }
+
+        guard self.asrService.isRunning || self.asrService.isStarting else { return false }
+        DebugLogger.shared.info("Cancel shortcut pressed - cancelling recording", source: "GlobalHotkeyManager")
+        Task { @MainActor in
+            await self.asrService.stopWithoutTranscription()
+        }
+        return true
+    }
+
     private func handleKeyEvent(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
         if let tapRecoveryResult = self.handleTapDisableEvent(type: type, event: event) {
             return tapRecoveryResult
@@ -866,30 +894,8 @@ final class GlobalHotkeyManager: NSObject {
                 await PostTranscriptionEditTracker.shared.handleKeyDown(keyCode: keyCode, modifiers: eventModifiers)
             }
 
-            // Check the configured cancel shortcut first.
-            if SettingsStore.shared.cancelRecordingHotkeyShortcut.matches(keyCode: keyCode, modifiers: eventModifiers) {
-                var handled = false
-
-                // Let the app-level policy decide whether Escape should paste, discard, or do
-                // nothing for the active dictation session. Direct cancellation remains only as
-                // a fallback for embedders that do not install a callback.
-                if let callback = cancelCallback {
-                    if callback() {
-                        DebugLogger.shared.info("Cancel shortcut pressed - cancel callback handled", source: "GlobalHotkeyManager")
-                        handled = true
-                    }
-                } else if self.asrService.isRunning || self.asrService.isStarting {
-                    DebugLogger.shared.info("Cancel shortcut pressed - cancelling recording", source: "GlobalHotkeyManager")
-                    Task { @MainActor in
-                        await self.asrService.stopWithoutTranscription()
-                    }
-                    handled = true
-                }
-
-                if handled {
-                    return nil // Consume event only if we did something
-                }
-            }
+            // Check the configured cancel shortcut first. Consume it only when handled.
+            if self.handleCancelShortcutKeyDown(keyCode: keyCode, modifiers: eventModifiers) { return nil }
 
             // Check the "paste last transcription" shortcut (a one-shot action, like cancel).
             if SettingsStore.shared.pasteLastTranscriptionShortcutEnabled,
