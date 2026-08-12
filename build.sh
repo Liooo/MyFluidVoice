@@ -15,6 +15,7 @@ PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROFILE="${1:-${BUILD_PROFILE:-public}}"
 PRIVATE_FI_BUILD_SCRIPT="${PROJECT_DIR}/build_with_FI_incremental.sh"
 DERIVED_DATA_PATH="${FLUIDVOICE_DERIVED_DATA_PATH:-${PROJECT_DIR}/DerivedData}"
+CTRANSCRIBE_NORMALIZER="${PROJECT_DIR}/scripts/normalize-ctranscribe-framework.sh"
 
 resolve_development_team() {
     local identity
@@ -35,7 +36,9 @@ resolve_development_team() {
 
 run_public_build() {
     local signing_mode="$1"
+    local app_path="${DERIVED_DATA_PATH}/Build/Products/Debug/MyFluidVoice Debug.app"
     local development_team
+    local signing_identity
     local -a build_args=(
         -project Fluid.xcodeproj
         -scheme Fluid
@@ -82,8 +85,31 @@ EOF
     fi
 
     echo "Running signed public MyFluidVoice build..."
-    echo "Build product: ${DERIVED_DATA_PATH}/Build/Products/Debug/MyFluidVoice Debug.app"
-    exec xcodebuild "${build_args[@]}" DEVELOPMENT_TEAM="${development_team}"
+    echo "Build product: ${app_path}"
+    xcodebuild "${build_args[@]}" DEVELOPMENT_TEAM="${development_team}"
+
+    if [ ! -x "${CTRANSCRIBE_NORMALIZER}" ]; then
+        echo "CTranscribe framework normalizer is missing or not executable:" >&2
+        echo "  ${CTRANSCRIBE_NORMALIZER}" >&2
+        exit 1
+    fi
+
+    signing_identity="$(codesign -d --verbose=4 "${app_path}" 2>&1 \
+        | sed -n 's/^Authority=\(Apple Development:.*\)/\1/p' \
+        | head -n 1)"
+    if [ -z "${signing_identity}" ]; then
+        echo "Could not determine the Apple Development identity used for ${app_path}." >&2
+        exit 1
+    fi
+
+    "${CTRANSCRIBE_NORMALIZER}" "${app_path}"
+    codesign --verify --strict "${app_path}/Contents/Frameworks/CTranscribe.framework/Versions/A"
+    codesign --force \
+        --sign "${signing_identity}" \
+        --preserve-metadata=identifier,entitlements,flags,requirements \
+        --timestamp=none \
+        "${app_path}"
+    codesign --verify --deep --strict --verbose=2 "${app_path}"
 }
 
 case "${PROFILE}" in
