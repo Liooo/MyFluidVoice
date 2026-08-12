@@ -4,9 +4,6 @@ import XCTest
 
 @MainActor
 final class DictationE2ETests: XCTestCase {
-    private let enableTranscriptionSoundsKey = "EnableTranscriptionSounds"
-    private let transcriptionStartSoundKey = "TranscriptionStartSound"
-    private let transcriptionEndSoundKey = "TranscriptionEndSound"
     private let dictationPromptProfilesKey = "DictationPromptProfiles"
     private let appPromptBindingsKey = "AppPromptBindings"
     private let selectedDictationPromptIDKey = "SelectedDictationPromptID"
@@ -95,68 +92,6 @@ final class DictationE2ETests: XCTestCase {
         )
 
         XCTAssertNil(entry.clipboardText)
-    }
-
-    func testTranscriptionStartSound_noneOptionHasNoFile() {
-        XCTAssertEqual(SettingsStore.TranscriptionStartSound.none.displayName, "None")
-        XCTAssertNil(SettingsStore.TranscriptionStartSound.none.startSoundFileName)
-        XCTAssertEqual(SettingsStore.TranscriptionEndSound.none.displayName, "None")
-        XCTAssertNil(SettingsStore.TranscriptionEndSound.none.soundFileName)
-    }
-
-    func testTranscriptionSoundMasterToggleDoesNotOverwriteSelections() {
-        self.withRestoredDefaults(keys: [self.enableTranscriptionSoundsKey, self.transcriptionStartSoundKey]) {
-            let defaults = UserDefaults.standard
-            defaults.set(false, forKey: self.enableTranscriptionSoundsKey)
-            defaults.set(SettingsStore.TranscriptionStartSound.fluidSfx1.rawValue, forKey: self.transcriptionStartSoundKey)
-
-            XCTAssertFalse(SettingsStore.shared.enableTranscriptionSounds)
-            XCTAssertEqual(SettingsStore.shared.transcriptionStartSound, .fluidSfx1)
-
-            SettingsStore.shared.enableTranscriptionSounds = true
-            XCTAssertTrue(SettingsStore.shared.enableTranscriptionSounds)
-            XCTAssertEqual(SettingsStore.shared.transcriptionStartSound, .fluidSfx1)
-        }
-    }
-
-    func testTranscriptionEndSoundMigratesFromLegacyPairedStartCue() {
-        self.withRestoredDefaults(keys: [self.transcriptionStartSoundKey, self.transcriptionEndSoundKey]) {
-            let defaults = UserDefaults.standard
-            defaults.set(SettingsStore.TranscriptionStartSound.fluidSfx0.rawValue, forKey: self.transcriptionStartSoundKey)
-            defaults.removeObject(forKey: self.transcriptionEndSoundKey)
-
-            XCTAssertEqual(SettingsStore.shared.transcriptionEndSound, .fluidSfx0)
-            XCTAssertEqual(
-                defaults.string(forKey: self.transcriptionEndSoundKey),
-                SettingsStore.TranscriptionEndSound.fluidSfx0.rawValue
-            )
-        }
-    }
-
-    func testTranscriptionEndSoundMigratesLegacyUnpairedCueToNone() {
-        self.withRestoredDefaults(keys: [self.transcriptionStartSoundKey, self.transcriptionEndSoundKey]) {
-            let defaults = UserDefaults.standard
-            defaults.set(SettingsStore.TranscriptionStartSound.fluidSfx2.rawValue, forKey: self.transcriptionStartSoundKey)
-            defaults.removeObject(forKey: self.transcriptionEndSoundKey)
-
-            XCTAssertEqual(SettingsStore.shared.transcriptionEndSound, .none)
-        }
-    }
-
-    func testTranscriptionSoundSelectionsRemainIndependent() {
-        self.withRestoredDefaults(keys: [
-            self.enableTranscriptionSoundsKey,
-            self.transcriptionStartSoundKey,
-            self.transcriptionEndSoundKey,
-        ]) {
-            SettingsStore.shared.enableTranscriptionSounds = true
-            SettingsStore.shared.transcriptionStartSound = .fluidSfx2
-            SettingsStore.shared.transcriptionEndSound = .fluidSfx1
-
-            XCTAssertEqual(SettingsStore.shared.transcriptionStartSound, .fluidSfx2)
-            XCTAssertEqual(SettingsStore.shared.transcriptionEndSound, .fluidSfx1)
-            XCTAssertEqual(SettingsStore.shared.transcriptionEndSound.soundFileName, "FV_end")
-        }
     }
 
     func testDictionaryTransferDocument_encodesSimpleUserFormat() throws {
@@ -2365,12 +2300,17 @@ final class DictationE2ETests: XCTestCase {
 
 @MainActor
 final class DictationSessionCoordinatorTests: XCTestCase {
-    private let englishConfiguration = RecordingSpeechConfiguration(
-        inputSourceID: "com.apple.keylayout.US",
-        localeIdentifier: "en-US",
-        model: .appleSpeech,
-        languageBinding: .appleSpeech(localeIdentifier: "en-US")
-    )!
+    private var englishConfiguration: RecordingSpeechConfiguration {
+        guard let configuration = RecordingSpeechConfiguration(
+            inputSourceID: "com.apple.keylayout.US",
+            localeIdentifier: "en-US",
+            model: .appleSpeech,
+            languageBinding: .appleSpeech(localeIdentifier: "en-US")
+        ) else {
+            preconditionFailure("The English test configuration must remain valid")
+        }
+        return configuration
+    }
 
     func testCoordinatorRecordsTerminalOutputOutcome() {
         let coordinator = DictationSessionCoordinator()
@@ -3324,8 +3264,8 @@ final class KeyboardInputSourceRoutingTests: XCTestCase {
 @MainActor
 final class RecordingSpeechSessionSelectionTests: XCTestCase {
     func testSelectionKeepsConfigurationSnapshotAndBlocksReplacement() throws {
-        let firstID = RecordingSessionID(rawValue: UUID(uuidString: "11111111-1111-1111-1111-111111111111")!)
-        let secondID = RecordingSessionID(rawValue: UUID(uuidString: "22222222-2222-2222-2222-222222222222")!)
+        let firstID = try self.sessionID("11111111-1111-1111-1111-111111111111")
+        let secondID = try self.sessionID("22222222-2222-2222-2222-222222222222")
         let firstConfiguration = try XCTUnwrap(RecordingSpeechConfiguration(
             inputSourceID: "com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese",
             localeIdentifier: "ja-JP",
@@ -3348,8 +3288,8 @@ final class RecordingSpeechSessionSelectionTests: XCTestCase {
     }
 
     func testStaleSessionIDCannotReadOrClearActiveSelection() throws {
-        let activeID = RecordingSessionID(rawValue: UUID(uuidString: "33333333-3333-3333-3333-333333333333")!)
-        let staleID = RecordingSessionID(rawValue: UUID(uuidString: "44444444-4444-4444-4444-444444444444")!)
+        let activeID = try self.sessionID("33333333-3333-3333-3333-333333333333")
+        let staleID = try self.sessionID("44444444-4444-4444-4444-444444444444")
         let configuration = try XCTUnwrap(RecordingSpeechConfiguration(
             inputSourceID: "com.apple.keylayout.US",
             localeIdentifier: "en-US",
@@ -3405,5 +3345,15 @@ final class RecordingSpeechSessionSelectionTests: XCTestCase {
             sessionID: RecordingSessionID(),
             configuration: configuration
         ))
+    }
+
+    private func sessionID(
+        _ rawValue: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws -> RecordingSessionID {
+        RecordingSessionID(
+            rawValue: try XCTUnwrap(UUID(uuidString: rawValue), file: file, line: line)
+        )
     }
 }

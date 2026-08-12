@@ -188,6 +188,20 @@ struct ContentView: View {
         case onboardingSandbox
     }
 
+    private struct DictationFinalDeliveryContext {
+        let route: DictationOutputRoute
+        let sessionID: RecordingSessionID?
+        let activeShortcutSlot: SettingsStore.DictationShortcutSlot?
+        let transcribedText: String
+        let appInfo: (name: String, bundleId: String, windowTitle: String)
+        let shouldUseAI: Bool
+        let aiFallbackReason: String?
+        let postProcessingModel: String?
+        let transcriptionModelInfo: (provider: String, model: String)
+        let audioSnapshot: DictationAudioSnapshot?
+        let didRequestOverlayHideOnStop: Bool
+    }
+
     @EnvironmentObject private var appServices: AppServices
     @StateObject private var mouseTracker = MousePositionTracker()
     @StateObject private var commandModeService = CommandModeService()
@@ -2535,13 +2549,35 @@ struct ContentView: View {
             return
         }
 
+        await self.deliverFinalDictationOutput(
+            finalText,
+            context: DictationFinalDeliveryContext(
+                route: route,
+                sessionID: dictationSessionID,
+                activeShortcutSlot: activeDictationSlot,
+                transcribedText: transcribedText,
+                appInfo: appInfo,
+                shouldUseAI: shouldUseAI,
+                aiFallbackReason: aiFallbackReason,
+                postProcessingModel: postProcessingModel,
+                transcriptionModelInfo: transcriptionModelInfo,
+                audioSnapshot: audioSnapshot,
+                didRequestOverlayHideOnStop: didRequestOverlayHideOnStop
+            )
+        )
+    }
+
+    private func deliverFinalDictationOutput(
+        _ finalText: String,
+        context: DictationFinalDeliveryContext
+    ) async {
         DebugLogger.shared.info("Transcription finalized (chars: \(finalText.count))", source: "ContentView")
         let finalTextReadyAt = ProcessInfo.processInfo.systemUptime
         let finalOutputPlan = ASRService.makeDictationLiteralOutputPlan(
             for: finalText,
-            appName: appInfo.name,
-            bundleID: appInfo.bundleId,
-            windowTitle: appInfo.windowTitle
+            appName: context.appInfo.name,
+            bundleID: context.appInfo.bundleId,
+            windowTitle: context.appInfo.windowTitle
         )
         self.appBench("transcription_finalized chars=\(finalText.count)")
         self.appBench("text_ready chars=\(finalText.count)")
@@ -2551,14 +2587,14 @@ struct ContentView: View {
             properties: [
                 "mode": AnalyticsMode.dictation.rawValue,
                 "words_bucket": AnalyticsBuckets.bucketWords(AnalyticsBuckets.wordCount(in: finalText)),
-                "ai_used": shouldUseAI,
-                "ai_changed_text": transcribedText != finalText,
-                "transcription_provider": transcriptionModelInfo.provider,
-                "transcription_model": transcriptionModelInfo.model,
+                "ai_used": context.shouldUseAI,
+                "ai_changed_text": context.transcribedText != finalText,
+                "transcription_provider": context.transcriptionModelInfo.provider,
+                "transcription_model": context.transcriptionModelInfo.model,
             ]
         )
 
-        let shouldPersistOutputs = route == .normal
+        let shouldPersistOutputs = context.route == .normal
         if !shouldPersistOutputs {
             DebugLogger.shared.info(
                 "Sandbox route active: suppressing clipboard/history/external typing side effects",
@@ -2591,7 +2627,7 @@ struct ContentView: View {
         )
 
         if shouldPersistOutputs {
-            guard let dictationSessionID,
+            guard let dictationSessionID = context.sessionID,
                   let outputOutcome = outputRouting.outcome,
                   self.dictationSessionCoordinator.claimOutputDelivery(for: dictationSessionID)
             else {
@@ -2617,10 +2653,10 @@ struct ContentView: View {
             }
         }
 
-        let shouldShowAIProcessingFailure = shouldPersistOutputs && aiFallbackReason != nil
+        let shouldShowAIProcessingFailure = shouldPersistOutputs && context.aiFallbackReason != nil
         let shouldShowNoTargetFeedback = outputRouting.outcome == .noTarget
         if shouldShowAIProcessingFailure {
-            self.pendingAIReprocessText = transcribedText
+            self.pendingAIReprocessText = context.transcribedText
             let message = shouldShowNoTargetFeedback
                 ? "AI Enhancement failed; no writable text field was focused"
                 : "AI Enhancement failed"
@@ -2640,20 +2676,20 @@ struct ContentView: View {
             TranscriptionHistoryStore.shared.addEntry(
                 id: historyEntryID,
                 timestamp: historyTimestamp,
-                rawText: transcribedText,
+                rawText: context.transcribedText,
                 processedText: finalText,
-                appName: appInfo.name,
-                windowTitle: appInfo.windowTitle,
-                wasAIProcessed: postProcessingModel != nil && aiFallbackReason == nil,
-                processingModel: postProcessingModel,
-                aiProcessingError: aiFallbackReason,
+                appName: context.appInfo.name,
+                windowTitle: context.appInfo.windowTitle,
+                wasAIProcessed: context.postProcessingModel != nil && context.aiFallbackReason == nil,
+                processingModel: context.postProcessingModel,
+                aiProcessingError: context.aiFallbackReason,
                 outputOutcome: outputRouting.outcome
             )
             self.persistDictationAudioIfNeeded(
-                audioSnapshot,
+                context.audioSnapshot,
                 entryID: historyEntryID,
                 timestamp: historyTimestamp,
-                model: transcriptionModelInfo.model
+                model: context.transcriptionModelInfo.model
             )
         }
 
@@ -2690,12 +2726,12 @@ struct ContentView: View {
                 textReadyAt: finalTextReadyAt,
                 tracksDictionaryCorrections: true
             )
-            if !shouldShowAIProcessingFailure, !didRequestOverlayHideOnStop {
+            if !shouldShowAIProcessingFailure, !context.didRequestOverlayHideOnStop {
                 self.hideOverlayAfterOutput()
             }
         }
 
-        if let dictationSessionID, let outputOutcome = outputRouting.outcome {
+        if let dictationSessionID = context.sessionID, let outputOutcome = outputRouting.outcome {
             _ = self.dictationSessionCoordinator.complete(
                 for: dictationSessionID,
                 outcome: outputOutcome
@@ -2716,14 +2752,14 @@ struct ContentView: View {
             // Register the post-transcription edit observation after insertion is dispatched.
             let wordsBucket = AnalyticsBuckets.bucketWords(AnalyticsBuckets.wordCount(in: finalText))
             let modelInfo = self.currentDictationAIModelInfo(
-                dictationSlot: activeDictationSlot,
-                appBundleID: appInfo.bundleId
+                dictationSlot: context.activeShortcutSlot,
+                appBundleID: context.appInfo.bundleId
             )
             await PostTranscriptionEditTracker.shared.markTranscriptionCompleted(
                 mode: AnalyticsMode.dictation.rawValue,
                 outputMethod: AnalyticsOutputMethod.typed.rawValue,
                 wordsBucket: wordsBucket,
-                aiUsed: shouldUseAI,
+                aiUsed: context.shouldUseAI,
                 aiModel: modelInfo.model,
                 aiProvider: modelInfo.provider
             )
@@ -2742,7 +2778,7 @@ struct ContentView: View {
         if !outputRouting.shouldTypeExternally,
            !shouldShowAIProcessingFailure,
            !shouldShowNoTargetFeedback,
-           !didRequestOverlayHideOnStop
+           !context.didRequestOverlayHideOnStop
         {
             self.hideOverlayAfterOutput()
         }

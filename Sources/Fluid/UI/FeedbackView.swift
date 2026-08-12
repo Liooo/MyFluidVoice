@@ -27,10 +27,15 @@ struct FeedbackView: View {
                         Text("Report a bug or suggest a feature")
                             .font(.system(size: 18, weight: .semibold))
 
-                        Text("MyFluidVoice does not operate a private feedback endpoint. GitHub Issues is the public, reviewable place for reports and ideas. Review your issue before submitting it, and do not include transcripts, API keys, or debug logs that contain private information.")
-                            .font(.system(size: 14))
-                            .foregroundStyle(self.theme.palette.secondaryText)
-                            .fixedSize(horizontal: false, vertical: true)
+                        Text(
+                            "MyFluidVoice does not operate a private feedback endpoint. " +
+                                "GitHub Issues is the public, reviewable place for reports and ideas. " +
+                                "Review your issue before submitting it, and do not include transcripts, " +
+                                "API keys, or debug logs that contain private information."
+                        )
+                        .font(.system(size: 14))
+                        .foregroundStyle(self.theme.palette.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
 
                         HStack(spacing: 12) {
                             Link(destination: self.issueURL) {
