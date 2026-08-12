@@ -57,6 +57,34 @@ final class AudioEngineRetirementDrainTests: XCTestCase {
     }
 }
 
+final class TranscriptionExecutorCancellationTests: XCTestCase {
+    func testCancelAndAwaitPendingCancelsActiveTranscriptionOperation() async {
+        let executor = TranscriptionExecutor()
+        let operationStarted = expectation(description: "transcription operation started")
+        let operation = Task {
+            try await executor.run {
+                operationStarted.fulfill()
+                while !Task.isCancelled {
+                    await Task.yield()
+                }
+                throw CancellationError()
+            }
+        }
+
+        await fulfillment(of: [operationStarted])
+        await executor.cancelAndAwaitPending()
+
+        do {
+            try await operation.value
+            XCTFail("Expected the active transcription operation to be cancelled")
+        } catch is CancellationError {
+            // Expected.
+        } catch {
+            XCTFail("Expected CancellationError, received \(error)")
+        }
+    }
+}
+
 private final class DeinitProbe {
     private let id: Int
     private let recorder: DeinitRecorder

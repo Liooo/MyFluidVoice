@@ -11,7 +11,7 @@ import AudioToolbox
 import CoreAudio
 
 /// Serializes transcription operations and lets teardown cancel the real queued work.
-private actor TranscriptionExecutor {
+actor TranscriptionExecutor {
     private var lastTask: Task<Void, Never>?
     private var operationCancellations: [UUID: () -> Void] = [:]
 
@@ -2762,7 +2762,13 @@ final class ASRService: ObservableObject {
                 sessionID: ownedSessionID
             )
         }
-        guard self.isRunning else { return }
+        guard self.isRunning else {
+            // Capture may already be stopped while final transcription still owns the provider.
+            // Discard must actively cancel that operation, not merely suppress its eventual text.
+            await self.transcriptionExecutor.cancelAndAwaitPending()
+            self.isDictionaryTrainingCaptureActive = false
+            return
+        }
         defer {
             self.applyPendingParakeetVocabularyReloadIfNeeded()
             self.isDictionaryTrainingCaptureActive = false
