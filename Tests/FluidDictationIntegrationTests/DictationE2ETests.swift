@@ -2334,6 +2334,100 @@ final class DictationE2ETests: XCTestCase {
 }
 
 @MainActor
+final class DictationSessionCoordinatorTests: XCTestCase {
+    private let englishConfiguration = RecordingSpeechConfiguration(
+        inputSourceID: "com.apple.keylayout.US",
+        localeIdentifier: "en-US",
+        model: .appleSpeech,
+        languageBinding: .appleSpeech(localeIdentifier: "en-US")
+    )
+
+    func testBeginFreezesSpeechConfigurationForSession() {
+        let coordinator = DictationSessionCoordinator()
+
+        let session = coordinator.begin(
+            activationStyle: .toggle,
+            speechConfiguration: self.englishConfiguration
+        )
+
+        XCTAssertEqual(session.speechConfiguration, self.englishConfiguration)
+        XCTAssertEqual(session.state, .capturing)
+        XCTAssertTrue(coordinator.isCurrent(session.id))
+    }
+
+    func testFinalizationCanOnlyBeginOnce() {
+        let coordinator = DictationSessionCoordinator()
+        let session = coordinator.begin(
+            activationStyle: .toggle,
+            speechConfiguration: self.englishConfiguration
+        )
+
+        XCTAssertTrue(coordinator.beginFinalization(for: session.id))
+        XCTAssertFalse(coordinator.beginFinalization(for: session.id))
+        XCTAssertEqual(coordinator.activeSession?.state, .finalizing)
+    }
+
+    func testDiscardInvalidatesLateSessionCallbacks() {
+        let coordinator = DictationSessionCoordinator()
+        let session = coordinator.begin(
+            activationStyle: .toggle,
+            speechConfiguration: self.englishConfiguration
+        )
+        XCTAssertTrue(coordinator.beginFinalization(for: session.id))
+
+        XCTAssertEqual(coordinator.requestExit(.discard, for: session.id), .discard)
+        XCTAssertFalse(coordinator.isCurrent(session.id))
+        XCTAssertFalse(coordinator.complete(for: session.id))
+    }
+
+    func testPasteExitDeduplicatesSimultaneousTerminalEvents() {
+        let coordinator = DictationSessionCoordinator()
+        let session = coordinator.begin(
+            activationStyle: .toggle,
+            speechConfiguration: self.englishConfiguration
+        )
+
+        XCTAssertEqual(coordinator.requestExit(.paste, for: session.id), .finalize)
+        XCTAssertEqual(coordinator.requestExit(.paste, for: session.id), .ignore)
+        XCTAssertEqual(coordinator.requestExit(.discard, for: session.id), .discard)
+        XCTAssertEqual(coordinator.requestExit(.discard, for: session.id), .ignore)
+    }
+
+    func testDoNothingAndPushToTalkExitPoliciesDoNotTerminateCapture() {
+        let coordinator = DictationSessionCoordinator()
+        let toggleSession = coordinator.begin(
+            activationStyle: .toggle,
+            speechConfiguration: self.englishConfiguration
+        )
+
+        XCTAssertEqual(coordinator.requestExit(.doNothing, for: toggleSession.id), .ignore)
+        XCTAssertTrue(coordinator.isCurrent(toggleSession.id))
+
+        let pushToTalkSession = coordinator.begin(
+            activationStyle: .pushToTalk,
+            speechConfiguration: self.englishConfiguration
+        )
+        XCTAssertEqual(coordinator.requestExit(.paste, for: pushToTalkSession.id), .ignore)
+        XCTAssertTrue(coordinator.isCurrent(pushToTalkSession.id))
+    }
+
+    func testStartingNewSessionInvalidatesPreviousSession() {
+        let coordinator = DictationSessionCoordinator()
+        let first = coordinator.begin(
+            activationStyle: .toggle,
+            speechConfiguration: self.englishConfiguration
+        )
+        let second = coordinator.begin(
+            activationStyle: .toggle,
+            speechConfiguration: self.englishConfiguration
+        )
+
+        XCTAssertFalse(coordinator.isCurrent(first.id))
+        XCTAssertTrue(coordinator.isCurrent(second.id))
+    }
+}
+
+@MainActor
 final class OverlayFailureStateTests: XCTestCase {
     func testCustomNonRetryableMessage() {
         let state = NotchContentState.shared
