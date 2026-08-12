@@ -1,8 +1,9 @@
 import AppKit
 import Foundation
-import PromiseKit
 
 enum SimpleUpdateError: Error, LocalizedError {
+    case releaseInfrastructureUnavailable
+    case alreadyCurrent
     case invalidURL
     case invalidResponse
     case jsonDecoding
@@ -18,6 +19,8 @@ enum SimpleUpdateError: Error, LocalizedError {
 
     var errorDescription: String? {
         switch self {
+        case .releaseInfrastructureUnavailable: return "Updates are not configured for MyFluidVoice yet."
+        case .alreadyCurrent: return "The app is already current."
         case .invalidURL: return "Invalid URL."
         case .invalidResponse: return "Invalid HTTP response from GitHub."
         case .jsonDecoding: return "The data couldn’t be read because it isn’t in the correct format."
@@ -127,6 +130,9 @@ final class SimpleUpdater {
     static let shared = SimpleUpdater()
     private init() {}
 
+    /// Keep all release operations fail-closed until the fork owns a release channel.
+    private static let releaseInfrastructureAvailable = false
+
     private let fileManager = FileManager.default
     private let maxRollbackBackups = 3
     private let rollbackBackupDirectoryName = "RollbackBackups"
@@ -146,15 +152,20 @@ final class SimpleUpdater {
     }
 
     func hasRollbackBackup() -> Bool {
+        guard Self.releaseInfrastructureAvailable else { return false }
         return self.latestRollbackBackup() != nil
     }
 
     func latestRollbackVersion() -> String? {
+        guard Self.releaseInfrastructureAvailable else { return nil }
         guard let latest = self.latestRollbackBackup() else { return nil }
         return self.versionString(for: latest)
     }
 
     func rollbackToLatestBackup() async throws {
+        guard Self.releaseInfrastructureAvailable else {
+            throw SimpleUpdateError.releaseInfrastructureUnavailable
+        }
         guard self.updateOperationGate.begin() else {
             throw SimpleUpdateError.updateAlreadyInProgress
         }
@@ -193,6 +204,9 @@ final class SimpleUpdater {
         limit: Int = 3,
         includePrerelease: Bool = false
     ) async throws -> [ReleaseBuildOption] {
+        guard Self.releaseInfrastructureAvailable else {
+            throw SimpleUpdateError.releaseInfrastructureUnavailable
+        }
         let releases = try await self.fetchReleases(owner: owner, repo: repo)
         let count = max(1, limit)
         let candidates = self.sortedCandidateReleases(
@@ -224,6 +238,9 @@ final class SimpleUpdater {
         limit: Int = 6,
         includePrerelease: Bool = false
     ) async throws -> [ReleaseNote] {
+        guard Self.releaseInfrastructureAvailable else {
+            throw SimpleUpdateError.releaseInfrastructureUnavailable
+        }
         let releases = try await self.fetchReleases(owner: owner, repo: repo)
         let count = max(1, limit)
 
@@ -281,6 +298,9 @@ final class SimpleUpdater {
         repo: String,
         includePrerelease: Bool = false
     ) async throws -> (version: String, notes: String) {
+        guard Self.releaseInfrastructureAvailable else {
+            throw SimpleUpdateError.releaseInfrastructureUnavailable
+        }
         let releases = try await self.fetchReleases(owner: owner, repo: repo)
 
         guard let latest = self.selectLatestRelease(
@@ -302,6 +322,9 @@ final class SimpleUpdater {
         repo: String,
         includePrerelease: Bool = false
     ) async throws -> (hasUpdate: Bool, latestVersion: String) {
+        guard Self.releaseInfrastructureAvailable else {
+            throw SimpleUpdateError.releaseInfrastructureUnavailable
+        }
         guard !self.isUpdateInProgress else {
             throw SimpleUpdateError.updateAlreadyInProgress
         }
@@ -336,6 +359,9 @@ final class SimpleUpdater {
         repo: String,
         includePrerelease: Bool = false
     ) async throws {
+        guard Self.releaseInfrastructureAvailable else {
+            throw SimpleUpdateError.releaseInfrastructureUnavailable
+        }
         guard self.updateOperationGate.begin() else {
             throw SimpleUpdateError.updateAlreadyInProgress
         }
@@ -371,7 +397,7 @@ final class SimpleUpdater {
         let currentBundle = Bundle.main
         // up to date
         if !(latestVersion > current) {
-            throw PMKError.cancelled // mimic AppUpdater semantics for up-to-date
+            throw SimpleUpdateError.alreadyCurrent
         }
 
         // Find asset matching: "{repo-lower}-{version-from-tag}.*" and zip preferred

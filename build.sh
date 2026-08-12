@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# FluidVoice Build Profile Router
+# MyFluidVoice Build Profile Router
 # Defaults to the public OSS build, which skips private Fluid Intelligence.
 #
 # Usage:
@@ -48,7 +48,7 @@ run_public_build() {
     cd "${PROJECT_DIR}"
 
     if [ "${signing_mode}" = "unsigned" ]; then
-        echo "Running unsigned public FluidVoice build..."
+        echo "Running unsigned public MyFluidVoice build..."
         echo "Accessibility permission may need to be granted again after rebuilding."
         exec xcodebuild "${build_args[@]}" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
     fi
@@ -81,8 +81,8 @@ EOF
         exit 1
     fi
 
-    echo "Running signed public FluidVoice build..."
-    echo "Build product: ${DERIVED_DATA_PATH}/Build/Products/Debug/FluidVoice Debug.app"
+    echo "Running signed public MyFluidVoice build..."
+    echo "Build product: ${DERIVED_DATA_PATH}/Build/Products/Debug/MyFluidVoice Debug.app"
     exec xcodebuild "${build_args[@]}" DEVELOPMENT_TEAM="${development_team}"
 }
 
