@@ -2340,7 +2340,7 @@ final class DictationSessionCoordinatorTests: XCTestCase {
         localeIdentifier: "en-US",
         model: .appleSpeech,
         languageBinding: .appleSpeech(localeIdentifier: "en-US")
-    )
+    )!
 
     func testBeginFreezesSpeechConfigurationForSession() {
         let coordinator = DictationSessionCoordinator()
@@ -2351,8 +2351,8 @@ final class DictationSessionCoordinatorTests: XCTestCase {
         )
 
         XCTAssertEqual(session.speechConfiguration, self.englishConfiguration)
-        XCTAssertEqual(session.state, .capturing)
-        XCTAssertTrue(coordinator.isCurrent(session.id))
+        XCTAssertEqual(coordinator.state(for: session.id), .capturing)
+        XCTAssertTrue(coordinator.isCapturing(session.id))
     }
 
     func testFinalizationCanOnlyBeginOnce() {
@@ -2364,10 +2364,26 @@ final class DictationSessionCoordinatorTests: XCTestCase {
 
         XCTAssertTrue(coordinator.beginFinalization(for: session.id))
         XCTAssertFalse(coordinator.beginFinalization(for: session.id))
-        XCTAssertEqual(coordinator.activeSession?.state, .finalizing)
+        XCTAssertEqual(coordinator.state(for: session.id), .finalizing)
+        XCTAssertTrue(coordinator.canContinueFinalization(for: session.id))
     }
 
-    func testDiscardInvalidatesLateSessionCallbacks() {
+    func testDiscardAfterCallbackAdmissionPreventsLateOutputDelivery() {
+        let coordinator = DictationSessionCoordinator()
+        let session = coordinator.begin(
+            activationStyle: .toggle,
+            speechConfiguration: self.englishConfiguration
+        )
+        XCTAssertTrue(coordinator.beginFinalization(for: session.id))
+        XCTAssertTrue(coordinator.canContinueFinalization(for: session.id))
+
+        XCTAssertEqual(coordinator.requestExit(.discard, for: session.id), .discard)
+        XCTAssertFalse(coordinator.claimOutputDelivery(for: session.id))
+        XCTAssertEqual(coordinator.state(for: session.id), .cancelled)
+        XCTAssertFalse(coordinator.complete(for: session.id))
+    }
+
+    func testClaimedOutputDeliveryHasSingleTerminalWinner() {
         let coordinator = DictationSessionCoordinator()
         let session = coordinator.begin(
             activationStyle: .toggle,
@@ -2375,9 +2391,13 @@ final class DictationSessionCoordinatorTests: XCTestCase {
         )
         XCTAssertTrue(coordinator.beginFinalization(for: session.id))
 
-        XCTAssertEqual(coordinator.requestExit(.discard, for: session.id), .discard)
-        XCTAssertFalse(coordinator.isCurrent(session.id))
+        XCTAssertTrue(coordinator.claimOutputDelivery(for: session.id))
+        XCTAssertFalse(coordinator.claimOutputDelivery(for: session.id))
+        XCTAssertEqual(coordinator.requestExit(.discard, for: session.id), .ignore)
+        XCTAssertTrue(coordinator.complete(for: session.id))
         XCTAssertFalse(coordinator.complete(for: session.id))
+        XCTAssertEqual(coordinator.state(for: session.id), .completed)
+        XCTAssertFalse(coordinator.canContinueFinalization(for: session.id))
     }
 
     func testPasteExitDeduplicatesSimultaneousTerminalEvents() {
@@ -2393,7 +2413,7 @@ final class DictationSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.requestExit(.discard, for: session.id), .ignore)
     }
 
-    func testDoNothingAndPushToTalkExitPoliciesDoNotTerminateCapture() {
+    func testDoNothingDoesNotTerminateToggleCapture() {
         let coordinator = DictationSessionCoordinator()
         let toggleSession = coordinator.begin(
             activationStyle: .toggle,
@@ -2401,14 +2421,38 @@ final class DictationSessionCoordinatorTests: XCTestCase {
         )
 
         XCTAssertEqual(coordinator.requestExit(.doNothing, for: toggleSession.id), .ignore)
-        XCTAssertTrue(coordinator.isCurrent(toggleSession.id))
+        XCTAssertTrue(coordinator.isCapturing(toggleSession.id))
+    }
+
+    func testEveryPushToTalkExitPolicyIsIgnored() {
+        let coordinator = DictationSessionCoordinator()
 
         let pushToTalkSession = coordinator.begin(
             activationStyle: .pushToTalk,
             speechConfiguration: self.englishConfiguration
         )
-        XCTAssertEqual(coordinator.requestExit(.paste, for: pushToTalkSession.id), .ignore)
-        XCTAssertTrue(coordinator.isCurrent(pushToTalkSession.id))
+        for action in DictationExitAction.allCases {
+            XCTAssertEqual(coordinator.requestExit(action, for: pushToTalkSession.id), .ignore)
+        }
+        XCTAssertTrue(coordinator.isCapturing(pushToTalkSession.id))
+    }
+
+    func testStaleSessionIDCannotMutateCurrentSession() {
+        let coordinator = DictationSessionCoordinator()
+        let current = coordinator.begin(
+            activationStyle: .toggle,
+            speechConfiguration: self.englishConfiguration
+        )
+        let staleID = RecordingSessionID()
+
+        XCTAssertFalse(coordinator.beginFinalization(for: staleID))
+        XCTAssertFalse(coordinator.cancel(for: staleID))
+        XCTAssertFalse(coordinator.claimOutputDelivery(for: staleID))
+        XCTAssertFalse(coordinator.complete(for: staleID))
+        for action in DictationExitAction.allCases {
+            XCTAssertEqual(coordinator.requestExit(action, for: staleID), .ignore)
+        }
+        XCTAssertTrue(coordinator.isCapturing(current.id))
     }
 
     func testStartingNewSessionInvalidatesPreviousSession() {
@@ -2422,8 +2466,17 @@ final class DictationSessionCoordinatorTests: XCTestCase {
             speechConfiguration: self.englishConfiguration
         )
 
-        XCTAssertFalse(coordinator.isCurrent(first.id))
-        XCTAssertTrue(coordinator.isCurrent(second.id))
+        XCTAssertNil(coordinator.state(for: first.id))
+        XCTAssertTrue(coordinator.isCapturing(second.id))
+    }
+
+    func testRejectsContradictoryAppleSpeechLocaleConfiguration() {
+        XCTAssertNil(RecordingSpeechConfiguration(
+            inputSourceID: "com.apple.keylayout.German",
+            localeIdentifier: "de-DE",
+            model: .appleSpeech,
+            languageBinding: .appleSpeech(localeIdentifier: "en-US")
+        ))
     }
 }
 

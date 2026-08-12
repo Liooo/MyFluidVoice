@@ -13,6 +13,29 @@ struct RecordingSpeechConfiguration: Equatable {
     let localeIdentifier: String
     let model: SettingsStore.SpeechModel
     let languageBinding: VoiceEngineLanguageRoute.LanguageBinding
+
+    init?(
+        inputSourceID: String?,
+        localeIdentifier: String,
+        model: SettingsStore.SpeechModel,
+        languageBinding: VoiceEngineLanguageRoute.LanguageBinding
+    ) {
+        if case let .appleSpeech(bindingLocaleIdentifier) = languageBinding,
+           Self.normalizedLocaleIdentifier(bindingLocaleIdentifier) !=
+           Self.normalizedLocaleIdentifier(localeIdentifier)
+        {
+            return nil
+        }
+
+        self.inputSourceID = inputSourceID
+        self.localeIdentifier = localeIdentifier
+        self.model = model
+        self.languageBinding = languageBinding
+    }
+
+    private static func normalizedLocaleIdentifier(_ identifier: String) -> String {
+        identifier.replacingOccurrences(of: "_", with: "-").lowercased()
+    }
 }
 
 enum DictationActivationStyle: Equatable {
@@ -23,6 +46,7 @@ enum DictationActivationStyle: Equatable {
 enum DictationSessionState: Equatable {
     case capturing
     case finalizing
+    case delivering
     case cancelled
     case completed
 }
@@ -56,7 +80,11 @@ final class DictationSessionCoordinator {
         let id: RecordingSessionID
         let activationStyle: DictationActivationStyle
         let speechConfiguration: RecordingSpeechConfiguration
-        fileprivate(set) var state: DictationSessionState
+    }
+
+    private struct ActiveSession {
+        let session: Session
+        var state: DictationSessionState
     }
 
     enum ExitDisposition: Equatable {
@@ -65,7 +93,11 @@ final class DictationSessionCoordinator {
         case discard
     }
 
-    private(set) var activeSession: Session?
+    private var activeSession: ActiveSession?
+
+    var currentSession: Session? {
+        self.activeSession?.session
+    }
 
     @discardableResult
     func begin(
@@ -75,58 +107,79 @@ final class DictationSessionCoordinator {
         let session = Session(
             id: RecordingSessionID(),
             activationStyle: activationStyle,
-            speechConfiguration: speechConfiguration,
-            state: .capturing
+            speechConfiguration: speechConfiguration
         )
-        self.activeSession = session
+        self.activeSession = ActiveSession(session: session, state: .capturing)
         return session
     }
 
-    func isCurrent(_ id: RecordingSessionID) -> Bool {
-        guard let session = self.activeSession, session.id == id else { return false }
-        return session.state == .capturing || session.state == .finalizing
+    func state(for id: RecordingSessionID) -> DictationSessionState? {
+        guard let activeSession = self.activeSession,
+              activeSession.session.id == id
+        else { return nil }
+        return activeSession.state
+    }
+
+    func isCapturing(_ id: RecordingSessionID) -> Bool {
+        self.state(for: id) == .capturing
+    }
+
+    func canContinueFinalization(for id: RecordingSessionID) -> Bool {
+        self.state(for: id) == .finalizing
     }
 
     @discardableResult
     func beginFinalization(for id: RecordingSessionID) -> Bool {
-        guard var session = self.activeSession,
-              session.id == id,
-              session.state == .capturing
+        guard var activeSession = self.activeSession,
+              activeSession.session.id == id,
+              activeSession.state == .capturing
         else { return false }
 
-        session.state = .finalizing
-        self.activeSession = session
+        activeSession.state = .finalizing
+        self.activeSession = activeSession
         return true
     }
 
     @discardableResult
     func cancel(for id: RecordingSessionID) -> Bool {
-        guard var session = self.activeSession,
-              session.id == id,
-              session.state == .capturing || session.state == .finalizing
+        guard var activeSession = self.activeSession,
+              activeSession.session.id == id,
+              activeSession.state == .capturing || activeSession.state == .finalizing
         else { return false }
 
-        session.state = .cancelled
-        self.activeSession = session
+        activeSession.state = .cancelled
+        self.activeSession = activeSession
+        return true
+    }
+
+    @discardableResult
+    func claimOutputDelivery(for id: RecordingSessionID) -> Bool {
+        guard var activeSession = self.activeSession,
+              activeSession.session.id == id,
+              activeSession.state == .finalizing
+        else { return false }
+
+        activeSession.state = .delivering
+        self.activeSession = activeSession
         return true
     }
 
     @discardableResult
     func complete(for id: RecordingSessionID) -> Bool {
-        guard var session = self.activeSession,
-              session.id == id,
-              session.state == .finalizing
+        guard var activeSession = self.activeSession,
+              activeSession.session.id == id,
+              activeSession.state == .delivering
         else { return false }
 
-        session.state = .completed
-        self.activeSession = session
+        activeSession.state = .completed
+        self.activeSession = activeSession
         return true
     }
 
     func requestExit(_ action: DictationExitAction, for id: RecordingSessionID) -> ExitDisposition {
-        guard let session = self.activeSession,
-              session.id == id,
-              session.activationStyle == .toggle
+        guard let activeSession = self.activeSession,
+              activeSession.session.id == id,
+              activeSession.session.activationStyle == .toggle
         else { return .ignore }
 
         switch action {
