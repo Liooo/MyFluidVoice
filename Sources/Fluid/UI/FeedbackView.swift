@@ -35,7 +35,7 @@ struct FeedbackView: View {
                         VStack(alignment: .leading) {
                             Text("Send Feedback")
                                 .font(.system(size: 28, weight: .bold))
-                            Text("Help us improve FluidVoice")
+                            Text("Help us improve MyFluidVoice")
                                 .font(.system(size: 16))
                                 .foregroundStyle(.secondary)
                         }
@@ -56,7 +56,7 @@ struct FeedbackView: View {
                                     .font(.system(size: 18, weight: .semibold))
                                     .foregroundStyle(self.theme.palette.primaryText)
 
-                                Text("Your feedback helps us make FluidVoice even better")
+                                Text("Your feedback helps us make MyFluidVoice even better")
                                     .font(.system(size: 14))
                                     .foregroundStyle(self.theme.palette.secondaryText)
                             }
@@ -71,7 +71,7 @@ struct FeedbackView: View {
                                 .foregroundStyle(.yellow)
 
                             VStack(alignment: .leading, spacing: 6) {
-                                Text("Loving FluidVoice?")
+                                Text("Loving MyFluidVoice?")
                                     .font(.system(size: 16, weight: .semibold))
                                     .foregroundStyle(self.theme.palette.primaryText)
 
@@ -84,7 +84,7 @@ struct FeedbackView: View {
                             Spacer()
 
                             HStack(spacing: 10) {
-                                if let githubURL = URL(string: "https://github.com/altic-dev/Fluid-oss") {
+                                if let githubURL = URL(string: "https://github.com/Liooo/MyFluidVoice") {
                                     Link(destination: githubURL) {
                                         HStack(spacing: 8) {
                                             Image(systemName: "star.fill")
@@ -99,21 +99,6 @@ struct FeedbackView: View {
                                     .buttonHoverEffect()
                                 }
 
-                                if let sponsorURL = URL(string: "https://github.com/sponsors/altic-dev") {
-                                    Link(destination: sponsorURL) {
-                                        HStack(spacing: 8) {
-                                            Image(systemName: "heart.fill")
-                                            Text("Support FluidVoice")
-                                                .fontWeight(.semibold)
-                                        }
-                                        .font(.system(size: 14))
-                                        .padding(.horizontal, 20)
-                                        .padding(.vertical, 10)
-                                    }
-                                    .fluidButton(.glass, size: .medium)
-                                    .buttonHoverEffect()
-                                    .help("Sponsor Altic on GitHub")
-                                }
                             }
                         }
                     }
@@ -205,7 +190,7 @@ struct FeedbackView: View {
         .alert("Feedback Sent", isPresented: self.$showFeedbackConfirmation) {
             Button("OK") {}
         } message: {
-            Text("Thank you for helping us improve FluidVoice.")
+            Text("Thank you for helping us improve MyFluidVoice.")
         }
         .alert("Feedback Failed", isPresented: self.$showFeedbackError) {
             Button("Try Again") {
@@ -245,7 +230,7 @@ struct FeedbackView: View {
                 self.includeDebugLogs = false
             } else {
                 // Show error to user - inputs are preserved for retry
-                self.feedbackErrorMessage = "We couldn't send your feedback. Please check your internet connection and try again."
+                self.feedbackErrorMessage = "Feedback submission is not configured yet. Please open a GitHub issue instead."
                 self.showFeedbackError = true
             }
         }
@@ -282,40 +267,9 @@ struct FeedbackView: View {
         ]
     }
 
-    private func submitFeedback(data: [String: Any]) async -> Bool {
-        guard let url = URL(string: "https://altic.dev/api/fluid/feedback") else {
-            DebugLogger.shared.error("Invalid feedback API URL", source: "FeedbackView")
-            return false
-        }
-
-        do {
-            var request = URLRequest(url: url)
-            request.httpMethod = "POST"
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.httpBody = try JSONSerialization.data(withJSONObject: data)
-
-            let (_, response) = try await URLSession.shared.data(for: request)
-
-            if let httpResponse = response as? HTTPURLResponse {
-                let success = (200...299).contains(httpResponse.statusCode)
-                if success {
-                    DebugLogger.shared.info("Feedback submitted successfully", source: "FeedbackView")
-                } else {
-                    DebugLogger.shared.error(
-                        "Feedback submission failed with status: \(httpResponse.statusCode)",
-                        source: "FeedbackView"
-                    )
-                }
-                return success
-            }
-            return false
-        } catch {
-            DebugLogger.shared.error(
-                "Network error submitting feedback: \(error.localizedDescription)",
-                source: "FeedbackView"
-            )
-            return false
-        }
+    private func submitFeedback(data _: [String: Any]) async -> Bool {
+        DebugLogger.shared.info("Feedback submission skipped: fork endpoint is not configured", source: "FeedbackView")
+        return false
     }
 }
 

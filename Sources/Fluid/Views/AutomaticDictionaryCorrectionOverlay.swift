@@ -251,7 +251,7 @@ final class MicrophoneChangeOverlayController {
     private init() {}
 
     func show(_ notice: MicrophoneChangeNotice) {
-        guard Bundle.main.bundleIdentifier == "com.FluidApp.app" else { return }
+        guard Bundle.main.bundleIdentifier == "com.liooo.MyFluidVoice" else { return }
         self.generation &+= 1
         let currentGeneration = self.generation
         self.dismissTask?.cancel()

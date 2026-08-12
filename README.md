@@ -1,33 +1,25 @@
-# FluidVoice
+# MyFluidVoice
 
 <p align="center">
-  <a href="https://github.com/altic-dev/FluidVoice/stargazers"><img src="https://img.shields.io/github/stars/altic-dev/FluidVoice?style=social" alt="GitHub stars"/></a>
-  <a href="https://github.com/sponsors/altic-dev"><img src="https://img.shields.io/badge/Sponsor-GitHub%20Sponsors-ea4aaa?logo=githubsponsors&logoColor=white" alt="Sponsor FluidVoice"/></a>
-  <a href="https://x.com/ALTIC_DEV"><img src="https://img.shields.io/badge/X-%40ALTIC__DEV-black?logo=x&logoColor=white" alt="X @ALTIC_DEV"/></a>
+  <a href="https://github.com/Liooo/MyFluidVoice/stargazers"><img src="https://img.shields.io/github/stars/Liooo/MyFluidVoice?style=social" alt="GitHub stars"/></a>
   <br />
   <a href="https://huggingface.co/nvidia/parakeet_realtime_eou_120m-v1"><img src="https://img.shields.io/badge/Models-Nemotron%20Speech%203.5%20%7C%20Parakeet%20Flash%20%7C%20Parakeet%20v3%20%26%20v2%20%7C%20Cohere%20%7C%20Apple%20Speech%20%7C%20Whisper-blue" alt="Supported Models"/></a>
   <br /><br />
-  <a href="https://trendshift.io/repositories/16601?utm_source=repository-badge&utm_medium=badge&utm_campaign=badge-repository-16601" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/16601" alt="altic-dev%2FFluidVoice | Trendshift" width="250" height="55"/></a>
 </p>
 
 Open source voice-to-text dictation app for macOS with on-device AI enhancement.
 
-**Install with Homebrew:** `brew install --cask fluidvoice`
-
-**Manual download:** [latest release](https://github.com/altic-dev/FluidVoice/releases/latest)
-
-> [!NOTE]
-> FluidVoice is on macOS today. **iOS and Windows are on the way** — join the waitlist to get notified when we launch: **[altic.dev/fluid/waitlist](https://www.altic.dev/fluid/waitlist)**
+Build MyFluidVoice from source while fork release infrastructure is being prepared.
 
 
 > [!IMPORTANT]
-> This project is free and open source under GPLv3. If FluidVoice is useful to you, please star the repository — it helps visibility and keeps development going.
+> This project is free and open source under GPLv3. If MyFluidVoice is useful to you, please star the repository — it helps visibility and keeps development going.
 
 ---
 
-## Support FluidVoice
+## Support MyFluidVoice
 
-If FluidVoice helps you, you can support continued development and future platform work for iOS and Windows on [GitHub Sponsors](https://github.com/sponsors/altic-dev).
+If MyFluidVoice helps you, please star the [repository](https://github.com/Liooo/MyFluidVoice).
 
 ---
 
@@ -43,7 +35,7 @@ If FluidVoice helps you, you can support continued development and future platfo
 
 ## Fluid Intelligence
 
-FluidVoice is fully open source under GPLv3. **Fluid Intelligence** is a separate, privately maintained local AI runtime that powers advanced on-device dictation enhancement — smart formatting, context-aware capitalization, and post-processing — all running locally on your Mac.
+MyFluidVoice is fully open source under GPLv3. **Fluid Intelligence** is a separate, privately maintained local AI runtime that powers advanced on-device dictation enhancement — smart formatting, context-aware capitalization, and post-processing — all running locally on your Mac.
 
 The app works great on its own with any supported speech model and optional cloud AI providers. Fluid Intelligence adds a fully local, private AI layer for users who want on-device enhancement without sending data anywhere.
 
@@ -82,7 +74,7 @@ We're keeping Fluid Intelligence private for now so we can sustainably offer the
 
 ## Demo
 
-### Command Mode — Take any action on your Mac using FluidVoice
+### Command Mode — Take any action on your Mac using MyFluidVoice
 
 https://github.com/user-attachments/assets/ffb47afd-1621-432a-bdca-baa4b8526301
 
@@ -154,12 +146,9 @@ Whisper supports up to 99 languages, depending on the model size you choose.
 ## Quick Start
 
 1. **Install** with Homebrew:
-   ```bash
-   brew install --cask fluidvoice
-   ```
-   Or download the [latest release](https://github.com/altic-dev/FluidVoice/releases/latest).
+   Build from source until fork releases are available.
 
-2. **Grant permissions** — FluidVoice will ask for microphone and accessibility access. Both are required for dictation and typing into other apps.
+2. **Grant permissions** — MyFluidVoice will ask for microphone and accessibility access. Both are required for dictation and typing into other apps.
 
 3. **Set your hotkey** — pick a global hotkey in settings that triggers voice capture from anywhere.
 
@@ -168,8 +157,6 @@ Whisper supports up to 99 languages, depending on the model size you choose.
 5. **(Optional) Enable Fluid Intelligence** — download the local AI model during onboarding for on-device dictation enhancement. Everything runs locally, no data leaves your Mac.
 
 6. **(Optional) Bring your own AI provider** — add an OpenAI, Groq, or custom provider API key for cloud-based enhancement. Keys are stored securely in macOS Keychain. Select "Always allow" for key access.
-
-7. **(Optional) Opt in to beta builds** — `Settings → Automatic Updates → Beta Releases` for early access to new features.
 
 ---
 
@@ -188,8 +175,8 @@ Whisper supports up to 99 languages, depending on the model size you choose.
 ## Building from Source
 
 ```bash
-git clone https://github.com/altic-dev/FluidVoice.git
-cd FluidVoice
+git clone https://github.com/Liooo/MyFluidVoice.git
+cd MyFluidVoice
 open Fluid.xcodeproj
 ```
 
@@ -201,7 +188,7 @@ Run a signed Debug build using the script:
 ./build.sh
 ```
 
-The signed build is written to `DerivedData/Build/Products/Debug/FluidVoice Debug.app`.
+The signed build is written to `DerivedData/Build/Products/Debug/MyFluidVoice Debug.app`.
 Keep launching that product after each rebuild so macOS can preserve its Accessibility
 authorization.
 
@@ -224,7 +211,7 @@ Contributions are welcome! Please create an issue first to discuss major changes
 ### Development Setup
 
 1. Clone and open in Xcode as above.
-2. **Signing:** `FluidVoice → Signing & Capabilities → Automatically manage signing → pick your Team` (Personal Team is fine). If you have certificates for multiple teams, select one without changing the project by running `FLUIDVOICE_DEVELOPMENT_TEAM=YOUR_TEAM_ID ./build.sh`.
+2. **Signing:** `MyFluidVoice → Signing & Capabilities → Automatically manage signing → pick your Team` (Personal Team is fine). If you have certificates for multiple teams, select one without changing the project by running `FLUIDVOICE_DEVELOPMENT_TEAM=YOUR_TEAM_ID ./build.sh`.
 3. Build and run — SPM handles dependencies.
 4. **(Optional) Pre-commit hook** to prevent accidental team ID commits:
    ```bash
@@ -260,7 +247,7 @@ xcodebuild test -project Fluid.xcodeproj -scheme Fluid -destination 'platform=ma
 
 ## Privacy & Analytics
 
-FluidVoice is **local-first**. Your voice, audio, and transcribed text never leave your machine unless you explicitly opt in to a cloud AI provider.
+MyFluidVoice is **local-first**. Your voice, audio, and transcribed text never leave your machine unless you explicitly opt in to a cloud AI provider.
 
 ### What's Collected (Opt-In)
 

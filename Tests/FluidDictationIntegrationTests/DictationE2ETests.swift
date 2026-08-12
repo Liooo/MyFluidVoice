@@ -2870,4 +2870,24 @@ final class SimpleUpdaterTests: XCTestCase {
         XCTAssertFalse(gate.isActive)
         XCTAssertTrue(gate.begin())
     }
+
+    func testForkDisablesReleaseOperationsUntilInfrastructureExists() async {
+        do {
+            _ = try await SimpleUpdater.shared.checkForUpdate(owner: "altic-dev", repo: "Fluid-oss")
+            XCTFail("Release operations must remain disabled for the fork")
+        } catch SimpleUpdateError.releaseInfrastructureUnavailable {
+            // Expected: no upstream release request is made.
+        } catch {
+            XCTFail("Unexpected update error: \(error)")
+        }
+    }
+}
+
+final class ForkIdentityTests: XCTestCase {
+    func testAppBundleUsesForkIdentity() {
+        let appBundle = Bundle(for: AppDelegate.self)
+
+        XCTAssertEqual(appBundle.bundleIdentifier, "com.liooo.MyFluidVoice")
+        XCTAssertEqual(appBundle.fluidAppDisplayName, "MyFluidVoice Debug")
+    }
 }

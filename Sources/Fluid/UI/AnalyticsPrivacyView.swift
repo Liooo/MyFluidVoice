@@ -8,9 +8,9 @@ struct AnalyticsPrivacyView: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Anonymous Analytics")
+                    Text("Analytics")
                         .font(.system(size: 18, weight: .semibold))
-                    Text("What FluidVoice collects when analytics is enabled")
+                    Text("MyFluidVoice does not transmit analytics data")
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                 }
@@ -29,25 +29,9 @@ struct AnalyticsPrivacyView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    self.sectionTitle("We collect")
-                    self.bullet("Basic app/device info (app version, macOS version, CPU family/chip class, etc.)")
-                    self.bullet("Which features were used (for example: dictation, Command Mode etc.)")
-                    self.bullet("Performance metrics such as transcription chunk latency and AI post-processing latency (milliseconds).")
-                    self.bullet("Model/provider metadata and post-processing input length (character count only, not text content).")
-                    self.bullet("Whether something worked and high-level error info.")
-
-                    self.sectionTitle("We do NOT collect")
-                    self.bullet("Any transcription text or audio.")
-                    self.bullet("Selected text, rewrite prompts, or AI responses.")
-                    self.bullet("Terminal commands or outputs from Command Mode.")
-                    self.bullet("Window titles, app names, file names/paths, clipboard contents, or anything you type.")
-
-                    self.sectionTitle("How it’s used")
-                    self.bullet("To understand which features are being used and where reliability/performance can be improved.")
-                    self.bullet("To measure product health (e.g., active devices, retention) without requiring accounts.")
-
-                    self.sectionTitle("Control")
-                    self.bullet("You can disable analytics anytime in Settings → Share Anonymous Analytics.")
+                    self.sectionTitle("Current policy")
+                    self.bullet("The fork does not configure an analytics endpoint or transmit analytics events.")
+                    self.bullet("Existing instrumentation remains local no-op compatibility code.")
                 }
                 .padding(.vertical, 6)
             }
@@ -74,16 +58,11 @@ struct AnalyticsPrivacyView: View {
 
     private var contactInfoText: AttributedString {
         var text = AttributedString(
-            "If you have any concerns we would love to hear about it, please email alticdev@gmail.com or file an issue in our GitHub."
+            "If you have concerns, please file an issue in the MyFluidVoice GitHub repository."
         )
 
-        if let emailRange = text.range(of: "alticdev@gmail.com") {
-            text[emailRange].link = URL(string: "mailto:alticdev@gmail.com")
-            text[emailRange].foregroundColor = self.theme.palette.accent
-        }
-
         if let githubRange = text.range(of: "GitHub") {
-            text[githubRange].link = URL(string: "https://github.com/altic-dev/FluidVoice")
+            text[githubRange].link = URL(string: "https://github.com/Liooo/MyFluidVoice")
             text[githubRange].foregroundColor = self.theme.palette.accent
         }
 
