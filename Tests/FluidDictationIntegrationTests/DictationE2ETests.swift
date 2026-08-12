@@ -3222,3 +3222,90 @@ final class KeyboardInputSourceRoutingTests: XCTestCase {
         KeyboardInputSourceSnapshot(id: id, localizedName: name, languages: languages)
     }
 }
+
+@MainActor
+final class RecordingSpeechSessionSelectionTests: XCTestCase {
+    func testSelectionKeepsConfigurationSnapshotAndBlocksReplacement() throws {
+        let firstID = RecordingSessionID(rawValue: UUID(uuidString: "11111111-1111-1111-1111-111111111111")!)
+        let secondID = RecordingSessionID(rawValue: UUID(uuidString: "22222222-2222-2222-2222-222222222222")!)
+        let firstConfiguration = try XCTUnwrap(RecordingSpeechConfiguration(
+            inputSourceID: "com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese",
+            localeIdentifier: "ja-JP",
+            model: .whisperSmall,
+            languageBinding: .whisper(languageCode: "ja")
+        ))
+        let replacementConfiguration = try XCTUnwrap(RecordingSpeechConfiguration(
+            inputSourceID: "com.apple.keylayout.US",
+            localeIdentifier: "en-US",
+            model: .appleSpeech,
+            languageBinding: .appleSpeech(localeIdentifier: "en-US")
+        ))
+        var state = RecordingSpeechSessionSelectionState()
+
+        XCTAssertTrue(state.begin(sessionID: firstID, configuration: firstConfiguration))
+        XCTAssertFalse(state.begin(sessionID: secondID, configuration: replacementConfiguration))
+
+        XCTAssertEqual(state.selection(matching: firstID)?.configuration, firstConfiguration)
+        XCTAssertEqual(state.selection(matching: firstID)?.providerKey, "whisper-small:whisper-ja")
+    }
+
+    func testStaleSessionIDCannotReadOrClearActiveSelection() throws {
+        let activeID = RecordingSessionID(rawValue: UUID(uuidString: "33333333-3333-3333-3333-333333333333")!)
+        let staleID = RecordingSessionID(rawValue: UUID(uuidString: "44444444-4444-4444-4444-444444444444")!)
+        let configuration = try XCTUnwrap(RecordingSpeechConfiguration(
+            inputSourceID: "com.apple.keylayout.US",
+            localeIdentifier: "en-US",
+            model: .cohereTranscribeSixBit,
+            languageBinding: .cohere(.english)
+        ))
+        var state = RecordingSpeechSessionSelectionState()
+        XCTAssertTrue(state.begin(sessionID: activeID, configuration: configuration))
+
+        XCTAssertNil(state.selection(matching: staleID))
+        XCTAssertFalse(state.clear(matching: staleID))
+        XCTAssertEqual(state.selection(matching: activeID)?.configuration, configuration)
+
+        XCTAssertTrue(state.clear(matching: activeID))
+        XCTAssertNil(state.activeSelection)
+    }
+
+    func testProviderKeyIncludesLanguageBinding() throws {
+        let english = try XCTUnwrap(RecordingSpeechConfiguration(
+            inputSourceID: nil,
+            localeIdentifier: "en-US",
+            model: .whisperBase,
+            languageBinding: .whisper(languageCode: "en")
+        ))
+        let japanese = try XCTUnwrap(RecordingSpeechConfiguration(
+            inputSourceID: nil,
+            localeIdentifier: "ja-JP",
+            model: .whisperBase,
+            languageBinding: .whisper(languageCode: "ja")
+        ))
+
+        let englishSelection = try XCTUnwrap(RecordingSpeechSessionSelection(
+            sessionID: RecordingSessionID(),
+            configuration: english
+        ))
+        let japaneseSelection = try XCTUnwrap(RecordingSpeechSessionSelection(
+            sessionID: RecordingSessionID(),
+            configuration: japanese
+        ))
+
+        XCTAssertNotEqual(englishSelection.providerKey, japaneseSelection.providerKey)
+    }
+
+    func testQwenSelectionIsRejectedWhileRuntimeIsUnavailable() throws {
+        let configuration = try XCTUnwrap(RecordingSpeechConfiguration(
+            inputSourceID: nil,
+            localeIdentifier: "en-US",
+            model: .qwen3Asr,
+            languageBinding: .automatic
+        ))
+
+        XCTAssertNil(RecordingSpeechSessionSelection(
+            sessionID: RecordingSessionID(),
+            configuration: configuration
+        ))
+    }
+}

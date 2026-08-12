@@ -25,13 +25,20 @@ final class WhisperProvider: TranscriptionProvider {
 
     private let overriddenModelDirectory: URL?
     private let urlSession: URLSession
+    private let languageCodeOverride: String?
 
-    var modelOverride: SettingsStore.SpeechModel?
+    private let modelOverride: SettingsStore.SpeechModel?
 
-    init(modelDirectory: URL? = nil, urlSession: URLSession = .shared, modelOverride: SettingsStore.SpeechModel? = nil) {
+    init(
+        modelDirectory: URL? = nil,
+        urlSession: URLSession = .shared,
+        modelOverride: SettingsStore.SpeechModel? = nil,
+        languageCodeOverride: String? = nil
+    ) {
         self.overriddenModelDirectory = modelDirectory
         self.urlSession = urlSession
         self.modelOverride = modelOverride
+        self.languageCodeOverride = languageCodeOverride
     }
 
     deinit {
@@ -311,7 +318,7 @@ final class WhisperProvider: TranscriptionProvider {
 
         let transcript = try await session.run(
             samples,
-            options: RunOptions(timestamps: .segment)
+            options: RunOptions(timestamps: .segment, language: self.languageCodeOverride)
         )
         let fullText = transcript.text.trimmingCharacters(in: .whitespacesAndNewlines)
         return ASRTranscriptionResult(text: fullText, confidence: 1.0)

@@ -28,13 +28,16 @@ final class AppleSpeechAnalyzerProvider: TranscriptionProvider {
     /// The required audio format for the analyzer
     private var analyzerFormat: AVAudioFormat?
     private var preparedLocale: Locale?
+    private let localeIdentifierOverride: String?
 
     /// Thread-safe cache for model installation status.
     /// Protected by `_cacheQueue` for thread-safe access from both sync and async contexts.
     private var _modelsInstalledCache: Bool = false
     private let _cacheQueue = DispatchQueue(label: "com.fluidvoice.speechanalyzer.cache")
 
-    init() {}
+    init(localeIdentifier: String? = nil) {
+        self.localeIdentifierOverride = localeIdentifier
+    }
 
     // MARK: - Lifecycle
 
@@ -269,7 +272,8 @@ final class AppleSpeechAnalyzerProvider: TranscriptionProvider {
     // MARK: - Helpers
 
     private func selectedSpeechLocale() -> Locale {
-        SettingsStore.shared.selectedAppleSpeechLocale
+        self.localeIdentifierOverride.map(Locale.init(identifier:))
+            ?? SettingsStore.shared.selectedAppleSpeechLocale
     }
 
     private func normalizedIdentifier(for locale: Locale) -> String {

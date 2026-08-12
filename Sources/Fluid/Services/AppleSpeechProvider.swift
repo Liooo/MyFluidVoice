@@ -22,8 +22,10 @@ final class AppleSpeechProvider: TranscriptionProvider {
     /// using the language selected in Voice Engine/onboarding.
     private var recognizer: SFSpeechRecognizer?
     private var recognizerLocaleIdentifier: String?
+    private let localeIdentifierOverride: String?
 
-    init() {
+    init(localeIdentifier: String? = nil) {
+        self.localeIdentifierOverride = localeIdentifier
         _ = self.updateRecognizerIfNeeded()
     }
 
@@ -115,7 +117,8 @@ final class AppleSpeechProvider: TranscriptionProvider {
     // MARK: - Helpers
 
     private func updateRecognizerIfNeeded() -> SFSpeechRecognizer? {
-        let locale = SettingsStore.shared.selectedAppleSpeechLocale
+        let locale = self.localeIdentifierOverride.map(Locale.init(identifier:))
+            ?? SettingsStore.shared.selectedAppleSpeechLocale
         let localeIdentifier = locale.identifier.replacingOccurrences(of: "_", with: "-")
         if self.recognizer == nil || self.recognizerLocaleIdentifier != localeIdentifier {
             self.recognizer = SFSpeechRecognizer(locale: locale)

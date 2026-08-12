@@ -14,12 +14,17 @@ final class ExternalCoreMLTranscriptionProvider: TranscriptionProvider {
 
     private var cohereManager: CohereTranscribeAsrManager?
     private let modelOverride: SettingsStore.SpeechModel?
+    private let languageOverride: SettingsStore.CohereLanguage?
     private var loadedManifest: ExternalCoreMLManifestIdentity?
     private var coherePromptTemplate: [Int] = []
     private var cohereLanguageTokenIDs: [SettingsStore.CohereLanguage: Int] = [:]
 
-    init(modelOverride: SettingsStore.SpeechModel? = nil) {
+    init(
+        modelOverride: SettingsStore.SpeechModel? = nil,
+        languageOverride: SettingsStore.CohereLanguage? = nil
+    ) {
         self.modelOverride = modelOverride
+        self.languageOverride = languageOverride
     }
 
     func prepare(progressHandler: ((ModelPreparationProgress) -> Void)? = nil) async throws {
@@ -412,7 +417,7 @@ final class ExternalCoreMLTranscriptionProvider: TranscriptionProvider {
         let languageTokenIDs = self.cohereLanguageTokenIDs
         guard languageTokenIDs.isEmpty == false else { return promptTemplate }
 
-        let targetLanguage = SettingsStore.shared.selectedCohereLanguage
+        let targetLanguage = self.languageOverride ?? SettingsStore.shared.selectedCohereLanguage
         guard let targetTokenID = languageTokenIDs[targetLanguage] else { return promptTemplate }
 
         let supportedTokenIDs = Set(languageTokenIDs.values)
@@ -453,7 +458,10 @@ final class ExternalCoreMLTranscriptionProvider: TranscriptionProvider {
     let isAvailable = false
     let isReady = false
 
-    init(modelOverride: SettingsStore.SpeechModel? = nil) {}
+    init(
+        modelOverride: SettingsStore.SpeechModel? = nil,
+        languageOverride: SettingsStore.CohereLanguage? = nil
+    ) {}
 
     func prepare(progressHandler: ((ModelPreparationProgress) -> Void)? = nil) async throws {
         throw NSError(
