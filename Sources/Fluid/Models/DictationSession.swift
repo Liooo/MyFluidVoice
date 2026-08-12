@@ -73,6 +73,37 @@ enum DictationActivationStyle: Equatable {
     case pushToTalk
 }
 
+final nonisolated class DictationDeliveryGate: @unchecked Sendable {
+    private enum State: Equatable {
+        case pending
+        case committed
+        case cancelled
+    }
+
+    private let lock = NSLock()
+    private var state: State = .pending
+
+    func commit() -> Bool {
+        self.lock.withLock {
+            guard self.state == .pending else { return false }
+            self.state = .committed
+            return true
+        }
+    }
+
+    func cancel() -> Bool {
+        self.lock.withLock {
+            guard self.state == .pending else { return false }
+            self.state = .cancelled
+            return true
+        }
+    }
+
+    var isCommitted: Bool {
+        self.lock.withLock { self.state == .committed }
+    }
+}
+
 enum DictationSessionState: Equatable {
     case capturing
     case finalizing
@@ -86,7 +117,9 @@ enum DictationExitAction: String, Codable, CaseIterable, Identifiable {
     case discard
     case paste
 
-    var id: String { self.rawValue }
+    var id: String {
+        self.rawValue
+    }
 
     var displayName: String {
         switch self {
@@ -110,12 +143,14 @@ final class DictationSessionCoordinator {
         let id: RecordingSessionID
         let activationStyle: DictationActivationStyle
         let speechConfiguration: RecordingSpeechConfiguration
+        let exitPoliciesEnabled: Bool
     }
 
     private struct ActiveSession {
-        let session: Session
+        var session: Session
         var state: DictationSessionState
         var outputOutcome: DictationOutputOutcome?
+        var deliveryGate: DictationDeliveryGate?
     }
 
     enum ExitDisposition: Equatable {
@@ -127,7 +162,8 @@ final class DictationSessionCoordinator {
     private var activeSession: ActiveSession?
 
     var currentSession: Session? {
-        self.activeSession?.session
+        guard self.hasActiveSession else { return nil }
+        return self.activeSession?.session
     }
 
     var hasActiveSession: Bool {
@@ -142,17 +178,20 @@ final class DictationSessionCoordinator {
     @discardableResult
     func begin(
         activationStyle: DictationActivationStyle,
-        speechConfiguration: RecordingSpeechConfiguration
+        speechConfiguration: RecordingSpeechConfiguration,
+        exitPoliciesEnabled: Bool = true
     ) -> Session {
         let session = Session(
             id: RecordingSessionID(),
             activationStyle: activationStyle,
-            speechConfiguration: speechConfiguration
+            speechConfiguration: speechConfiguration,
+            exitPoliciesEnabled: exitPoliciesEnabled
         )
         self.activeSession = ActiveSession(
             session: session,
             state: .capturing,
-            outputOutcome: nil
+            outputOutcome: nil,
+            deliveryGate: nil
         )
         return session
     }
@@ -180,6 +219,46 @@ final class DictationSessionCoordinator {
     }
 
     @discardableResult
+    func resolveActivationStyle(
+        _ activationStyle: DictationActivationStyle,
+        for id: RecordingSessionID
+    ) -> Bool {
+        guard var activeSession = self.activeSession,
+              activeSession.session.id == id,
+              activeSession.state == .capturing
+        else { return false }
+
+        activeSession.session = Session(
+            id: activeSession.session.id,
+            activationStyle: activationStyle,
+            speechConfiguration: activeSession.session.speechConfiguration,
+            exitPoliciesEnabled: activeSession.session.exitPoliciesEnabled
+        )
+        self.activeSession = activeSession
+        return true
+    }
+
+    @discardableResult
+    func setExitPoliciesEnabled(
+        _ isEnabled: Bool,
+        for id: RecordingSessionID
+    ) -> Bool {
+        guard var activeSession = self.activeSession,
+              activeSession.session.id == id,
+              activeSession.state == .capturing
+        else { return false }
+
+        activeSession.session = Session(
+            id: activeSession.session.id,
+            activationStyle: activeSession.session.activationStyle,
+            speechConfiguration: activeSession.session.speechConfiguration,
+            exitPoliciesEnabled: isEnabled
+        )
+        self.activeSession = activeSession
+        return true
+    }
+
+    @discardableResult
     func beginFinalization(for id: RecordingSessionID) -> Bool {
         guard var activeSession = self.activeSession,
               activeSession.session.id == id,
@@ -195,7 +274,8 @@ final class DictationSessionCoordinator {
     func cancel(for id: RecordingSessionID) -> Bool {
         guard var activeSession = self.activeSession,
               activeSession.session.id == id,
-              activeSession.state == .capturing || activeSession.state == .finalizing
+              activeSession.state == .capturing || activeSession.state == .finalizing ||
+              (activeSession.state == .delivering && activeSession.deliveryGate?.cancel() == true)
         else { return false }
 
         activeSession.state = .cancelled
@@ -206,14 +286,20 @@ final class DictationSessionCoordinator {
 
     @discardableResult
     func claimOutputDelivery(for id: RecordingSessionID) -> Bool {
+        self.claimOutputDeliveryGate(for: id) != nil
+    }
+
+    func claimOutputDeliveryGate(for id: RecordingSessionID) -> DictationDeliveryGate? {
         guard var activeSession = self.activeSession,
               activeSession.session.id == id,
               activeSession.state == .finalizing
-        else { return false }
+        else { return nil }
 
+        let deliveryGate = DictationDeliveryGate()
         activeSession.state = .delivering
+        activeSession.deliveryGate = deliveryGate
         self.activeSession = activeSession
-        return true
+        return deliveryGate
     }
 
     @discardableResult
@@ -223,7 +309,8 @@ final class DictationSessionCoordinator {
     ) -> Bool {
         guard var activeSession = self.activeSession,
               activeSession.session.id == id,
-              activeSession.state == .delivering
+              activeSession.state == .delivering,
+              activeSession.deliveryGate?.isCommitted == true
         else { return false }
 
         activeSession.state = .completed
@@ -247,7 +334,8 @@ final class DictationSessionCoordinator {
     func requestExit(_ action: DictationExitAction, for id: RecordingSessionID) -> ExitDisposition {
         guard let activeSession = self.activeSession,
               activeSession.session.id == id,
-              activeSession.session.activationStyle == .toggle
+              activeSession.session.activationStyle == .toggle,
+              activeSession.session.exitPoliciesEnabled
         else { return .ignore }
 
         switch action {
@@ -256,7 +344,7 @@ final class DictationSessionCoordinator {
         case .discard:
             return self.cancel(for: id) ? .discard : .ignore
         case .paste:
-            return self.beginFinalization(for: id) ? .finalize : .ignore
+            return activeSession.state == .capturing ? .finalize : .ignore
         }
     }
 }

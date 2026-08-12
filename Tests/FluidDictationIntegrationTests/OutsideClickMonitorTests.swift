@@ -3,6 +3,62 @@ import CoreGraphics
 import XCTest
 
 final class OutsideClickMonitorTests: XCTestCase {
+    func testOutsideClickObservationSkipsRecognizedMouseHotkeys() {
+        XCTAssertFalse(
+            OutsideClickObservationDecision.shouldNotifyObserver(
+                isRecognizedMouseShortcut: true
+            )
+        )
+        XCTAssertTrue(
+            OutsideClickObservationDecision.shouldNotifyObserver(
+                isRecognizedMouseShortcut: false
+            )
+        )
+    }
+
+    func testOutsideClickClassificationRequiresAnActiveToggleSession() {
+        XCTAssertTrue(
+            OutsideClickObservationDecision.shouldClassify(
+                hasActiveSession: true,
+                isToggleSession: true
+            )
+        )
+        XCTAssertFalse(
+            OutsideClickObservationDecision.shouldClassify(
+                hasActiveSession: false,
+                isToggleSession: true
+            )
+        )
+        XCTAssertFalse(
+            OutsideClickObservationDecision.shouldClassify(
+                hasActiveSession: true,
+                isToggleSession: false
+            )
+        )
+    }
+
+    func testTypingTargetFallsBackToSessionStartFocusWhenFluidOwnsCurrentFocus() {
+        let decision = TypingTargetFocusDecision.resolve(
+            originalPID: 42,
+            currentFocusedPID: 99,
+            currentFocusIsExternalApplication: false
+        )
+
+        XCTAssertEqual(decision.pid, 42)
+        XCTAssertTrue(decision.shouldRestoreOriginalFocus)
+    }
+
+    func testTypingTargetUsesCurrentExternalFocusWithoutChangingSessionStartSnapshot() {
+        let decision = TypingTargetFocusDecision.resolve(
+            originalPID: 42,
+            currentFocusedPID: 99,
+            currentFocusIsExternalApplication: true
+        )
+
+        XCTAssertEqual(decision.pid, 99)
+        XCTAssertFalse(decision.shouldRestoreOriginalFocus)
+    }
+
     func testClickInsideVisibleWindowOwnedByApplicationIsNotOutside() {
         let windows = [
             ApplicationWindowSnapshot(

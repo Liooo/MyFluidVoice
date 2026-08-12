@@ -14,6 +14,134 @@ private nonisolated enum ActivePrimaryShortcutPress: Equatable {
     case mouse(Int)
 }
 
+nonisolated struct PasteLastMousePressPairing: Equatable {
+    private var consumedMouseDownButton: Int?
+
+    mutating func beginIfRecognized(
+        shortcutEnabled: Bool,
+        shortcut: HotkeyShortcut?,
+        button: Int,
+        modifiers: NSEvent.ModifierFlags
+    ) -> Bool {
+        guard shortcutEnabled,
+              let shortcut,
+              shortcut.matchesMouse(button: button, modifiers: modifiers)
+        else {
+            return false
+        }
+
+        self.consumedMouseDownButton = button
+        return true
+    }
+
+    mutating func consumeMouseUp(button: Int) -> Bool {
+        guard self.consumedMouseDownButton == button else { return false }
+        self.consumedMouseDownButton = nil
+        return true
+    }
+
+    mutating func reset() {
+        self.consumedMouseDownButton = nil
+    }
+}
+
+nonisolated enum HotkeyEventTime {
+    private static let nanosecondsPerSecond = 1_000_000_000.0
+
+    static func seconds(from timestamp: CGEventTimestamp) -> TimeInterval {
+        TimeInterval(timestamp) / self.nanosecondsPerSecond
+    }
+}
+
+nonisolated struct AutomaticActivationResolution: Equatable {
+    private var pendingToggleTypes: Set<HotkeyHoldModeType> = []
+
+    mutating func recordQuickTap(
+        for type: HotkeyHoldModeType,
+        resolvedActiveSession: Bool
+    ) {
+        guard !resolvedActiveSession else { return }
+        self.pendingToggleTypes.insert(type)
+    }
+
+    mutating func consume(for type: HotkeyHoldModeType) -> DictationActivationStyle? {
+        self.pendingToggleTypes.remove(type) == nil ? nil : .toggle
+    }
+
+    mutating func reset() {
+        self.pendingToggleTypes.removeAll()
+    }
+}
+
+nonisolated enum DoubleModifierEventConsumptionDecision {
+    static func shouldConsume(_ outcome: DoubleModifierTapDecision.Outcome) -> Bool {
+        switch outcome {
+        case .secondPress, .secondRelease:
+            return true
+        case .ignore, .handled:
+            return false
+        }
+    }
+}
+
+nonisolated enum DictationEscapeKeyDecision {
+    enum PolicyDisposition: Equatable {
+        case notApplicable
+        case passThrough
+        case consume
+    }
+
+    enum KeyDownOutcome: Equatable {
+        case passThrough
+        case consumeEscapePolicy
+        case configurableCancel
+        case ignore
+    }
+
+    private static let escapeKeyCode: UInt16 = 53
+
+    static func shouldRouteToEscapePolicy(
+        keyCode: UInt16,
+        modifiers: NSEvent.ModifierFlags
+    ) -> Bool {
+        keyCode == self.escapeKeyCode
+            && modifiers.isDisjoint(with: HotkeyShortcut.relevantModifierMask)
+    }
+
+    static func evaluateKeyDown(
+        keyCode: UInt16,
+        modifiers: NSEvent.ModifierFlags,
+        policyDisposition: PolicyDisposition,
+        isConfiguredCancelMatch: Bool
+    ) -> KeyDownOutcome {
+        if self.shouldRouteToEscapePolicy(keyCode: keyCode, modifiers: modifiers) {
+            switch policyDisposition {
+            case .passThrough:
+                return .passThrough
+            case .consume:
+                return .consumeEscapePolicy
+            case .notApplicable:
+                break
+            }
+        }
+
+        return isConfiguredCancelMatch ? .configurableCancel : .ignore
+    }
+}
+
+nonisolated enum OutsideClickObservationDecision {
+    static func shouldNotifyObserver(isRecognizedMouseShortcut: Bool) -> Bool {
+        !isRecognizedMouseShortcut
+    }
+
+    static func shouldClassify(
+        hasActiveSession: Bool,
+        isToggleSession: Bool
+    ) -> Bool {
+        hasActiveSession && isToggleSession
+    }
+}
+
 /// Snapshot of the modifier-only tracking state fed into `ModifierOnlyShortcutFlagsDecision`.
 struct ModifierOnlyShortcutTrackingState: Equatable {
     /// Currently-pressed modifier key codes (output of `synchronizedPressedModifierKeyCodes`).
@@ -236,7 +364,9 @@ private final nonisolated class HotkeyState: @unchecked Sendable {
     var automaticPressStartTimes: [HotkeyHoldModeType: Date] = [:]
     var automaticPressWasTargetActive: [HotkeyHoldModeType: Bool] = [:]
     var automaticPressStartedTypes: Set<HotkeyHoldModeType> = []
+    var automaticActivationResolution = AutomaticActivationResolution()
     var activePrimaryShortcutPress: ActivePrimaryShortcutPress?
+    var pasteLastMousePressPairing = PasteLastMousePressPairing()
     var doubleModifierTapState = DoubleModifierTapDecision.State()
 
     func withLock<T>(_ block: () -> T) -> T {
@@ -260,18 +390,20 @@ final class GlobalHotkeyManager: NSObject {
     private var promptModeShortcutEnabled: Bool
     private var commandModeShortcutEnabled: Bool
     private var rewriteModeShortcutEnabled: Bool
-    private var startRecordingCallback: (() async -> Void)?
-    private var dictationModeCallback: (() async -> Void)?
+    private var startRecordingCallback: ((DictationActivationStyle?) async -> Void)?
+    private var dictationModeCallback: ((DictationActivationStyle?) async -> Void)?
     private var stopAndProcessCallback: (() async -> Void)?
-    private var promptModeCallback: (() async -> Void)?
-    private var promptSelectionCallback: ((SettingsStore.DictationPromptSelection) async -> Void)?
-    private var commandModeCallback: (() async -> Void)?
-    private var rewriteModeCallback: (() async -> Void)?
+    private var promptModeCallback: ((DictationActivationStyle?) async -> Void)?
+    private var promptSelectionCallback: ((SettingsStore.DictationPromptSelection, DictationActivationStyle?) async -> Void)?
+    private var commandModeCallback: ((DictationActivationStyle?) async -> Void)?
+    private var rewriteModeCallback: ((DictationActivationStyle?) async -> Void)?
+    private var automaticTapDidContinueCallback: ((HotkeyHoldModeType) -> Bool)?
     private var isDictateRecordingProvider: (() -> Bool)?
     private var isPromptModeRecordingProvider: (() -> Bool)?
     private var isCommandRecordingProvider: (() -> Bool)?
     private var isRewriteRecordingProvider: (() -> Bool)?
     private var isShortcutCaptureActiveProvider: (() -> Bool)?
+    private var escapeCallback: (() -> DictationEscapeKeyDecision.PolicyDisposition)?
     private var cancelCallback: (() -> Bool)? // Returns true if handled
     private var mouseDownObservationCallback: ((CGPoint) -> Void)?
     private var pasteLastTranscriptionCallback: (() -> Void)?
@@ -430,6 +562,21 @@ final class GlobalHotkeyManager: NSObject {
         }
     }
 
+    private func markAutomaticTapResolvedToToggle(for type: HotkeyHoldModeType) {
+        self.state.withLock {
+            self.state.automaticActivationResolution.recordQuickTap(
+                for: type,
+                resolvedActiveSession: false
+            )
+        }
+    }
+
+    private func consumeAutomaticActivationStyle(for type: HotkeyHoldModeType) -> DictationActivationStyle? {
+        self.state.withLock {
+            self.state.automaticActivationResolution.consume(for: type)
+        }
+    }
+
     private func clearHoldModeStartTriggered(for type: HotkeyHoldModeType) {
         self.state.withLock {
             _ = self.state.holdModeStartTriggeredTypes.remove(type)
@@ -467,6 +614,7 @@ final class GlobalHotkeyManager: NSObject {
             self.state.automaticPressStartTimes.removeAll()
             self.state.automaticPressWasTargetActive.removeAll()
             self.state.automaticPressStartedTypes.removeAll()
+            self.state.automaticActivationResolution.reset()
         }
     }
 
@@ -490,13 +638,14 @@ final class GlobalHotkeyManager: NSObject {
         promptModeShortcutEnabled: Bool,
         commandModeShortcutEnabled: Bool,
         rewriteModeShortcutEnabled: Bool,
-        startRecordingCallback: (() async -> Void)? = nil,
-        dictationModeCallback: (() async -> Void)? = nil,
+        startRecordingCallback: ((DictationActivationStyle?) async -> Void)? = nil,
+        dictationModeCallback: ((DictationActivationStyle?) async -> Void)? = nil,
         stopAndProcessCallback: (() async -> Void)? = nil,
-        promptModeCallback: (() async -> Void)? = nil,
-        promptSelectionCallback: ((SettingsStore.DictationPromptSelection) async -> Void)? = nil,
-        commandModeCallback: (() async -> Void)? = nil,
-        rewriteModeCallback: (() async -> Void)? = nil,
+        promptModeCallback: ((DictationActivationStyle?) async -> Void)? = nil,
+        promptSelectionCallback: ((SettingsStore.DictationPromptSelection, DictationActivationStyle?) async -> Void)? = nil,
+        commandModeCallback: ((DictationActivationStyle?) async -> Void)? = nil,
+        rewriteModeCallback: ((DictationActivationStyle?) async -> Void)? = nil,
+        automaticTapDidContinueCallback: ((HotkeyHoldModeType) -> Bool)? = nil,
         isDictateRecordingProvider: (() -> Bool)? = nil,
         isPromptModeRecordingProvider: (() -> Bool)? = nil,
         isCommandRecordingProvider: (() -> Bool)? = nil,
@@ -519,6 +668,7 @@ final class GlobalHotkeyManager: NSObject {
         self.promptSelectionCallback = promptSelectionCallback
         self.commandModeCallback = commandModeCallback
         self.rewriteModeCallback = rewriteModeCallback
+        self.automaticTapDidContinueCallback = automaticTapDidContinueCallback
         self.isDictateRecordingProvider = isDictateRecordingProvider
         self.isPromptModeRecordingProvider = isPromptModeRecordingProvider
         self.isCommandRecordingProvider = isCommandRecordingProvider
@@ -545,7 +695,7 @@ final class GlobalHotkeyManager: NSObject {
         self.stopAndProcessCallback = callback
     }
 
-    func setCommandModeCallback(_ callback: @escaping () async -> Void) {
+    func setCommandModeCallback(_ callback: @escaping (DictationActivationStyle?) async -> Void) {
         self.commandModeCallback = callback
     }
 
@@ -561,7 +711,7 @@ final class GlobalHotkeyManager: NSObject {
         DebugLogger.shared.info("Updated command mode hotkey", source: "GlobalHotkeyManager")
     }
 
-    func setRewriteModeCallback(_ callback: @escaping () async -> Void) {
+    func setRewriteModeCallback(_ callback: @escaping (DictationActivationStyle?) async -> Void) {
         self.rewriteModeCallback = callback
     }
 
@@ -595,7 +745,7 @@ final class GlobalHotkeyManager: NSObject {
         )
     }
 
-    func setPromptModeCallback(_ callback: @escaping () async -> Void) {
+    func setPromptModeCallback(_ callback: @escaping (DictationActivationStyle?) async -> Void) {
         self.promptModeCallback = callback
     }
 
@@ -625,6 +775,12 @@ final class GlobalHotkeyManager: NSObject {
 
     func setCancelCallback(_ callback: @escaping () -> Bool) {
         self.cancelCallback = callback
+    }
+
+    func setEscapeCallback(
+        _ callback: @escaping () -> DictationEscapeKeyDecision.PolicyDisposition
+    ) {
+        self.escapeCallback = callback
     }
 
     /// Observes global mouse-down locations without participating in event consumption.
@@ -733,6 +889,7 @@ final class GlobalHotkeyManager: NSObject {
         self.runLoopSource = nil
         self.state.withLock {
             self.state.doubleModifierTapState = DoubleModifierTapDecision.State()
+            self.state.pasteLastMousePressPairing.reset()
         }
         self.clearPrimaryShortcutPressState()
     }
@@ -807,7 +964,7 @@ final class GlobalHotkeyManager: NSObject {
             toggleIgnoredMessage: "Transcription modifier released but another key was pressed - ignoring",
             isModeKeyPressed: { self.isKeyPressed },
             setModeKeyPressed: { self.isKeyPressed = $0 },
-            onHoldStart: { self.startRecordingIfNeeded() },
+            onHoldStart: { self.startRecordingIfNeeded(for: .transcription) },
             onToggleRelease: {
                 if self.asrService.isRunningOrStarting {
                     let isSameMode = self.isDictateRecordingProvider?() ?? false
@@ -843,9 +1000,6 @@ final class GlobalHotkeyManager: NSObject {
             return false
         }
 
-        // Let the app-level policy decide whether Escape should paste, discard, or do
-        // nothing for the active dictation session. Direct cancellation remains only as
-        // a fallback for embedders that do not install a callback.
         if let callback = self.cancelCallback {
             guard callback() else { return false }
             DebugLogger.shared.info("Cancel shortcut pressed - cancel callback handled", source: "GlobalHotkeyManager")
@@ -860,13 +1014,29 @@ final class GlobalHotkeyManager: NSObject {
         return true
     }
 
+    private func modifierFlags(from eventFlags: CGEventFlags) -> NSEvent.ModifierFlags {
+        var modifiers: NSEvent.ModifierFlags = []
+        if eventFlags.contains(.maskSecondaryFn) {
+            modifiers.insert(.function)
+        }
+        if eventFlags.contains(.maskCommand) {
+            modifiers.insert(.command)
+        }
+        if eventFlags.contains(.maskAlternate) {
+            modifiers.insert(.option)
+        }
+        if eventFlags.contains(.maskControl) {
+            modifiers.insert(.control)
+        }
+        if eventFlags.contains(.maskShift) {
+            modifiers.insert(.shift)
+        }
+        return modifiers
+    }
+
     private func handleKeyEvent(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
         if let tapRecoveryResult = self.handleTapDisableEvent(type: type, event: event) {
             return tapRecoveryResult
-        }
-
-        if type == .leftMouseDown || type == .rightMouseDown || type == .otherMouseDown {
-            self.mouseDownObservationCallback?(event.location)
         }
 
         if self.isShortcutCaptureActiveProvider?() ?? false {
@@ -875,14 +1045,7 @@ final class GlobalHotkeyManager: NSObject {
         }
 
         let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
-        let flags = event.flags
-
-        var eventModifiers: NSEvent.ModifierFlags = []
-        if flags.contains(.maskSecondaryFn) { eventModifiers.insert(.function) }
-        if flags.contains(.maskCommand) { eventModifiers.insert(.command) }
-        if flags.contains(.maskAlternate) { eventModifiers.insert(.option) }
-        if flags.contains(.maskControl) { eventModifiers.insert(.control) }
-        if flags.contains(.maskShift) { eventModifiers.insert(.shift) }
+        let eventModifiers = self.modifierFlags(from: event.flags)
 
         switch type {
         case .keyDown:
@@ -894,8 +1057,38 @@ final class GlobalHotkeyManager: NSObject {
                 await PostTranscriptionEditTracker.shared.handleKeyDown(keyCode: keyCode, modifiers: eventModifiers)
             }
 
-            // Check the configured cancel shortcut first. Consume it only when handled.
-            if self.handleCancelShortcutKeyDown(keyCode: keyCode, modifiers: eventModifiers) { return nil }
+            // Literal Escape owns the toggle-session exit policy independently of the
+            // configurable cancel binding. A false result deliberately leaves the key available
+            // to the OS without falling through to the configured cancel action.
+            let isPlainEscape = DictationEscapeKeyDecision.shouldRouteToEscapePolicy(
+                keyCode: keyCode,
+                modifiers: eventModifiers
+            )
+            let policyDisposition = isPlainEscape
+                ? self.escapeCallback?() ?? .notApplicable
+                : .notApplicable
+            let isConfiguredCancelMatch = SettingsStore.shared.cancelRecordingHotkeyShortcut.matches(
+                keyCode: keyCode,
+                modifiers: eventModifiers
+            )
+            switch DictationEscapeKeyDecision.evaluateKeyDown(
+                keyCode: keyCode,
+                modifiers: eventModifiers,
+                policyDisposition: policyDisposition,
+                isConfiguredCancelMatch: isConfiguredCancelMatch
+            ) {
+            case .passThrough:
+                return Unmanaged.passUnretained(event)
+            case .consumeEscapePolicy:
+                DebugLogger.shared.info("Escape pressed - exit policy handled", source: "GlobalHotkeyManager")
+                return nil
+            case .configurableCancel:
+                if self.handleCancelShortcutKeyDown(keyCode: keyCode, modifiers: eventModifiers) {
+                    return nil
+                }
+            case .ignore:
+                break
+            }
 
             // Check the "paste last transcription" shortcut (a one-shot action, like cancel).
             if SettingsStore.shared.pasteLastTranscriptionShortcutEnabled,
@@ -957,7 +1150,9 @@ final class GlobalHotkeyManager: NSObject {
             }
 
             // Check prompt mode hotkey
-            if self.handlePromptModeKeyDown(keyCode: keyCode, modifiers: eventModifiers) { return nil }
+            if self.handlePromptModeKeyDown(keyCode: keyCode, modifiers: eventModifiers) {
+                return nil
+            }
 
             // Check command mode hotkey first
             if self.commandModeShortcutEnabled,
@@ -1073,7 +1268,9 @@ final class GlobalHotkeyManager: NSObject {
 
         case .keyUp:
             // Prompt mode key up (press and hold mode)
-            if self.handlePromptModeKeyUp(keyCode: keyCode) { return nil }
+            if self.handlePromptModeKeyUp(keyCode: keyCode) {
+                return nil
+            }
 
             // Command mode key up
             // Note: Only check keyCode, not modifiers - user may release modifier before/with main key
@@ -1146,9 +1343,13 @@ final class GlobalHotkeyManager: NSObject {
         case .leftMouseDown, .rightMouseDown, .otherMouseDown:
             self.interruptPendingDoubleModifierTap()
             self.markOtherInputDuringModifierOnly()
-            if self.handleMouseShortcutDown(event, modifiers: eventModifiers) {
+            let isRecognizedMouseShortcut = self.handleMouseShortcutDown(event, modifiers: eventModifiers)
+            guard OutsideClickObservationDecision.shouldNotifyObserver(
+                isRecognizedMouseShortcut: isRecognizedMouseShortcut
+            ) else {
                 return nil
             }
+            self.mouseDownObservationCallback?(event.location)
 
         case .leftMouseUp, .rightMouseUp, .otherMouseUp:
             if self.handleMouseShortcutUp(event) {
@@ -1157,6 +1358,7 @@ final class GlobalHotkeyManager: NSObject {
 
         case .flagsChanged:
             let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
+            let eventTimestamp = HotkeyEventTime.seconds(from: event.timestamp)
             if HotkeyShortcut.modifierFlag(forKeyCode: keyCode) != nil {
                 self.pressedModifierKeyCodes = self.synchronizedPressedModifierKeyCodes(
                     changedKeyCode: keyCode,
@@ -1169,21 +1371,30 @@ final class GlobalHotkeyManager: NSObject {
                     behavior: self.primaryModifierOnlyBehavior(for: shortcut),
                     keyCode: keyCode,
                     modifiers: eventModifiers,
-                    isRepeat: isRepeat
-                ) { return nil }
+                    isRepeat: isRepeat,
+                    eventTimestamp: eventTimestamp
+                ) {
+                    return nil
+                }
             }
 
             if self.handlePromptAssignmentFlagsChanged(
                 keyCode: keyCode,
                 modifiers: eventModifiers,
-                isRepeat: isRepeat
-            ) { return nil }
+                isRepeat: isRepeat,
+                eventTimestamp: eventTimestamp
+            ) {
+                return nil
+            }
 
             if self.handlePromptModeFlagsChanged(
                 keyCode: keyCode,
                 modifiers: eventModifiers,
-                isRepeat: isRepeat
-            ) { return nil }
+                isRepeat: isRepeat,
+                eventTimestamp: eventTimestamp
+            ) {
+                return nil
+            }
 
             if let commandModeShortcut = self.commandModeShortcut,
                self.handleModifierOnlyShortcutFlagsChanged(
@@ -1215,9 +1426,12 @@ final class GlobalHotkeyManager: NSObject {
                    ),
                    keyCode: keyCode,
                    modifiers: eventModifiers,
-                   isRepeat: isRepeat
+                   isRepeat: isRepeat,
+                   eventTimestamp: eventTimestamp
                )
-            { return nil }
+            {
+                return nil
+            }
 
             if self.handleModifierOnlyShortcutFlagsChanged(
                 behavior: .init(
@@ -1248,8 +1462,11 @@ final class GlobalHotkeyManager: NSObject {
                 ),
                 keyCode: keyCode,
                 modifiers: eventModifiers,
-                isRepeat: isRepeat
-            ) { return nil }
+                isRepeat: isRepeat,
+                eventTimestamp: eventTimestamp
+            ) {
+                return nil
+            }
 
         default:
             break
@@ -1316,6 +1533,10 @@ final class GlobalHotkeyManager: NSObject {
                 self.stopRecordingIfNeeded()
             } else if press.started {
                 DebugLogger.shared.info("\(label) tap (\(duration)s) - continuing", source: "GlobalHotkeyManager")
+                let resolvedActiveSession = self.automaticTapDidContinueCallback?(type) ?? false
+                if !resolvedActiveSession {
+                    self.markAutomaticTapResolvedToToggle(for: type)
+                }
             } else {
                 DebugLogger.shared.info("\(label) tap (\(duration)s) - toggling", source: "GlobalHotkeyManager")
                 onUnstartedTap?()
@@ -1356,7 +1577,7 @@ final class GlobalHotkeyManager: NSObject {
                         "Hotkey route | pressed=dictate | active=none | asrRunning=false | action=start",
                         source: "GlobalHotkeyManager"
                     )
-                    self.startRecordingIfNeeded()
+                    self.startRecordingIfNeeded(for: .transcription)
                 }
                 self.markHoldModeStartTriggered(for: .transcription)
             }
@@ -1601,6 +1822,9 @@ final class GlobalHotkeyManager: NSObject {
         self.otherKeyPressedDuringModifier = false
         self.modifierPressStartTime = nil
         self.resetDoubleModifierTapTracking()
+        self.state.withLock {
+            self.state.pasteLastMousePressPairing.reset()
+        }
         self.clearAutomaticPressTracking()
         self.isKeyPressed = false
         self.isPromptModeKeyPressed = false
@@ -1679,7 +1903,8 @@ final class GlobalHotkeyManager: NSObject {
     private func handlePromptModeFlagsChanged(
         keyCode: UInt16,
         modifiers: NSEvent.ModifierFlags,
-        isRepeat: Bool
+        isRepeat: Bool,
+        eventTimestamp: TimeInterval
     ) -> Bool {
         self.handleModifierOnlyShortcutFlagsChanged(
             behavior: .init(
@@ -1710,14 +1935,16 @@ final class GlobalHotkeyManager: NSObject {
             ),
             keyCode: keyCode,
             modifiers: modifiers,
-            isRepeat: isRepeat
+            isRepeat: isRepeat,
+            eventTimestamp: eventTimestamp
         )
     }
 
     private func handlePromptAssignmentFlagsChanged(
         keyCode: UInt16,
         modifiers: NSEvent.ModifierFlags,
-        isRepeat: Bool
+        isRepeat: Bool,
+        eventTimestamp: TimeInterval
     ) -> Bool {
         for assignment in self.promptShortcutAssignments where assignment.shortcut.isModifierOnlyShortcut {
             let handled = self.handleModifierOnlyShortcutFlagsChanged(
@@ -1749,7 +1976,8 @@ final class GlobalHotkeyManager: NSObject {
                 ),
                 keyCode: keyCode,
                 modifiers: modifiers,
-                isRepeat: isRepeat
+                isRepeat: isRepeat,
+                eventTimestamp: eventTimestamp
             )
             if handled {
                 return true
@@ -1763,13 +1991,15 @@ final class GlobalHotkeyManager: NSObject {
         behavior: ModifierOnlyShortcutBehavior,
         keyCode: UInt16,
         modifiers: NSEvent.ModifierFlags,
-        isRepeat: Bool
+        isRepeat: Bool,
+        eventTimestamp: TimeInterval
     ) -> Bool {
         if behavior.shortcut.gesture == .doubleTap {
             return self.handleDoubleModifierShortcutFlagsChanged(
                 behavior: behavior,
                 keyCode: keyCode,
-                isRepeat: isRepeat
+                isRepeat: isRepeat,
+                eventTimestamp: eventTimestamp
             )
         }
 
@@ -1818,7 +2048,8 @@ final class GlobalHotkeyManager: NSObject {
     private func handleDoubleModifierShortcutFlagsChanged(
         behavior: ModifierOnlyShortcutBehavior,
         keyCode: UInt16,
-        isRepeat: Bool
+        isRepeat: Bool,
+        eventTimestamp: TimeInterval
     ) -> Bool {
         guard behavior.isEnabled else { return false }
 
@@ -1830,7 +2061,7 @@ final class GlobalHotkeyManager: NSObject {
                     keyCode: keyCode,
                     pressedModifierKeyCodes: self.state.pressedModifierKeyCodes,
                     isRepeat: isRepeat,
-                    timestamp: ProcessInfo.processInfo.systemUptime
+                    timestamp: eventTimestamp
                 ),
                 state: self.state.doubleModifierTapState
             )
@@ -1839,66 +2070,70 @@ final class GlobalHotkeyManager: NSObject {
         }
 
         switch decision.outcome {
-        case .ignore:
-            return false
-        case .handled:
-            return true
+        case .ignore, .handled:
+            // Tracking a possible first tap must not remove ordinary modifier events from the
+            // frontmost app. Consume only the recognized second press/release below.
+            return DoubleModifierEventConsumptionDecision.shouldConsume(decision.outcome)
         case .secondPress:
             if self.hotkeyMode == .toggle {
                 behavior.onToggleRelease()
             } else {
                 self.scheduleModifierOnlyStart(for: behavior)
             }
-            return true
+            return DoubleModifierEventConsumptionDecision.shouldConsume(decision.outcome)
         case .secondRelease:
             if self.hotkeyMode != .toggle {
                 self.finishModifierOnlyPress(for: behavior, wasCleanPress: true)
             }
-            return true
+            return DoubleModifierEventConsumptionDecision.shouldConsume(decision.outcome)
         }
     }
 
     private func triggerPromptMode() {
         Task { @MainActor [weak self] in
             guard let self = self else { return }
+            let activationStyle = self.consumeAutomaticActivationStyle(for: .promptMode)
             guard self.canTriggerRecordingAction("Prompt mode hotkey") else { return }
             DebugLogger.shared.info("Prompt mode hotkey triggered", source: "GlobalHotkeyManager")
-            await self.promptModeCallback?()
+            await self.promptModeCallback?(activationStyle)
         }
     }
 
     private func triggerPromptSelection(_ selection: SettingsStore.DictationPromptSelection) {
         Task { @MainActor [weak self] in
             guard let self = self else { return }
+            let activationStyle = self.consumeAutomaticActivationStyle(for: .promptAssignment)
             guard self.canTriggerRecordingAction("Prompt selection hotkey") else { return }
             DebugLogger.shared.info("Prompt selection hotkey triggered", source: "GlobalHotkeyManager")
-            await self.promptSelectionCallback?(selection)
+            await self.promptSelectionCallback?(selection, activationStyle)
         }
     }
 
     private func triggerCommandMode() {
         Task { @MainActor [weak self] in
             guard let self = self else { return }
+            let activationStyle = self.consumeAutomaticActivationStyle(for: .commandMode)
             guard self.canTriggerRecordingAction("Command mode hotkey") else { return }
             DebugLogger.shared.info("Command mode hotkey triggered", source: "GlobalHotkeyManager")
             DebugLogger.shared.debug(
                 "GlobalHotkeyManager: command callback path, isRunning=\(self.asrService.isRunning), isReady=\(self.asrService.isAsrReady)",
                 source: "GlobalHotkeyManager"
             )
-            await self.commandModeCallback?()
+            await self.commandModeCallback?(activationStyle)
         }
     }
 
     private func triggerRewriteMode() {
         Task { @MainActor [weak self] in
             guard let self = self else { return }
+            let activationStyle = self.consumeAutomaticActivationStyle(for: .rewriteMode)
             guard self.canTriggerRecordingAction("Rewrite mode hotkey") else { return }
             DebugLogger.shared.info("Rewrite mode hotkey triggered", source: "GlobalHotkeyManager")
             DebugLogger.shared.debug(
                 "GlobalHotkeyManager: rewrite callback path, isRunning=\(self.asrService.isRunning), isReady=\(self.asrService.isAsrReady)",
                 source: "GlobalHotkeyManager"
             )
-            await self.rewriteModeCallback?()
+            await self.rewriteModeCallback?(activationStyle)
         }
     }
 
@@ -1907,11 +2142,19 @@ final class GlobalHotkeyManager: NSObject {
     /// path); primary dictation begins a press here and ends it on mouse-up.
     private func handleMouseShortcutDown(_ event: CGEvent, modifiers eventModifiers: NSEvent.ModifierFlags) -> Bool {
         let mouseButton = self.mouseButton(from: event)
+        let settings = SettingsStore.shared
+        let pasteLastShortcutEnabled = settings.pasteLastTranscriptionShortcutEnabled
+        let pasteLastShortcut = settings.pasteLastTranscriptionHotkeyShortcut
 
-        if SettingsStore.shared.pasteLastTranscriptionShortcutEnabled,
-           let pasteShortcut = SettingsStore.shared.pasteLastTranscriptionHotkeyShortcut,
-           pasteShortcut.matchesMouse(button: mouseButton, modifiers: eventModifiers)
-        {
+        let recognizedPasteLastMouseDown = self.state.withLock {
+            self.state.pasteLastMousePressPairing.beginIfRecognized(
+                shortcutEnabled: pasteLastShortcutEnabled,
+                shortcut: pasteLastShortcut,
+                button: mouseButton,
+                modifiers: eventModifiers
+            )
+        }
+        if recognizedPasteLastMouseDown {
             self.triggerPasteLastTranscription(isAutorepeat: false)
             return true
         }
@@ -1930,11 +2173,10 @@ final class GlobalHotkeyManager: NSObject {
     private func handleMouseShortcutUp(_ event: CGEvent) -> Bool {
         let mouseButton = self.mouseButton(from: event)
 
-        if SettingsStore.shared.pasteLastTranscriptionShortcutEnabled,
-           let pasteShortcut = SettingsStore.shared.pasteLastTranscriptionHotkeyShortcut,
-           pasteShortcut.isMouseShortcut,
-           pasteShortcut.mouseButton == mouseButton
-        {
+        let consumedPasteLastMouseUp = self.state.withLock {
+            self.state.pasteLastMousePressPairing.consumeMouseUp(button: mouseButton)
+        }
+        if consumedPasteLastMouseUp {
             return true
         }
 
@@ -1965,6 +2207,7 @@ final class GlobalHotkeyManager: NSObject {
     private func triggerDictationMode() {
         Task { @MainActor [weak self] in
             guard let self = self else { return }
+            let activationStyle = self.consumeAutomaticActivationStyle(for: .transcription)
             guard self.canTriggerRecordingAction("Dictate mode hotkey") else { return }
             let model = SettingsStore.shared.selectedSpeechModel
             DebugLogger.shared.info("Dictate mode hotkey triggered", source: "GlobalHotkeyManager")
@@ -1974,13 +2217,13 @@ final class GlobalHotkeyManager: NSObject {
             )
             if let callback = self.dictationModeCallback {
                 DebugLogger.shared.debug("GlobalHotkeyManager: invoking dictationModeCallback", source: "GlobalHotkeyManager")
-                await callback()
+                await callback(activationStyle)
             } else if let startCallback = self.startRecordingCallback {
                 DebugLogger.shared.debug(
                     "GlobalHotkeyManager: dictationModeCallback missing; invoking fallback callback",
                     source: "GlobalHotkeyManager"
                 )
-                await startCallback()
+                await startCallback(activationStyle)
             } else {
                 DebugLogger.shared.warning(
                     "GlobalHotkeyManager: dictation callbacks missing; invoking ASRService.start directly",
@@ -2047,7 +2290,7 @@ final class GlobalHotkeyManager: NSObject {
             } else {
                 // Use callback if available, otherwise fallback to direct start
                 if let callback = self.startRecordingCallback {
-                    await callback()
+                    await callback(nil)
                 } else {
                     await self.asrService.start()
                 }
@@ -2055,9 +2298,10 @@ final class GlobalHotkeyManager: NSObject {
         }
     }
 
-    private func startRecordingIfNeeded() {
+    private func startRecordingIfNeeded(for type: HotkeyHoldModeType) {
         Task { @MainActor [weak self] in
             guard let self = self else { return }
+            let activationStyle = self.consumeAutomaticActivationStyle(for: type)
 
             // Prevent starting while stop is processing
             guard self.canTriggerRecordingAction("start") else { return }
@@ -2065,7 +2309,7 @@ final class GlobalHotkeyManager: NSObject {
             if !self.asrService.isRunning {
                 // Use callback if available, otherwise fallback to direct start
                 if let callback = self.startRecordingCallback {
-                    await callback()
+                    await callback(activationStyle)
                 } else {
                     await self.asrService.start()
                 }

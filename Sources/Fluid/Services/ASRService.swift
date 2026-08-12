@@ -10,32 +10,104 @@ import AppKit
 import AudioToolbox
 import CoreAudio
 
+private final nonisolated class TranscriptionCompletionSignal: @unchecked Sendable {
+    private let lock = NSLock()
+    private var completed = false
+
+    func finish() {
+        self.lock.withLock { self.completed = true }
+    }
+
+    var isFinished: Bool {
+        self.lock.withLock { self.completed }
+    }
+}
+
 /// Serializes transcription operations and lets teardown cancel the real queued work.
 actor TranscriptionExecutor {
-    private var lastTask: Task<Void, Never>?
-    private var operationCancellations: [UUID: () -> Void] = [:]
+    private struct Operation {
+        let ownerID: UUID?
+        let cancel: () -> Void
+        let completion: Task<Void, Never>
+    }
 
-    func run<T>(_ operation: @escaping () async throws -> T) async throws -> T {
-        let previous = self.lastTask
+    private var lastCompletion: TranscriptionCompletionSignal?
+    private var operations: [UUID: Operation] = [:]
+    private var cancelledOwnerIDs: Set<UUID> = []
+
+    var hasPendingOperations: Bool {
+        !self.operations.isEmpty
+    }
+
+    func run<T>(ownerID: UUID? = nil, _ operation: @escaping () async throws -> T) async throws -> T {
+        try Task.checkCancellation()
+        if let ownerID, self.cancelledOwnerIDs.contains(ownerID) {
+            throw CancellationError()
+        }
+
+        let previous = self.lastCompletion
         let operationID = UUID()
+        let completionSignal = TranscriptionCompletionSignal()
         let task = Task<T, Error> {
-            _ = await previous?.result
+            defer { completionSignal.finish() }
+            while let previous, !previous.isFinished {
+                try Task.checkCancellation()
+                try await Task.sleep(nanoseconds: 1_000_000)
+            }
             try Task.checkCancellation()
             return try await operation()
         }
-        self.operationCancellations[operationID] = { task.cancel() }
-        self.lastTask = Task { _ = try? await task.value }
-        defer { self.operationCancellations.removeValue(forKey: operationID) }
-        return try await task.value
+        let completion = Task { _ = try? await task.value }
+        self.operations[operationID] = Operation(
+            ownerID: ownerID,
+            cancel: { task.cancel() },
+            completion: completion
+        )
+        self.lastCompletion = completionSignal
+        defer { self.operations.removeValue(forKey: operationID) }
+        return try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
     }
 
-    func cancelAndAwaitPending() async {
-        for cancel in self.operationCancellations.values {
-            cancel()
+    func cancelAndAwait(ownerID: UUID) async {
+        self.cancelledOwnerIDs.insert(ownerID)
+        let ownedOperations = self.operations.values.filter { $0.ownerID == ownerID }
+        for operation in ownedOperations {
+            operation.cancel()
         }
-        _ = await self.lastTask?.result
-        self.lastTask = nil
-        self.operationCancellations.removeAll()
+        for operation in ownedOperations {
+            _ = await operation.completion.result
+        }
+    }
+
+    func cancelAndAwaitAll() async {
+        let pendingOperations = Array(self.operations.values)
+        for operation in pendingOperations {
+            operation.cancel()
+        }
+        for operation in pendingOperations {
+            _ = await operation.completion.result
+        }
+        self.lastCompletion = nil
+        self.operations.removeAll()
+    }
+}
+
+@MainActor
+enum TranscriptionCancellationDrain {
+    static func cancelAndAwait(
+        streamingTask: Task<Void, Never>?,
+        executor: TranscriptionExecutor,
+        ownerID: UUID,
+        provider: TranscriptionProvider
+    ) async {
+        streamingTask?.cancel()
+        await executor.cancelAndAwait(ownerID: ownerID)
+        _ = await streamingTask?.result
+        await provider.resetAfterCancellation()
     }
 }
 
@@ -267,13 +339,21 @@ final class ASRService: ObservableObject {
 
     /// Returns a user-friendly status message for model loading state
     var modelStatusMessage: String {
-        if self.isAsrReady { return "Model ready" }
-        if self.isCancellingModelPreparation { return "Cancelling model preparation..." }
-        if self.isCancellingModelDownload { return "Cancelling model download..." }
+        if self.isAsrReady {
+            return "Model ready"
+        }
+        if self.isCancellingModelPreparation {
+            return "Cancelling model preparation..."
+        }
+        if self.isCancellingModelDownload {
+            return "Cancelling model download..."
+        }
         if self.downloadingModelId != nil || self.isDownloadingModel || self.isLoadingModel {
             return self.modelPreparationStatusText
         }
-        if self.modelsExistOnDisk { return "Model cached, needs loading" }
+        if self.modelsExistOnDisk {
+            return "Model cached, needs loading"
+        }
         return "Model not downloaded"
     }
 
@@ -291,8 +371,12 @@ final class ASRService: ObservableObject {
         case .loading:
             return "Loading voice engine..."
         case nil:
-            if self.isDownloadingModel { return "Preparing model..." }
-            if self.isLoadingModel { return "Loading voice engine..." }
+            if self.isDownloadingModel {
+                return "Preparing model..."
+            }
+            if self.isLoadingModel {
+                return "Loading voice engine..."
+            }
             return "Preparing model..."
         }
     }
@@ -320,6 +404,7 @@ final class ASRService: ObservableObject {
     private var ensureReadyTask: Task<Void, Error>?
     private var ensureReadyTaskID: UUID?
     private var ensureReadyProviderKey: String?
+    private var ensureReadySessionID: RecordingSessionID?
     private var ensureReadyOperationID: UUID?
     private var modelDownloadTask: Task<Void, Error>?
     private var modelDownloadOperationID: UUID?
@@ -379,7 +464,7 @@ final class ASRService: ObservableObject {
         _ = await preparationTask?.result
         _ = await downloadTask?.result
         await self.providerResetDrain?.task.value
-        await self.transcriptionExecutor.cancelAndAwaitPending()
+        await self.transcriptionExecutor.cancelAndAwaitAll()
 
         self.fluidAudioProvider = nil
         self.parakeetRealtimeProvider = nil
@@ -557,7 +642,9 @@ final class ASRService: ObservableObject {
     }
 
     private func getNemotronProvider(mode: NemotronProvider.Mode) -> NemotronProvider {
-        if let existing = self.nemotronProviders[mode] { return existing }
+        if let existing = self.nemotronProviders[mode] {
+            return existing
+        }
         let provider = NemotronProvider(mode: mode)
         self.nemotronProviders[mode] = provider
         DebugLogger.shared.info("ASRService: Created \(provider.name) provider", source: "ASRService")
@@ -832,7 +919,7 @@ final class ASRService: ObservableObject {
         }
         let resetDrainID = UUID()
         let executor = self.transcriptionExecutor
-        let resetDrainTask = Task { await executor.cancelAndAwaitPending() }
+        let resetDrainTask = Task { await executor.cancelAndAwaitAll() }
         self.providerResetDrain = (resetDrainID, resetDrainTask)
         // Keep the task handle until its provider has stopped and cancellation cleanup has
         // completed. The next ensureAsrReady call waits for it before touching the same cache.
@@ -1878,6 +1965,13 @@ final class ASRService: ObservableObject {
             DebugLogger.shared.error("❌ START() blocked - mic not authorized", source: "ASRService")
             return .failed
         }
+        guard await self.transcriptionExecutor.hasPendingOperations == false else {
+            DebugLogger.shared.warning(
+                "START() blocked - another transcription operation is active",
+                source: "ASRService"
+            )
+            return .alreadyActive
+        }
         guard self.isRunning == false, self.isStarting == false else {
             DebugLogger.shared.warning("⚠️ START() blocked - already running (started: \(self.isRunning), starting: \(self.isStarting))", source: "ASRService")
             return .alreadyActive
@@ -2535,6 +2629,10 @@ final class ASRService: ObservableObject {
         }
 
         do {
+            try Task.checkCancellation()
+            guard self.recordingSpeechSessionState.selection(matching: ownedSessionID) != nil else {
+                throw CancellationError()
+            }
             let ensureStartedAt = Date().timeIntervalSince1970
             if self.isAsrReady,
                self.readyProviderKey == selection.providerKey,
@@ -2546,6 +2644,11 @@ final class ASRService: ObservableObject {
                 try await self.ensureAsrReady(sessionID: ownedSessionID)
                 self.benchmarkLog("stop_ensure_ready skipped=false elapsedMs=\(self.elapsedMilliseconds(since: ensureStartedAt))")
                 DebugLogger.shared.debug("✅ ensureAsrReady() completed", source: "ASRService")
+            }
+
+            try Task.checkCancellation()
+            guard self.recordingSpeechSessionState.selection(matching: ownedSessionID) != nil else {
+                throw CancellationError()
             }
 
             guard provider.isReady else {
@@ -2564,13 +2667,13 @@ final class ASRService: ObservableObject {
             let result: ASRTranscriptionResult
             let finalSource: String
             if useDictionaryTrainingPath {
-                result = try await self.transcriptionExecutor.run { [provider] in
+                result = try await self.transcriptionExecutor.run(ownerID: ownedSessionID.rawValue) { [provider] in
                     try await provider.transcribeDictionaryTraining(pcm)
                 }
                 self.lastDictionaryTrainingResult = result
                 finalSource = "dictionaryTraining"
             } else {
-                result = try await self.transcriptionExecutor.run { [provider] in
+                result = try await self.transcriptionExecutor.run(ownerID: ownedSessionID.rawValue) { [provider] in
                     try await provider.transcribeFinal(pcm)
                 }
                 finalSource = "full"
@@ -2670,6 +2773,13 @@ final class ASRService: ObservableObject {
     }
 
     func transcribeSamplesForAPI(_ inputSamples: [Float]) async throws -> ASRTranscriptionResult {
+        guard self.activeRecordingSelection == nil else {
+            throw NSError(
+                domain: "ASRService",
+                code: -2003,
+                userInfo: [NSLocalizedDescriptionKey: "A recording transcription is already active."]
+            )
+        }
         var samples = inputSamples
         guard !samples.isEmpty else {
             return ASRTranscriptionResult(text: "", confidence: 0)
@@ -2681,6 +2791,7 @@ final class ASRService: ObservableObject {
         }
 
         try await self.ensureAsrReady()
+        guard self.activeRecordingSelection == nil else { throw CancellationError() }
         guard self.transcriptionProvider.isReady else {
             throw NSError(
                 domain: "ASRService",
@@ -2707,6 +2818,13 @@ final class ASRService: ObservableObject {
     }
 
     func transcribeFileForAPI(_ fileURL: URL) async throws -> (result: ASRTranscriptionResult, sampleCount: Int) {
+        guard self.activeRecordingSelection == nil else {
+            throw NSError(
+                domain: "ASRService",
+                code: -2003,
+                userInfo: [NSLocalizedDescriptionKey: "A recording transcription is already active."]
+            )
+        }
         guard FileManager.default.isReadableFile(atPath: fileURL.path) else {
             throw NSError(
                 domain: "ASRService",
@@ -2718,6 +2836,7 @@ final class ASRService: ObservableObject {
         let estimatedSamples = try LocalAPIAudioDecoder.validateDurationWithinLimit(for: fileURL)
 
         try await self.ensureAsrReady()
+        guard self.activeRecordingSelection == nil else { throw CancellationError() }
         let provider = self.transcriptionProvider
         guard provider.isReady else {
             throw NSError(
@@ -2752,7 +2871,9 @@ final class ASRService: ObservableObject {
 
     func stopWithoutTranscription(sessionID: RecordingSessionID? = nil) async {
         guard let selection = self.activeRecordingSelection,
-              sessionID == nil || sessionID == selection.sessionID
+              sessionID == nil || sessionID == selection.sessionID,
+              let provider = self.activeRecordingProvider,
+              self.activeRecordingProviderKey == selection.providerKey
         else { return }
         let ownedSessionID = selection.sessionID
         defer { self.clearRecordingSession(matching: ownedSessionID) }
@@ -2762,10 +2883,14 @@ final class ASRService: ObservableObject {
                 sessionID: ownedSessionID
             )
         }
+        await self.cancelModelPreparationAndAwait(sessionID: ownedSessionID)
         guard self.isRunning else {
             // Capture may already be stopped while final transcription still owns the provider.
             // Discard must actively cancel that operation, not merely suppress its eventual text.
-            await self.transcriptionExecutor.cancelAndAwaitPending()
+            await self.cancelStreamingTranscriptionAndAwait(
+                provider: provider,
+                sessionID: ownedSessionID
+            )
             self.isDictionaryTrainingCaptureActive = false
             return
         }
@@ -2799,9 +2924,14 @@ final class ASRService: ObservableObject {
         await self.retireAudioEngineAndWait(reason: "stop_without_transcription")
         self.audioCaptureStateSettledTick &+= 1
 
-        // CRITICAL FIX: Await completion of streaming task AND any pending transcriptions
-        // This prevents use-after-free crashes (EXC_BAD_ACCESS) when clearing buffer
-        await self.stopStreamingTimerAndAwait()
+        // Cancel the executor-owned provider operation before waiting for the outer streaming
+        // loop. The loop awaits that unstructured task, so cancelling only the loop can hang.
+        // Reset the provider afterwards so discarded decoder/audio state cannot reach a later
+        // same-model recording.
+        await self.cancelStreamingTranscriptionAndAwait(
+            provider: provider,
+            sessionID: ownedSessionID
+        )
 
         // NOW it's safe to clear the buffer
         self.audioBuffer.clear()
@@ -4186,6 +4316,7 @@ final class ASRService: ObservableObject {
                 self.ensureReadyTask = nil
                 self.ensureReadyTaskID = nil
                 self.ensureReadyProviderKey = nil
+                self.ensureReadySessionID = nil
                 self.isCancellingModelPreparation = false
             }
         }
@@ -4210,6 +4341,7 @@ final class ASRService: ObservableObject {
         self.ensureReadyTask = task
         self.ensureReadyTaskID = operationID
         self.ensureReadyProviderKey = providerKey
+        self.ensureReadySessionID = contextSessionID
         self.ensureReadyOperationID = operationID
         self.isCancellingModelPreparation = false
 
@@ -4218,6 +4350,7 @@ final class ASRService: ObservableObject {
                 ensureReadyTask = nil
                 ensureReadyTaskID = nil
                 ensureReadyProviderKey = nil
+                ensureReadySessionID = nil
                 if ensureReadyOperationID == operationID {
                     ensureReadyOperationID = nil
                 }
@@ -4372,7 +4505,7 @@ final class ASRService: ObservableObject {
                self.isRunning,
                self.isDictionaryTrainingCaptureActive == false,
                self.recordingSpeechSessionState.selection(matching: sessionID)?
-                   .configuration.model.supportsStreaming == true
+               .configuration.model.supportsStreaming == true
             {
                 self.startStreamingTranscription(sessionID: sessionID)
             }
@@ -4542,12 +4675,16 @@ final class ASRService: ObservableObject {
     }
 
     private func errorSummary(from error: Error?) -> String {
-        if let error { return error.localizedDescription }
+        if let error {
+            return error.localizedDescription
+        }
         return "Unknown error"
     }
 
     private nonisolated static func isModelPreparationCancellation(_ error: Error) -> Bool {
-        if error is CancellationError { return true }
+        if error is CancellationError {
+            return true
+        }
         let nsError = error as NSError
         return nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled
     }
@@ -4586,7 +4723,7 @@ final class ASRService: ObservableObject {
 
     func clearModelCache() async throws {
         DebugLogger.shared.debug("Clearing model cache via transcription provider", source: "ASRService")
-        await self.transcriptionExecutor.cancelAndAwaitPending()
+        await self.transcriptionExecutor.cancelAndAwaitAll()
         try await self.transcriptionProvider.clearCache()
         self.isAsrReady = false
         self.modelsExistOnDisk = false
@@ -4595,7 +4732,7 @@ final class ASRService: ObservableObject {
     func clearModelCache(for model: SettingsStore.SpeechModel) async throws {
         DebugLogger.shared.debug("Clearing model cache for \(model.displayName)", source: "ASRService")
         if SettingsStore.shared.selectedSpeechModel == model {
-            await self.transcriptionExecutor.cancelAndAwaitPending()
+            await self.transcriptionExecutor.cancelAndAwaitAll()
         }
         let provider = try self.getProvider(for: model)
         try await provider.clearCache()
@@ -4769,7 +4906,7 @@ final class ASRService: ObservableObject {
 
         do {
             DebugLogger.shared.debug("Streaming chunk starting transcription (samples: \(chunk.count)) using \(provider.name)", source: "ASRService")
-            let result = try await transcriptionExecutor.run { [provider] in
+            let result = try await transcriptionExecutor.run(ownerID: sessionID.rawValue) { [provider] in
                 try await provider.transcribeStreaming(chunk)
             }
             guard self.isRunning,
@@ -4913,6 +5050,22 @@ final class ASRService: ObservableObject {
             "TYPING_BENCH",
             message: "asr_type_dispatched chars=\(text.count) preferredPID=\(preferredTargetPID.map { String($0) } ?? "nil") textReadyToDispatchMs=\(textReadyToDispatchMs)",
             source: "TypingBenchmark"
+        )
+    }
+
+    func typeOutputPlanToActiveFieldAndWait(
+        _ plan: DictationLiteralOutputPlan,
+        preferredTargetPID: pid_t?,
+        textReadyAt: TimeInterval? = nil,
+        tracksDictionaryCorrections: Bool = false,
+        commitBeforeInsertion: @escaping @Sendable () -> Bool
+    ) async -> TypingInsertionOutcome {
+        await self.typingService.typeOutputPlanAndWait(
+            plan,
+            preferredTargetPID: preferredTargetPID,
+            textReadyAt: textReadyAt,
+            tracksDictionaryCorrections: tracksDictionaryCorrections,
+            commitBeforeInsertion: commitBeforeInsertion
         )
     }
 
@@ -5136,6 +5289,43 @@ private extension SettingsStore.SpeechModel {
 }
 
 private extension ASRService {
+    func cancelModelPreparationAndAwait(sessionID: RecordingSessionID) async {
+        guard self.ensureReadySessionID == sessionID,
+              let task = self.ensureReadyTask
+        else { return }
+
+        let taskID = self.ensureReadyTaskID
+        self.isCancellingModelPreparation = true
+        task.cancel()
+        _ = await task.result
+        if self.ensureReadyTaskID == taskID {
+            self.ensureReadyTask = nil
+            self.ensureReadyTaskID = nil
+            self.ensureReadyProviderKey = nil
+            self.ensureReadySessionID = nil
+            self.ensureReadyOperationID = nil
+            self.isCancellingModelPreparation = false
+            self.isDownloadingModel = false
+            self.isLoadingModel = false
+            self.downloadProgress = nil
+            self.modelPreparationPhase = nil
+        }
+    }
+
+    func cancelStreamingTranscriptionAndAwait(
+        provider: TranscriptionProvider,
+        sessionID: RecordingSessionID
+    ) async {
+        let task = self.streamingTask
+        await TranscriptionCancellationDrain.cancelAndAwait(
+            streamingTask: task,
+            executor: self.transcriptionExecutor,
+            ownerID: sessionID.rawValue,
+            provider: provider
+        )
+        self.streamingTask = nil
+    }
+
     /// Stops the streaming timer and waits for the task to complete.
     /// This prevents race conditions where the buffer is cleared while
     /// a transcription task is still running.

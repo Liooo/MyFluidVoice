@@ -70,6 +70,24 @@ final class TranscriptionSoundSettingsTests: XCTestCase {
         }
     }
 
+    func testOverlappingIndependentVolumePlaybackRestoresTheOriginalVolumeLast() {
+        var state = IndependentVolumePlaybackState()
+
+        XCTAssertTrue(state.beginPlayback(currentSystemVolume: 0.72))
+        XCTAssertTrue(state.beginPlayback(currentSystemVolume: 0.18))
+        XCTAssertNil(state.finishPlayback())
+        XCTAssertEqual(state.finishPlayback(), 0.72)
+        XCTAssertEqual(state.activePlaybackCount, 0)
+    }
+
+    func testMutedIndependentVolumePlaybackDoesNotJoinRestorationGroup() {
+        var state = IndependentVolumePlaybackState()
+
+        XCTAssertFalse(state.beginPlayback(currentSystemVolume: 0.001))
+        XCTAssertNil(state.finishPlayback())
+        XCTAssertEqual(state.activePlaybackCount, 0)
+    }
+
     private func withRestoredDefaults(keys: [String], run: () -> Void) {
         let defaults = UserDefaults.standard
         var snapshot: [String: Any] = [:]

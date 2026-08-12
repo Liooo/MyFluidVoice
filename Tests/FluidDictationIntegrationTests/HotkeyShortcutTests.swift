@@ -539,6 +539,149 @@ final class HotkeyShortcutTests: XCTestCase {
         XCTAssertEqual(DoubleModifierTapDecision.interval, 0.300)
     }
 
+    func testGlobalDoubleModifierRuntimeUsesCGEventNanosecondTimestamp() {
+        XCTAssertEqual(
+            HotkeyEventTime.seconds(from: 2_345_000_000),
+            2.345,
+            accuracy: 0.000_001
+        )
+    }
+
+    func testDoubleModifierRuntimeConsumesOnlyTheRecognizedSecondTap() {
+        XCTAssertFalse(DoubleModifierEventConsumptionDecision.shouldConsume(.ignore))
+        XCTAssertFalse(
+            DoubleModifierEventConsumptionDecision.shouldConsume(.handled),
+            "A possible first tap must remain visible to the frontmost app"
+        )
+        XCTAssertTrue(DoubleModifierEventConsumptionDecision.shouldConsume(.secondPress))
+        XCTAssertTrue(DoubleModifierEventConsumptionDecision.shouldConsume(.secondRelease))
+    }
+
+    func testPasteLastMouseUpIsConsumedOnlyAfterMatchingMouseDown() {
+        let shortcut = HotkeyShortcut(mouseButton: 0, modifierFlags: .command)
+        var pairing = PasteLastMousePressPairing()
+
+        XCTAssertFalse(pairing.beginIfRecognized(
+            shortcutEnabled: true,
+            shortcut: shortcut,
+            button: 0,
+            modifiers: []
+        ))
+        XCTAssertFalse(pairing.consumeMouseUp(button: 0))
+
+        XCTAssertTrue(pairing.beginIfRecognized(
+            shortcutEnabled: true,
+            shortcut: shortcut,
+            button: 0,
+            modifiers: .command
+        ))
+        XCTAssertFalse(pairing.consumeMouseUp(button: 1))
+        XCTAssertTrue(
+            pairing.consumeMouseUp(button: 0),
+            "The paired up stays consumed even if Command was released before the mouse button"
+        )
+        XCTAssertFalse(pairing.consumeMouseUp(button: 0), "A consumed down pairs with exactly one up")
+    }
+
+    func testPasteLastMousePressPairingResetDropsPendingUp() {
+        let shortcut = HotkeyShortcut(mouseButton: 2, modifierFlags: .option)
+        var pairing = PasteLastMousePressPairing()
+
+        XCTAssertTrue(pairing.beginIfRecognized(
+            shortcutEnabled: true,
+            shortcut: shortcut,
+            button: 2,
+            modifiers: .option
+        ))
+        pairing.reset()
+
+        XCTAssertFalse(pairing.consumeMouseUp(button: 2))
+    }
+
+    func testAutomaticQuickReleaseBeforeQueuedStartCarriesToggleStyle() {
+        var resolution = AutomaticActivationResolution()
+
+        resolution.recordQuickTap(for: .transcription, resolvedActiveSession: false)
+
+        XCTAssertEqual(resolution.consume(for: .transcription), .toggle)
+        XCTAssertNil(resolution.consume(for: .transcription))
+    }
+
+    func testAutomaticQuickReleaseAfterSessionStartDoesNotLeakToNextSession() {
+        var resolution = AutomaticActivationResolution()
+
+        resolution.recordQuickTap(for: .transcription, resolvedActiveSession: true)
+
+        XCTAssertNil(resolution.consume(for: .transcription))
+    }
+
+    func testAutomaticActivationResolutionResetsWithHotkeyState() {
+        var resolution = AutomaticActivationResolution()
+        resolution.recordQuickTap(for: .commandMode, resolvedActiveSession: false)
+
+        resolution.reset()
+
+        XCTAssertNil(resolution.consume(for: .commandMode))
+    }
+
+    func testLiteralEscapePolicyDoesNotDependOnConfiguredCancelBinding() {
+        XCTAssertTrue(
+            DictationEscapeKeyDecision.shouldRouteToEscapePolicy(
+                keyCode: 53,
+                modifiers: []
+            )
+        )
+        XCTAssertFalse(
+            DictationEscapeKeyDecision.shouldRouteToEscapePolicy(
+                keyCode: 53,
+                modifiers: .command
+            )
+        )
+        XCTAssertFalse(
+            DictationEscapeKeyDecision.shouldRouteToEscapePolicy(
+                keyCode: 12,
+                modifiers: []
+            )
+        )
+
+        XCTAssertEqual(
+            DictationEscapeKeyDecision.evaluateKeyDown(
+                keyCode: 53,
+                modifiers: [],
+                policyDisposition: .consume,
+                isConfiguredCancelMatch: false
+            ),
+            .consumeEscapePolicy
+        )
+        XCTAssertEqual(
+            DictationEscapeKeyDecision.evaluateKeyDown(
+                keyCode: 53,
+                modifiers: [],
+                policyDisposition: .passThrough,
+                isConfiguredCancelMatch: true
+            ),
+            .passThrough,
+            "Do Nothing must not fall through to a Cancel binding that also uses Escape"
+        )
+        XCTAssertEqual(
+            DictationEscapeKeyDecision.evaluateKeyDown(
+                keyCode: 53,
+                modifiers: [],
+                policyDisposition: .notApplicable,
+                isConfiguredCancelMatch: true
+            ),
+            .configurableCancel,
+            "Outside a toggle session, an Escape Cancel binding must retain cancel behavior"
+        )
+    }
+
+    func testDoubleModifierCaptureIsRejectedForKeyDownOnlyActions() {
+        XCTAssertFalse(ShortcutRecordingTarget.cancel.allowsDoubleModifierShortcut)
+        XCTAssertFalse(ShortcutRecordingTarget.pasteLast.allowsDoubleModifierShortcut)
+        XCTAssertTrue(ShortcutRecordingTarget.primaryDictation(.add).allowsDoubleModifierShortcut)
+        XCTAssertTrue(ShortcutRecordingTarget.secondaryDictation.allowsDoubleModifierShortcut)
+    }
+
     func testDoubleModifierSingleTapNeverTriggers() {
         var state = DoubleModifierTapDecision.State()
         let shortcut = Self.doubleShiftShortcut

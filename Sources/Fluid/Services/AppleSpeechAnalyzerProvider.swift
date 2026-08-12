@@ -6,13 +6,71 @@ import Foundation
 import Speech
 #endif
 
+/// Coordinates cancellation of the analyzer and its independently running results task.
+final nonisolated class AppleSpeechAnalyzerCancellationOperation: @unchecked Sendable {
+    private let lock = NSLock()
+    private let resultsTask: Task<Void, Error>
+    private let cancelAnalyzer: @Sendable () async -> Void
+    private var analyzerCancellationTask: Task<Void, Never>?
+
+    init(
+        resultsTask: Task<Void, Error>,
+        cancelAnalyzer: @escaping @Sendable () async -> Void
+    ) {
+        self.resultsTask = resultsTask
+        self.cancelAnalyzer = cancelAnalyzer
+    }
+
+    func run<T>(_ operation: () async throws -> T) async throws -> T {
+        do {
+            return try await withTaskCancellationHandler {
+                try Task.checkCancellation()
+                let result = try await operation()
+                try Task.checkCancellation()
+                return result
+            } onCancel: {
+                self.cancel()
+            }
+        } catch {
+            guard Task.isCancelled || error is CancellationError else {
+                throw error
+            }
+            await self.cancelAndAwait()
+            throw CancellationError()
+        }
+    }
+
+    private func cancel() {
+        self.resultsTask.cancel()
+
+        self.lock.withLock {
+            guard self.analyzerCancellationTask == nil else { return }
+            let cancelAnalyzer = self.cancelAnalyzer
+            self.analyzerCancellationTask = Task {
+                await cancelAnalyzer()
+            }
+        }
+    }
+
+    private func cancelAndAwait() async {
+        self.cancel()
+        let analyzerCancellationTask = self.lock.withLock {
+            self.analyzerCancellationTask
+        }
+        await analyzerCancellationTask?.value
+        _ = await self.resultsTask.result
+    }
+}
+
 // MARK: - Apple Speech Analyzer Provider (macOS 26+)
 
 /// A TranscriptionProvider that uses Apple's new SpeechAnalyzer API (macOS 26+).
 /// This provides advanced speech-to-text with streaming capabilities.
 @available(macOS 26.0, *)
 final class AppleSpeechAnalyzerProvider: TranscriptionProvider {
-    var name: String { "Apple Speech (macOS 26+)" }
+    var name: String {
+        "Apple Speech (macOS 26+)"
+    }
 
     var isAvailable: Bool {
         // SpeechAnalyzer is always available on macOS 26+
@@ -20,7 +78,9 @@ final class AppleSpeechAnalyzerProvider: TranscriptionProvider {
     }
 
     private(set) var isReady: Bool = false
-    var shouldClearCacheAfterCancellation: Bool { false }
+    var shouldClearCacheAfterCancellation: Bool {
+        false
+    }
 
     /// Buffer converter for audio format conversion
     private var converter: BufferConverter?
@@ -173,6 +233,7 @@ final class AppleSpeechAnalyzerProvider: TranscriptionProvider {
     // MARK: - Transcription
 
     func transcribe(_ samples: [Float]) async throws -> ASRTranscriptionResult {
+        try Task.checkCancellation()
         guard self.isReady, let analyzerFormat = self.analyzerFormat else {
             throw NSError(
                 domain: "AppleSpeechAnalyzerProvider",
@@ -238,35 +299,50 @@ final class AppleSpeechAnalyzerProvider: TranscriptionProvider {
             }
             DebugLogger.shared.debug("AppleSpeechAnalyzer: Results iteration complete, accumulated: '\(finalText)'", source: "AppleSpeechAnalyzerProvider")
         }
+        defer { resultsTask.cancel() }
+        let cancellationOperation = AppleSpeechAnalyzerCancellationOperation(
+            resultsTask: resultsTask,
+            cancelAnalyzer: {
+                await analyzer.cancelAndFinishNow()
+            }
+        )
 
-        // 7. Start the analyzer (this kicks off processing)
-        DebugLogger.shared.debug("AppleSpeechAnalyzer: Starting analyzer...", source: "AppleSpeechAnalyzerProvider")
-        try await analyzer.start(inputSequence: inputStream)
-        DebugLogger.shared.debug("AppleSpeechAnalyzer: Analyzer started", source: "AppleSpeechAnalyzerProvider")
+        return try await cancellationOperation.run {
+            // 7. Start the analyzer (this kicks off processing)
+            DebugLogger.shared.debug("AppleSpeechAnalyzer: Starting analyzer...", source: "AppleSpeechAnalyzerProvider")
+            try await analyzer.start(inputSequence: inputStream)
+            DebugLogger.shared.debug("AppleSpeechAnalyzer: Analyzer started", source: "AppleSpeechAnalyzerProvider")
 
-        // 8. Feed audio and signal end of input
-        let input = AnalyzerInput(buffer: convertedBuffer)
-        inputContinuation.yield(input)
-        inputContinuation.finish()
-        DebugLogger.shared.debug("AppleSpeechAnalyzer: Audio fed and input finished", source: "AppleSpeechAnalyzerProvider")
+            // 8. Feed audio and signal end of input
+            let input = AnalyzerInput(buffer: convertedBuffer)
+            inputContinuation.yield(input)
+            inputContinuation.finish()
+            DebugLogger.shared.debug("AppleSpeechAnalyzer: Audio fed and input finished", source: "AppleSpeechAnalyzerProvider")
 
-        // 9. Finalize - this tells the analyzer to process remaining audio and complete the results stream
-        do {
-            try await analyzer.finalizeAndFinishThroughEndOfInput()
-            DebugLogger.shared.debug("AppleSpeechAnalyzer: Analyzer finalized", source: "AppleSpeechAnalyzerProvider")
-        } catch {
-            DebugLogger.shared.warning("Analyzer finalize error: \(error.localizedDescription)", source: "AppleSpeechAnalyzerProvider")
+            // 9. Finalize - this tells the analyzer to process remaining audio and complete the results stream
+            do {
+                try await analyzer.finalizeAndFinishThroughEndOfInput()
+                DebugLogger.shared.debug("AppleSpeechAnalyzer: Analyzer finalized", source: "AppleSpeechAnalyzerProvider")
+            } catch {
+                if Task.isCancelled || error is CancellationError {
+                    throw CancellationError()
+                }
+                DebugLogger.shared.warning("Analyzer finalize error: \(error.localizedDescription)", source: "AppleSpeechAnalyzerProvider")
+            }
+
+            // 10. Now wait for results task to complete (it will finish once stream closes)
+            do {
+                try await resultsTask.value
+            } catch {
+                if Task.isCancelled || error is CancellationError {
+                    throw CancellationError()
+                }
+                DebugLogger.shared.warning("Speech recognition error: \(error.localizedDescription)", source: "AppleSpeechAnalyzerProvider")
+            }
+
+            DebugLogger.shared.debug("AppleSpeechAnalyzer: Transcription complete - result: '\(finalText)'", source: "AppleSpeechAnalyzerProvider")
+            return ASRTranscriptionResult(text: finalText, confidence: 1.0)
         }
-
-        // 10. Now wait for results task to complete (it will finish once stream closes)
-        do {
-            try await resultsTask.value
-        } catch {
-            DebugLogger.shared.warning("Speech recognition error: \(error.localizedDescription)", source: "AppleSpeechAnalyzerProvider")
-        }
-
-        DebugLogger.shared.debug("AppleSpeechAnalyzer: Transcription complete - result: '\(finalText)'", source: "AppleSpeechAnalyzerProvider")
-        return ASRTranscriptionResult(text: finalText, confidence: 1.0)
     }
 
     // MARK: - Helpers

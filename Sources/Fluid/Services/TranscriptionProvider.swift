@@ -170,16 +170,29 @@ protocol TranscriptionProvider {
     /// Clear cached models
     func clearCache() async throws
 
+    /// Clear per-recording decoder state after a cancelled transcription without deleting models.
+    func resetAfterCancellation() async
+
     /// Whether cancellation should discard an incomplete app-managed model cache.
     var shouldClearCacheAfterCancellation: Bool { get }
 }
 
-// Default implementation for optional methods
+/// Default implementation for optional methods
 extension TranscriptionProvider {
-    func modelsExistOnDisk() -> Bool { return false }
+    func modelsExistOnDisk() -> Bool {
+        return false
+    }
+
     func clearCache() async throws {}
-    var shouldClearCacheAfterCancellation: Bool { true }
-    var prefersNativeFileTranscription: Bool { false }
+    func resetAfterCancellation() async {}
+    var shouldClearCacheAfterCancellation: Bool {
+        true
+    }
+
+    var prefersNativeFileTranscription: Bool {
+        false
+    }
+
     func transcribeStreaming(_ samples: [Float]) async throws -> ASRTranscriptionResult {
         try await self.transcribe(samples)
     }

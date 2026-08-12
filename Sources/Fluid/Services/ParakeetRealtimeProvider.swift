@@ -8,7 +8,9 @@ import FluidAudio
 final class ParakeetRealtimeProvider: TranscriptionProvider {
     let name = "Parakeet Flash (FluidAudio)"
 
-    var isAvailable: Bool { true }
+    var isAvailable: Bool {
+        true
+    }
 
     private(set) var isReady: Bool = false
 
@@ -165,6 +167,13 @@ final class ParakeetRealtimeProvider: TranscriptionProvider {
         self.engine = nil
     }
 
+    func resetAfterCancellation() async {
+        if let engine = self.engine {
+            await engine.reset()
+        }
+        self.streamedSampleCount = 0
+    }
+
     private func requireEngine() throws -> StreamingEouAsrManager {
         guard let engine = self.engine else {
             throw NSError(
@@ -261,8 +270,13 @@ final class ParakeetRealtimeProvider: TranscriptionProvider {
 #else
 final class ParakeetRealtimeProvider: TranscriptionProvider {
     let name = "Parakeet Flash (FluidAudio)"
-    var isAvailable: Bool { false }
-    var isReady: Bool { false }
+    var isAvailable: Bool {
+        false
+    }
+
+    var isReady: Bool {
+        false
+    }
 
     func prepare(progressHandler: ((ModelPreparationProgress) -> Void)? = nil) async throws {
         throw NSError(domain: "ParakeetRealtimeProvider", code: -1, userInfo: [NSLocalizedDescriptionKey: "Parakeet Flash requires Apple Silicon"])

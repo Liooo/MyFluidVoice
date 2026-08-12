@@ -784,14 +784,14 @@ final class DictationE2ETests: XCTestCase {
         let store = PronunciationDictionaryStore(fileURL: fileURL)
         let entryID = UUID()
 
-        let initialEnrollments = (0 ..< 8).map { value in
+        let initialEnrollments = (0..<8).map { value in
             PronunciationEnrollmentCapture(
                 values: [Float(value), Float(value)],
                 sourceFrameCount: 1,
                 modelKey: "model-a"
             )
         }
-        let retrainedEnrollments = (8 ..< 13).map { value in
+        let retrainedEnrollments = (8..<13).map { value in
             PronunciationEnrollmentCapture(
                 values: [Float(value), Float(value)],
                 sourceFrameCount: 1,
@@ -814,7 +814,7 @@ final class DictationE2ETests: XCTestCase {
 
         let profiles = await store.profiles(modelKey: "model-a")
         XCTAssertEqual(profiles.count, 1)
-        XCTAssertEqual(profiles.first?.enrollments.compactMap(\.values.first), (3 ..< 13).map { Float($0) })
+        XCTAssertEqual(profiles.first?.enrollments.compactMap(\.values.first), (3..<13).map { Float($0) })
     }
 
     func testPronunciationStoreRestoreRejectsMalformedProfiles() async {
@@ -867,9 +867,9 @@ final class DictationE2ETests: XCTestCase {
 
     func testDictionaryTrainingAudioCursorResetsAfterBufferGenerationChange() {
         var cursor = DictionaryTrainingAudioCursor(generation: 4)
-        cursor.consume(1_600)
+        cursor.consume(1600)
         cursor.synchronize(generation: 4)
-        XCTAssertEqual(cursor.sampleOffset, 1_600)
+        XCTAssertEqual(cursor.sampleOffset, 1600)
 
         cursor.synchronize(generation: 5)
         XCTAssertEqual(cursor.sampleOffset, 0)
@@ -2216,7 +2216,9 @@ final class DictationE2ETests: XCTestCase {
     private static func normalize(_ text: String) -> String {
         let lowered = text.lowercased()
         let noPunct = lowered.unicodeScalars.map { scalar -> Character in
-            if CharacterSet.punctuationCharacters.contains(scalar) { return " " }
+            if CharacterSet.punctuationCharacters.contains(scalar) {
+                return " "
+            }
             return Character(scalar)
         }
         return String(noPunct)
@@ -2312,7 +2314,7 @@ final class DictationSessionCoordinatorTests: XCTestCase {
         return configuration
     }
 
-    func testCoordinatorRecordsTerminalOutputOutcome() {
+    func testCoordinatorRecordsTerminalOutputOutcome() throws {
         let coordinator = DictationSessionCoordinator()
         let session = coordinator.begin(
             activationStyle: .toggle,
@@ -2321,12 +2323,14 @@ final class DictationSessionCoordinatorTests: XCTestCase {
 
         XCTAssertTrue(coordinator.hasActiveSession)
         XCTAssertTrue(coordinator.beginFinalization(for: session.id))
-        XCTAssertTrue(coordinator.claimOutputDelivery(for: session.id))
+        let gate = try XCTUnwrap(coordinator.claimOutputDeliveryGate(for: session.id))
+        XCTAssertTrue(gate.commit())
         XCTAssertTrue(coordinator.complete(for: session.id, outcome: .copied))
 
         XCTAssertEqual(coordinator.state(for: session.id), .completed)
         XCTAssertEqual(coordinator.outputOutcome(for: session.id), .copied)
         XCTAssertFalse(coordinator.hasActiveSession)
+        XCTAssertNil(coordinator.currentSession)
     }
 
     func testDiscardRecordsOutcomeAndBlocksDelivery() {
@@ -2341,6 +2345,7 @@ final class DictationSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.outputOutcome(for: session.id), .discarded)
         XCTAssertFalse(coordinator.claimOutputDelivery(for: session.id))
         XCTAssertFalse(coordinator.hasActiveSession)
+        XCTAssertNil(coordinator.currentSession)
     }
 
     func testEmptyFinalizationCanCompleteWithoutDelivery() {
@@ -2367,6 +2372,59 @@ final class DictationSessionCoordinatorTests: XCTestCase {
 
         XCTAssertEqual(session.speechConfiguration, self.englishConfiguration)
         XCTAssertEqual(coordinator.state(for: session.id), .capturing)
+        XCTAssertTrue(coordinator.isCapturing(session.id))
+    }
+
+    func testAutomaticTapCanResolveCapturingSessionToToggle() {
+        let coordinator = DictationSessionCoordinator()
+        let session = coordinator.begin(
+            activationStyle: .pushToTalk,
+            speechConfiguration: self.englishConfiguration
+        )
+
+        XCTAssertTrue(coordinator.resolveActivationStyle(.toggle, for: session.id))
+        XCTAssertEqual(coordinator.currentSession?.activationStyle, .toggle)
+        XCTAssertEqual(coordinator.requestExit(.discard, for: session.id), .discard)
+    }
+
+    func testActivationStyleCannotChangeAfterFinalizationStarts() {
+        let coordinator = DictationSessionCoordinator()
+        let session = coordinator.begin(
+            activationStyle: .pushToTalk,
+            speechConfiguration: self.englishConfiguration
+        )
+        XCTAssertTrue(coordinator.beginFinalization(for: session.id))
+
+        XCTAssertFalse(coordinator.resolveActivationStyle(.toggle, for: session.id))
+        XCTAssertEqual(coordinator.currentSession?.activationStyle, .pushToTalk)
+    }
+
+    func testAuxiliarySessionCanDisableToggleExitPoliciesWhileRemainingScoped() {
+        let coordinator = DictationSessionCoordinator()
+        let session = coordinator.begin(
+            activationStyle: .toggle,
+            speechConfiguration: self.englishConfiguration,
+            exitPoliciesEnabled: false
+        )
+
+        XCTAssertTrue(coordinator.hasActiveSession)
+        XCTAssertEqual(coordinator.requestExit(.discard, for: session.id), .ignore)
+        XCTAssertEqual(coordinator.requestExit(.paste, for: session.id), .ignore)
+        XCTAssertTrue(coordinator.isCapturing(session.id))
+    }
+
+    func testLiveModeSwitchesUpdateDictationExitPolicyEligibilityBothWays() {
+        let coordinator = DictationSessionCoordinator()
+        let session = coordinator.begin(
+            activationStyle: .toggle,
+            speechConfiguration: self.englishConfiguration,
+            exitPoliciesEnabled: false
+        )
+
+        XCTAssertTrue(coordinator.setExitPoliciesEnabled(true, for: session.id))
+        XCTAssertEqual(coordinator.requestExit(.paste, for: session.id), .finalize)
+        XCTAssertTrue(coordinator.setExitPoliciesEnabled(false, for: session.id))
+        XCTAssertEqual(coordinator.requestExit(.discard, for: session.id), .ignore)
         XCTAssertTrue(coordinator.isCapturing(session.id))
     }
 
@@ -2398,7 +2456,7 @@ final class DictationSessionCoordinatorTests: XCTestCase {
         XCTAssertFalse(coordinator.complete(for: session.id))
     }
 
-    func testClaimedOutputDeliveryHasSingleTerminalWinner() {
+    func testClaimedOutputDeliveryHasSingleTerminalWinner() throws {
         let coordinator = DictationSessionCoordinator()
         let session = coordinator.begin(
             activationStyle: .toggle,
@@ -2406,13 +2464,29 @@ final class DictationSessionCoordinatorTests: XCTestCase {
         )
         XCTAssertTrue(coordinator.beginFinalization(for: session.id))
 
-        XCTAssertTrue(coordinator.claimOutputDelivery(for: session.id))
+        let gate = try XCTUnwrap(coordinator.claimOutputDeliveryGate(for: session.id))
         XCTAssertFalse(coordinator.claimOutputDelivery(for: session.id))
+        XCTAssertEqual(coordinator.requestExit(.discard, for: session.id), .discard)
+        XCTAssertFalse(gate.commit())
+        XCTAssertFalse(coordinator.complete(for: session.id))
+        XCTAssertFalse(coordinator.complete(for: session.id))
+        XCTAssertEqual(coordinator.state(for: session.id), .cancelled)
+        XCTAssertFalse(coordinator.canContinueFinalization(for: session.id))
+    }
+
+    func testCommittedOutputDeliveryWinsAgainstLateDiscard() throws {
+        let coordinator = DictationSessionCoordinator()
+        let session = coordinator.begin(
+            activationStyle: .toggle,
+            speechConfiguration: self.englishConfiguration
+        )
+        XCTAssertTrue(coordinator.beginFinalization(for: session.id))
+        let gate = try XCTUnwrap(coordinator.claimOutputDeliveryGate(for: session.id))
+
+        XCTAssertTrue(gate.commit())
         XCTAssertEqual(coordinator.requestExit(.discard, for: session.id), .ignore)
         XCTAssertTrue(coordinator.complete(for: session.id))
-        XCTAssertFalse(coordinator.complete(for: session.id))
         XCTAssertEqual(coordinator.state(for: session.id), .completed)
-        XCTAssertFalse(coordinator.canContinueFinalization(for: session.id))
     }
 
     func testPasteExitDeduplicatesSimultaneousTerminalEvents() {
@@ -2423,6 +2497,8 @@ final class DictationSessionCoordinatorTests: XCTestCase {
         )
 
         XCTAssertEqual(coordinator.requestExit(.paste, for: session.id), .finalize)
+        XCTAssertEqual(coordinator.requestExit(.paste, for: session.id), .finalize)
+        XCTAssertTrue(coordinator.beginFinalization(for: session.id))
         XCTAssertEqual(coordinator.requestExit(.paste, for: session.id), .ignore)
         XCTAssertEqual(coordinator.requestExit(.discard, for: session.id), .discard)
         XCTAssertEqual(coordinator.requestExit(.discard, for: session.id), .ignore)
@@ -2544,8 +2620,8 @@ final class WorkflowSettingsTests: XCTestCase {
                 "com.apple.keylayout.US": SettingsStore.SpeechModel.appleSpeech.rawValue,
                 "com.example.future-ime": "future-model",
             ]
-            UserDefaults.standard.set(
-                try JSONEncoder().encode(rawAssignments),
+            try UserDefaults.standard.set(
+                JSONEncoder().encode(rawAssignments),
                 forKey: self.modelAssignmentsKey
             )
 
@@ -2562,8 +2638,8 @@ final class WorkflowSettingsTests: XCTestCase {
                 "com.apple.keylayout.US": SettingsStore.SpeechModel.appleSpeech.rawValue,
                 "com.example.future-ime": "future-model",
             ]
-            UserDefaults.standard.set(
-                try JSONEncoder().encode(rawAssignments),
+            try UserDefaults.standard.set(
+                JSONEncoder().encode(rawAssignments),
                 forKey: self.modelAssignmentsKey
             )
 
@@ -3352,8 +3428,8 @@ final class RecordingSpeechSessionSelectionTests: XCTestCase {
         file: StaticString = #filePath,
         line: UInt = #line
     ) throws -> RecordingSessionID {
-        RecordingSessionID(
-            rawValue: try XCTUnwrap(UUID(uuidString: rawValue), file: file, line: line)
+        try RecordingSessionID(
+            rawValue: XCTUnwrap(UUID(uuidString: rawValue), file: file, line: line)
         )
     }
 }
