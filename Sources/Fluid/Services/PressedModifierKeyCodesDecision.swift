@@ -41,7 +41,9 @@ nonisolated enum PressedModifierKeyCodesDecision {
             if siblingIsTracked, !changedKeyIsPhysicallyPressed {
                 synchronized.remove(changedKeyCode)
             }
-        } else if changedKeyIsPhysicallyPressed {
+        } else {
+            // The current flagsChanged event is authoritative for an ordinary press. The
+            // session-wide keyState query can still describe the previous event at this point.
             synchronized.insert(changedKeyCode)
         }
 

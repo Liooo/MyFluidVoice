@@ -79,6 +79,116 @@ final class HotkeyShortcutTests: XCTestCase {
         XCTAssertEqual(duplicate, [56])
     }
 
+    func testPressedModifierTrackingUsesEventFlagsWhenPhysicalStateLags() {
+        let pressed = PressedModifierKeyCodesDecision.synchronize(
+            previous: [],
+            changedKeyCode: 56,
+            modifiers: .shift,
+            changedKeyIsPhysicallyPressed: false
+        )
+
+        XCTAssertEqual(pressed, [56])
+    }
+
+    func testLaggingPhysicalStateStillRecognizesFnShiftModifierChord() {
+        let shortcut = HotkeyShortcut(
+            keyCode: 63,
+            modifierFlags: [],
+            modifierKeyCodes: [63, 56]
+        )
+        let replay = ModifierOnlyFlagsReplay(shortcut: shortcut)
+        var pressedModifierKeyCodes: Set<UInt16> = []
+
+        pressedModifierKeyCodes = PressedModifierKeyCodesDecision.synchronize(
+            previous: pressedModifierKeyCodes,
+            changedKeyCode: 63,
+            modifiers: .function,
+            changedKeyIsPhysicallyPressed: false
+        )
+        replay.flagsChanged(
+            keyCode: 63,
+            modifiers: .function,
+            nextPressed: pressedModifierKeyCodes
+        )
+
+        pressedModifierKeyCodes = PressedModifierKeyCodesDecision.synchronize(
+            previous: pressedModifierKeyCodes,
+            changedKeyCode: 56,
+            modifiers: [.function, .shift],
+            changedKeyIsPhysicallyPressed: false
+        )
+        replay.flagsChanged(
+            keyCode: 56,
+            modifiers: [.function, .shift],
+            nextPressed: pressedModifierKeyCodes
+        )
+
+        XCTAssertEqual(replay.activeModifierOnlyType, .transcription)
+
+        pressedModifierKeyCodes = PressedModifierKeyCodesDecision.synchronize(
+            previous: pressedModifierKeyCodes,
+            changedKeyCode: 56,
+            modifiers: .function,
+            changedKeyIsPhysicallyPressed: false
+        )
+        replay.flagsChanged(
+            keyCode: 56,
+            modifiers: .function,
+            nextPressed: pressedModifierKeyCodes
+        )
+
+        XCTAssertEqual(replay.cleanFinishCount, 1)
+    }
+
+    func testLaggingPhysicalStateStillRecognizesDoubleShift() {
+        var replay = DoubleModifierReplay(shortcut: Self.doubleShiftShortcut)
+        var pressedModifierKeyCodes: Set<UInt16> = []
+
+        pressedModifierKeyCodes = PressedModifierKeyCodesDecision.synchronize(
+            previous: pressedModifierKeyCodes,
+            changedKeyCode: 56,
+            modifiers: .shift,
+            changedKeyIsPhysicallyPressed: false
+        )
+        XCTAssertEqual(
+            replay.flagsChanged(keyCode: 56, pressed: pressedModifierKeyCodes, timestamp: 1.00),
+            .handled
+        )
+
+        pressedModifierKeyCodes = PressedModifierKeyCodesDecision.synchronize(
+            previous: pressedModifierKeyCodes,
+            changedKeyCode: 56,
+            modifiers: [],
+            changedKeyIsPhysicallyPressed: false
+        )
+        XCTAssertEqual(
+            replay.flagsChanged(keyCode: 56, pressed: pressedModifierKeyCodes, timestamp: 1.05),
+            .handled
+        )
+
+        pressedModifierKeyCodes = PressedModifierKeyCodesDecision.synchronize(
+            previous: pressedModifierKeyCodes,
+            changedKeyCode: 56,
+            modifiers: .shift,
+            changedKeyIsPhysicallyPressed: false
+        )
+        XCTAssertEqual(
+            replay.flagsChanged(keyCode: 56, pressed: pressedModifierKeyCodes, timestamp: 1.20),
+            .secondPress
+        )
+
+        pressedModifierKeyCodes = PressedModifierKeyCodesDecision.synchronize(
+            previous: pressedModifierKeyCodes,
+            changedKeyCode: 56,
+            modifiers: [],
+            changedKeyIsPhysicallyPressed: false
+        )
+        XCTAssertEqual(
+            replay.flagsChanged(keyCode: 56, pressed: pressedModifierKeyCodes, timestamp: 1.25),
+            .secondRelease
+        )
+    }
+
     func testPressedModifierTrackingKeepsPhysicalSidesDistinct() {
         let bothSides = PressedModifierKeyCodesDecision.synchronize(
             previous: [56],
