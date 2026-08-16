@@ -355,30 +355,78 @@ final class SonioxCredentialSettingsTests: XCTestCase {
         XCTAssertTrue(aggregateCommitted)
     }
 
-    func testRequiredLegacyCleanupFailurePreventsAggregateMutation() {
+    func testProviderMutationPrimaryFailureLeavesLegacyAndSkipsCleanup() {
         var events: [String] = []
 
         XCTAssertThrowsError(
             try KeychainService.performProviderMutation(
-                requiredCleanup: {
-                    events.append("required")
-                    throw NSError(domain: "RequiredCleanup", code: 1)
+                primary: {
+                    events.append("primary")
+                    throw NSError(domain: "PrimaryMutation", code: 1)
                 },
-                primary: { events.append("primary") },
+                requiredCleanup: { events.append("required") },
+                rollback: { events.append("rollback") },
                 cleanup: { events.append("unrelated") }
             )
         )
 
-        XCTAssertEqual(events, ["required"])
+        XCTAssertEqual(events, ["primary"])
     }
 
-    func testRequiredLegacyCleanupSucceedsBeforeAggregateAndUnrelatedCleanupIsBestEffort() {
+    func testProviderMutationRequiredCleanupFailureRollsBackAggregateAndThrows() {
+        var events: [String] = []
+
+        XCTAssertThrowsError(
+            try KeychainService.performProviderMutation(
+                primary: { events.append("primary") },
+                requiredCleanup: {
+                    events.append("required")
+                    throw NSError(domain: "RequiredCleanup", code: 1)
+                },
+                rollback: { events.append("rollback") },
+                cleanup: { events.append("unrelated") }
+            )
+        )
+
+        XCTAssertEqual(events, ["primary", "required", "rollback"])
+    }
+
+    func testProviderMutationRollbackFailureSurfacesStableError() {
+        var events: [String] = []
+        var thrownError: Error?
+
+        do {
+            try KeychainService.performProviderMutation(
+                primary: { events.append("primary") },
+                requiredCleanup: {
+                    events.append("required")
+                    throw NSError(domain: "RequiredCleanup", code: 1)
+                },
+                rollback: {
+                    events.append("rollback")
+                    throw NSError(domain: "Rollback", code: 1)
+                },
+                cleanup: { events.append("unrelated") }
+            )
+        } catch {
+            thrownError = error
+        }
+
+        XCTAssertEqual(events, ["primary", "required", "rollback"])
+        XCTAssertEqual(
+            (thrownError as? KeychainServiceRollbackError)?.errorDescription,
+            KeychainServiceRollbackError.failed.errorDescription
+        )
+    }
+
+    func testProviderMutationSuccessSkipsRollbackAndBestEffortCleansUnrelatedEntries() {
         var events: [String] = []
 
         XCTAssertNoThrow(
             try KeychainService.performProviderMutation(
-                requiredCleanup: { events.append("required") },
                 primary: { events.append("primary") },
+                requiredCleanup: { events.append("required") },
+                rollback: { events.append("rollback") },
                 cleanup: {
                     events.append("unrelated")
                     throw NSError(domain: "UnrelatedCleanup", code: 1)
@@ -386,7 +434,7 @@ final class SonioxCredentialSettingsTests: XCTestCase {
             )
         )
 
-        XCTAssertEqual(events, ["required", "primary", "unrelated"])
+        XCTAssertEqual(events, ["primary", "required", "unrelated"])
     }
 
     func testDeletingMissingAggregateKeyStillRunsRequiredLegacyCleanup() {
@@ -394,8 +442,9 @@ final class SonioxCredentialSettingsTests: XCTestCase {
 
         XCTAssertNoThrow(
             try KeychainService.performProviderMutation(
-                requiredCleanup: { requiredCleanupRan = true },
                 primary: nil,
+                requiredCleanup: { requiredCleanupRan = true },
+                rollback: { XCTFail("No-op aggregate mutation should not roll back") },
                 cleanup: { XCTFail("Unrelated cleanup should not run without an aggregate mutation") }
             )
         )

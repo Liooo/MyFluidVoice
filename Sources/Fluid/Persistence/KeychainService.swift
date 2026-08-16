@@ -18,6 +18,14 @@ enum KeychainServiceError: Error, LocalizedError {
     }
 }
 
+enum KeychainServiceRollbackError: Error, LocalizedError {
+    case failed
+
+    var errorDescription: String? {
+        "Failed to restore Keychain state after legacy cleanup failure."
+    }
+}
+
 /// Lightweight helper for storing provider API keys in the system Keychain.
 /// Keys retain FluidVoice's service identity so existing installations keep access after upgrade.
 final class KeychainService {
@@ -33,11 +41,13 @@ final class KeychainService {
 
     func storeKey(_ key: String, for providerID: String) throws {
         let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
-        var keys = try loadStoredKeys()
+        let snapshot = try self.loadStoredKeysWithPresence()
+        var keys = snapshot.values
         keys[providerID] = trimmed
         try Self.performProviderMutation(
-            requiredCleanup: { try self.removeLegacyEntries(providerIDs: [providerID]) },
             primary: { try self.writeStoredKeys(keys) },
+            requiredCleanup: { try self.removeLegacyEntries(providerIDs: [providerID]) },
+            rollback: { try self.restoreStoredKeys(snapshot) },
             cleanup: { try self.removeLegacyEntries() }
         )
     }
@@ -48,11 +58,13 @@ final class KeychainService {
     }
 
     func deleteKey(for providerID: String) throws {
-        var keys = try loadStoredKeys()
+        let snapshot = try self.loadStoredKeysWithPresence()
+        var keys = snapshot.values
         let shouldCommit = keys.removeValue(forKey: providerID) != nil
         try Self.performProviderMutation(
-            requiredCleanup: { try self.removeLegacyEntries(providerIDs: [providerID]) },
             primary: shouldCommit ? { try self.writeStoredKeys(keys) } : nil,
+            requiredCleanup: { try self.removeLegacyEntries(providerIDs: [providerID]) },
+            rollback: { try self.restoreStoredKeys(snapshot) },
             cleanup: { try self.removeLegacyEntries() }
         )
     }
@@ -92,13 +104,29 @@ final class KeychainService {
     }
 
     nonisolated static func performProviderMutation(
-        requiredCleanup: () throws -> Void,
         primary: (() throws -> Void)?,
+        requiredCleanup: () throws -> Void,
+        rollback: () throws -> Void,
         cleanup: () throws -> Void
     ) throws {
-        try requiredCleanup()
-        guard let primary else { return }
-        try Self.performCommittedMutation(primary: primary, cleanup: cleanup)
+        guard let primary else {
+            try requiredCleanup()
+            return
+        }
+
+        try primary()
+        do {
+            try requiredCleanup()
+        } catch let cleanupError {
+            do {
+                try rollback()
+            } catch {
+                throw KeychainServiceRollbackError.failed
+            }
+            throw cleanupError
+        }
+
+        _ = try? cleanup()
     }
 
     nonisolated static func unreservedKeys(
@@ -259,6 +287,18 @@ final class KeychainService {
         default:
             throw KeychainServiceError.unhandled(status)
         }
+    }
+
+    private func restoreStoredKeys(_ snapshot: (exists: Bool, values: [String: String])) throws {
+        guard snapshot.exists else {
+            let status = SecItemDelete(self.aggregatedQuery() as CFDictionary)
+            guard status == errSecSuccess || status == errSecItemNotFound else {
+                throw KeychainServiceError.unhandled(status)
+            }
+            return
+        }
+
+        try self.writeStoredKeys(snapshot.values)
     }
 
     private func aggregatedQuery() -> [String: Any] {
