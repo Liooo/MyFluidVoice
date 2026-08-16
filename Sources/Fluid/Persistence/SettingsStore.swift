@@ -3382,7 +3382,7 @@ final class SettingsStore: ObservableObject {
         if let privateAIContextTokenLimit = payload.privateAIContextTokenLimit {
             self.privateAIContextTokenLimit = privateAIContextTokenLimit
         }
-        self.selectedSpeechModel = payload.selectedSpeechModel
+        self.selectedSpeechModel = Self.normalizedSelectedSpeechModel(payload.selectedSpeechModel)
         let restoredFallback = if let fallbackID = payload.localFallbackSpeechModelID {
             SpeechModel(rawValue: fallbackID)
         } else {
@@ -5601,6 +5601,11 @@ extension SettingsStore {
             if let rawValue = defaults.string(forKey: Keys.selectedSpeechModel),
                let model = SpeechModel(rawValue: rawValue)
             {
+                let normalizedModel = Self.normalizedSelectedSpeechModel(model)
+                if normalizedModel != model {
+                    self.defaults.set(normalizedModel.rawValue, forKey: Keys.selectedSpeechModel)
+                    return normalizedModel
+                }
                 // If Qwen was previously selected, transparently fall back while preview is disabled.
                 if model == .qwen3Asr, !SpeechModel.qwenPreviewEnabled {
                     return SpeechModel.defaultModel
@@ -5638,6 +5643,17 @@ extension SettingsStore {
         }
     }
 
+    static func normalizedSelectedSpeechModel(
+        _ candidate: SpeechModel,
+        availableModels: [SpeechModel] = SpeechModel.availableModels,
+        defaultModel: SpeechModel = SpeechModel.defaultModel
+    ) -> SpeechModel {
+        guard !candidate.isCloudSpeechModel || availableModels.contains(candidate) else {
+            return defaultModel
+        }
+        return candidate
+    }
+
     static func normalizedLocalFallbackSpeechModel(
         _ candidate: SpeechModel?,
         availableModels: [SpeechModel] = SpeechModel.availableModels,
@@ -5654,12 +5670,13 @@ extension SettingsStore {
 
     var localFallbackSpeechModel: SpeechModel {
         get {
-            let storedRawValue = self.defaults.string(forKey: Keys.localFallbackSpeechModel)
+            let storedValue = self.defaults.object(forKey: Keys.localFallbackSpeechModel)
+            let storedRawValue = storedValue as? String
             let candidate: SpeechModel?
-            if let storedRawValue {
-                candidate = SpeechModel(rawValue: storedRawValue)
-            } else {
+            if storedValue == nil {
                 candidate = self.selectedSpeechModel
+            } else {
+                candidate = storedRawValue.flatMap(SpeechModel.init(rawValue:))
             }
             let normalized = Self.normalizedLocalFallbackSpeechModel(candidate)
             if storedRawValue != normalized.rawValue {

@@ -605,6 +605,12 @@ final class ASRService: ObservableObject {
 
     func preparedLocalFallbackProvider() async throws -> TranscriptionProvider {
         let configuration = RecordingSpeechConfigurationResolver.currentLocalFallbackConfiguration()
+        return try await self.preparedLocalProvider(for: configuration)
+    }
+
+    func preparedLocalProvider(
+        for configuration: RecordingSpeechConfiguration
+    ) async throws -> TranscriptionProvider {
         let provider = try self.makeLocalProvider(for: configuration)
         if !provider.isReady {
             try await provider.prepare(progressHandler: nil)
@@ -833,13 +839,14 @@ final class ASRService: ObservableObject {
     /// Gets a provider for a specific model (without changing the active selection)
     /// Used for downloading models without switching the active model.
     private func getProvider(for model: SettingsStore.SpeechModel) throws -> TranscriptionProvider {
-        switch model {
-        case .sonioxV5:
+        guard !model.isCloudSpeechModel else {
             throw NSError(
-                domain: "ASRService",
-                code: -2004,
+                domain: "ASRService.LocalOnly",
+                code: -2100,
                 userInfo: [NSLocalizedDescriptionKey: "Cloud speech models do not have local model artifacts."]
             )
+        }
+        switch model {
         case .appleSpeechAnalyzer:
             if #available(macOS 26.0, *) {
                 return AppleSpeechAnalyzerProvider()
@@ -863,9 +870,11 @@ final class ASRService: ObservableObject {
                 code: -2002,
                 userInfo: [NSLocalizedDescriptionKey: "Qwen3 ASR is not available in this build."]
             )
-        default:
+        case .whisperTiny, .whisperBase, .whisperSmall, .whisperMedium, .whisperLargeTurbo, .whisperLarge:
             // Whisper models - create provider with specific model override
             return WhisperProvider(modelOverride: model)
+        case .sonioxV5:
+            preconditionFailure("Cloud speech models are rejected before local provider lookup")
         }
     }
 
@@ -2833,7 +2842,10 @@ final class ASRService: ObservableObject {
         }
     }
 
-    func transcribeSamplesForAPI(_ inputSamples: [Float]) async throws -> ASRTranscriptionResult {
+    func transcribeSamplesForAPI(
+        _ inputSamples: [Float],
+        configuration: RecordingSpeechConfiguration? = nil
+    ) async throws -> ASRTranscriptionResult {
         guard self.activeRecordingSelection == nil else {
             throw NSError(
                 domain: "ASRService",
@@ -2851,7 +2863,9 @@ final class ASRService: ObservableObject {
             samples.append(contentsOf: repeatElement(0.0, count: minSamples - samples.count))
         }
 
-        let provider = try await self.preparedLocalFallbackProvider()
+        let resolvedConfiguration = configuration
+            ?? RecordingSpeechConfigurationResolver.currentLocalFallbackConfiguration()
+        let provider = try await self.preparedLocalProvider(for: resolvedConfiguration)
         guard self.activeRecordingSelection == nil else { throw CancellationError() }
         let result = try await self.transcribeSamplesForAPI(samples, provider: provider)
 
@@ -2877,7 +2891,10 @@ final class ASRService: ObservableObject {
         }
     }
 
-    func transcribeFileForAPI(_ fileURL: URL) async throws -> (result: ASRTranscriptionResult, sampleCount: Int) {
+    func transcribeFileForAPI(
+        _ fileURL: URL,
+        configuration: RecordingSpeechConfiguration? = nil
+    ) async throws -> (result: ASRTranscriptionResult, sampleCount: Int) {
         guard self.activeRecordingSelection == nil else {
             throw NSError(
                 domain: "ASRService",
@@ -2895,7 +2912,9 @@ final class ASRService: ObservableObject {
 
         let estimatedSamples = try LocalAPIAudioDecoder.validateDurationWithinLimit(for: fileURL)
 
-        let provider = try await self.preparedLocalFallbackProvider()
+        let resolvedConfiguration = configuration
+            ?? RecordingSpeechConfigurationResolver.currentLocalFallbackConfiguration()
+        let provider = try await self.preparedLocalProvider(for: resolvedConfiguration)
         guard self.activeRecordingSelection == nil else { throw CancellationError() }
 
         guard provider.prefersNativeFileTranscription else {

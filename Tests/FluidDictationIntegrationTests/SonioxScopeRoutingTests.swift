@@ -34,11 +34,14 @@ final class SonioxScopeRoutingTests: XCTestCase {
 
     func testActivatingSonioxPreservesPriorLocalFallback() {
         self.withRestoredSpeechDefaults {
+            let defaults = UserDefaults.standard
             let settings = SettingsStore.shared
             settings.selectedSpeechModel = .appleSpeech
             settings.selectedSpeechModel = .sonioxV5
 
-            XCTAssertEqual(settings.selectedSpeechModel, .sonioxV5)
+            XCTAssertEqual(defaults.string(forKey: self.selectedModelKey), SettingsStore.SpeechModel.sonioxV5.rawValue)
+            XCTAssertEqual(settings.selectedSpeechModel, SettingsStore.SpeechModel.defaultModel)
+            XCTAssertEqual(defaults.string(forKey: self.selectedModelKey), SettingsStore.SpeechModel.defaultModel.rawValue)
             XCTAssertEqual(settings.localFallbackSpeechModel, .appleSpeech)
         }
     }
@@ -84,6 +87,21 @@ final class SonioxScopeRoutingTests: XCTestCase {
         }
     }
 
+    func testPresentWrongTypedFallbackNormalizesToPlatformDefault() {
+        self.withRestoredSpeechDefaults {
+            let defaults = UserDefaults.standard
+            let settings = SettingsStore.shared
+            settings.selectedSpeechModel = .appleSpeech
+            defaults.set(Data([0x01, 0x02]), forKey: self.localFallbackKey)
+
+            XCTAssertEqual(settings.localFallbackSpeechModel, SettingsStore.SpeechModel.defaultModel)
+            XCTAssertEqual(
+                defaults.string(forKey: self.localFallbackKey),
+                SettingsStore.SpeechModel.defaultModel.rawValue
+            )
+        }
+    }
+
     func testBackupRoundTripsFallbackAndRejectsCloudFallback() throws {
         try self.withRestoredSpeechDefaults {
             let settings = SettingsStore.shared
@@ -119,6 +137,18 @@ final class SonioxScopeRoutingTests: XCTestCase {
             settings.restore(from: unknownPayload)
             XCTAssertEqual(settings.localFallbackSpeechModel, SettingsStore.SpeechModel.defaultModel)
 
+            object["selectedSpeechModel"] = SettingsStore.SpeechModel.sonioxV5.rawValue
+            let hiddenCloudPayload = try JSONDecoder().decode(
+                SettingsBackupPayload.self,
+                from: JSONSerialization.data(withJSONObject: object)
+            )
+            settings.restore(from: hiddenCloudPayload)
+            XCTAssertEqual(settings.selectedSpeechModel, SettingsStore.SpeechModel.defaultModel)
+            XCTAssertEqual(
+                UserDefaults.standard.string(forKey: self.selectedModelKey),
+                SettingsStore.SpeechModel.defaultModel.rawValue
+            )
+
             let encoded = try XCTUnwrap(
                 String(data: JSONEncoder().encode(settings.makeBackupPayload()), encoding: .utf8)
             )
@@ -127,25 +157,51 @@ final class SonioxScopeRoutingTests: XCTestCase {
         }
     }
 
-    func testDictionaryTrainingUsesLocalFallbackWhenGlobalModelIsSoniox() async throws {
-        try await self.withRestoredSpeechDefaults {
+    func testExplicitCloudLifecycleRequestRejectsAtLocalOnlyBoundary() async {
+        let asr = ASRService()
+
+        do {
+            try await asr.clearModelCache(for: .sonioxV5)
+            XCTFail("Expected hidden cloud model cache request to fail")
+        } catch {
+            let error = error as NSError
+            XCTAssertEqual(error.domain, "ASRService.LocalOnly")
+            XCTAssertEqual(error.code, -2100)
+        }
+    }
+
+    func testDictionaryTrainingUsesLocalFallbackWhenGlobalModelIsSoniox() async {
+        await self.withRestoredSpeechDefaults {
             let settings = SettingsStore.shared
             settings.selectedSpeechModel = .appleSpeech
             settings.selectedSpeechModel = .sonioxV5
             let factory = CountingLocalProviderFactory()
             let asr = ASRService(localProviderFactory: factory.make(configuration:))
+            var capturedConfigurations: [RecordingSpeechConfiguration] = []
+            var dictionaryTrainingFlags: [Bool] = []
+            var captureCallbackPresence: [Bool] = []
+            var automaticCaptureStarted = 0
+            let starter = DictionaryTrainingRecordingStarter { configuration, forDictionaryTraining, onCaptureStarted in
+                capturedConfigurations.append(configuration)
+                dictionaryTrainingFlags.append(forDictionaryTraining)
+                captureCallbackPresence.append(onCaptureStarted != nil)
+                _ = try? await asr.preparedLocalProvider(for: configuration)
+                onCaptureStarted?()
+                return .failed
+            }
 
-            let configuration = ASRService.recordingConfiguration(
-                explicitConfiguration: nil,
-                forDictionaryTraining: true,
-                settings: settings
-            )
-            _ = try await asr.preparedLocalFallbackProvider()
+            _ = await starter.startAutomaticCapture {
+                automaticCaptureStarted += 1
+            }
+            _ = await starter.startCustomSample()
 
-            XCTAssertEqual(configuration.model, .appleSpeech)
-            XCTAssertFalse(configuration.model.isCloudSpeechModel)
-            XCTAssertEqual(factory.requestedModels, [.appleSpeech])
-            XCTAssertEqual(factory.prepareCount, 1)
+            XCTAssertEqual(capturedConfigurations.map(\.model), [.appleSpeech, .appleSpeech])
+            XCTAssertTrue(capturedConfigurations.allSatisfy { !$0.model.isCloudSpeechModel })
+            XCTAssertEqual(dictionaryTrainingFlags, [true, true])
+            XCTAssertEqual(captureCallbackPresence, [true, false])
+            XCTAssertEqual(automaticCaptureStarted, 1)
+            XCTAssertEqual(factory.requestedModels, [.appleSpeech, .appleSpeech])
+            XCTAssertEqual(factory.prepareCount, 2)
         }
     }
 
@@ -203,6 +259,63 @@ final class SonioxScopeRoutingTests: XCTestCase {
             XCTAssertEqual(factory.prepareCount, 2)
             XCTAssertEqual(factory.sampleTranscriptionCount, 1)
             XCTAssertEqual(factory.fileTranscriptionCount, 1)
+        }
+    }
+
+    func testLocalAPISampleResponseKeepsProviderIdentityCapturedAtRequestStart() async throws {
+        try await self.withRestoredSpeechDefaults {
+            let settings = SettingsStore.shared
+            settings.selectedSpeechModel = .appleSpeech
+            let factory = SuspendingLocalProviderFactory()
+            let asr = ASRService(localProviderFactory: factory.make(configuration:))
+            let controller = InferenceAPIController(asrService: asr, settings: settings)
+            let fileURL = try self.fixtureURL()
+            let request = try LocalAPI.Request(
+                method: "POST",
+                path: "/v1/transcribe",
+                query: [:],
+                headers: ["x-filename": fileURL.lastPathComponent],
+                body: Data(contentsOf: fileURL)
+            )
+
+            let responseTask = Task { await controller.handle(request) }
+            await factory.waitUntilTranscriptionSuspends()
+            settings.selectedSpeechModel = .whisperBase
+            factory.resumeTranscription()
+            let response = await responseTask.value
+
+            XCTAssertEqual(response.status, 200)
+            XCTAssertEqual(try self.providerName(from: response), SettingsStore.SpeechModel.appleSpeech.displayName)
+            XCTAssertEqual(factory.requestedModels, [.appleSpeech])
+        }
+    }
+
+    func testLocalAPIFileResponseKeepsProviderIdentityCapturedAtRequestStart() async throws {
+        try await self.withRestoredSpeechDefaults {
+            let settings = SettingsStore.shared
+            settings.selectedSpeechModel = .appleSpeech
+            let factory = SuspendingLocalProviderFactory()
+            let asr = ASRService(localProviderFactory: factory.make(configuration:))
+            let controller = InferenceAPIController(asrService: asr, settings: settings)
+            let fileURL = try self.fixtureURL()
+            let body = try JSONSerialization.data(withJSONObject: ["path": fileURL.path])
+            let request = LocalAPI.Request(
+                method: "POST",
+                path: "/v1/transcribe",
+                query: [:],
+                headers: ["content-type": "application/json"],
+                body: body
+            )
+
+            let responseTask = Task { await controller.handle(request) }
+            await factory.waitUntilTranscriptionSuspends()
+            settings.selectedSpeechModel = .whisperBase
+            factory.resumeTranscription()
+            let response = await responseTask.value
+
+            XCTAssertEqual(response.status, 200)
+            XCTAssertEqual(try self.providerName(from: response), SettingsStore.SpeechModel.appleSpeech.displayName)
+            XCTAssertEqual(factory.requestedModels, [.appleSpeech])
         }
     }
 
@@ -301,6 +414,69 @@ private final class CountingLocalProvider: TranscriptionProvider {
 
     func transcribeFile(at fileURL: URL) async throws -> ASRTranscriptionResult {
         self.owner.transcribedFile()
+        return ASRTranscriptionResult(text: "local file", confidence: 0.95)
+    }
+}
+
+@MainActor
+private final class SuspendingLocalProviderFactory {
+    private(set) var requestedModels: [SettingsStore.SpeechModel] = []
+    private var transcriptionContinuation: CheckedContinuation<Void, Never>?
+    private var suspensionWaiters: [CheckedContinuation<Void, Never>] = []
+    private var transcriptionIsSuspended = false
+
+    func make(configuration: RecordingSpeechConfiguration) throws -> TranscriptionProvider {
+        self.requestedModels.append(configuration.model)
+        return SuspendingLocalProvider(owner: self)
+    }
+
+    func suspendTranscription() async {
+        await withCheckedContinuation { continuation in
+            self.transcriptionContinuation = continuation
+            self.transcriptionIsSuspended = true
+            let waiters = self.suspensionWaiters
+            self.suspensionWaiters.removeAll()
+            waiters.forEach { $0.resume() }
+        }
+    }
+
+    func waitUntilTranscriptionSuspends() async {
+        guard !self.transcriptionIsSuspended else { return }
+        await withCheckedContinuation { continuation in
+            self.suspensionWaiters.append(continuation)
+        }
+    }
+
+    func resumeTranscription() {
+        self.transcriptionIsSuspended = false
+        self.transcriptionContinuation?.resume()
+        self.transcriptionContinuation = nil
+    }
+}
+
+@MainActor
+private final class SuspendingLocalProvider: TranscriptionProvider {
+    let name = "Suspending local provider"
+    let isAvailable = true
+    private(set) var isReady = false
+    let prefersNativeFileTranscription = true
+    private unowned let owner: SuspendingLocalProviderFactory
+
+    init(owner: SuspendingLocalProviderFactory) {
+        self.owner = owner
+    }
+
+    func prepare(progressHandler: ((ModelPreparationProgress) -> Void)?) async throws {
+        self.isReady = true
+    }
+
+    func transcribe(_ samples: [Float]) async throws -> ASRTranscriptionResult {
+        await self.owner.suspendTranscription()
+        return ASRTranscriptionResult(text: "local sample", confidence: 0.9)
+    }
+
+    func transcribeFile(at fileURL: URL) async throws -> ASRTranscriptionResult {
+        await self.owner.suspendTranscription()
         return ASRTranscriptionResult(text: "local file", confidence: 0.95)
     }
 }

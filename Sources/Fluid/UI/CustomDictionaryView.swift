@@ -1801,10 +1801,8 @@ struct CustomDictionaryView: View {
         self.isTrainingStarting = true
         self.isTrainingRecording = true
 
-        await self.asr.start(
-            speechConfiguration: RecordingSpeechConfigurationResolver.currentLocalFallbackConfiguration(),
-            forDictionaryTraining: true
-        )
+        let recordingStarter = DictionaryTrainingRecordingStarter(asrService: self.asr)
+        await recordingStarter.startCustomSample()
         self.isTrainingStarting = false
         if !self.asr.isRunning {
             self.isTrainingRecording = false

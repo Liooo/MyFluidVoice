@@ -346,14 +346,6 @@ enum RecordingSpeechConfigurationResolver {
         return safeFallback
     }
 
-    /// Kept for source compatibility with older integration coverage. Production callers use
-    /// one of the explicitly scoped APIs above.
-    static func currentGlobalFallbackConfiguration(
-        settings: SettingsStore = .shared
-    ) -> RecordingSpeechConfiguration {
-        self.currentDictationFallbackConfiguration(settings: settings)
-    }
-
     static func compatibleModels(
         for inputSource: KeyboardInputSourceSnapshot,
         availableModels: [SettingsStore.SpeechModel] = SettingsStore.SpeechModel.availableModels,

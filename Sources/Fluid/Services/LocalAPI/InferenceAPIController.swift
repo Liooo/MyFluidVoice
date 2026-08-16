@@ -49,27 +49,37 @@ final class InferenceAPIController: LocalAPIRouteHandler {
     }
 
     private func transcribe(_ request: LocalAPI.Request) async -> LocalAPI.Response {
+        let configuration = RecordingSpeechConfigurationResolver.currentLocalFallbackConfiguration(
+            settings: self.settings
+        )
+        let providerName = configuration.model.displayName
         do {
             if let fileURL = try self.decodeFilePath(from: request) {
-                let apiResult = try await self.asrService.transcribeFileForAPI(fileURL)
+                let apiResult = try await self.asrService.transcribeFileForAPI(
+                    fileURL,
+                    configuration: configuration
+                )
                 return LocalAPI.json(
                     TranscribeResponse(
                         text: apiResult.result.text,
                         confidence: apiResult.result.confidence,
                         sampleCount: apiResult.sampleCount,
-                        provider: self.settings.localFallbackSpeechModel.displayName
+                        provider: providerName
                     )
                 )
             }
 
             let samples = try self.decodeAudioSamples(from: request)
-            let result = try await self.asrService.transcribeSamplesForAPI(samples)
+            let result = try await self.asrService.transcribeSamplesForAPI(
+                samples,
+                configuration: configuration
+            )
             return LocalAPI.json(
                 TranscribeResponse(
                     text: result.text,
                     confidence: result.confidence,
                     sampleCount: samples.count,
-                    provider: self.settings.localFallbackSpeechModel.displayName
+                    provider: providerName
                 )
             )
         } catch {
