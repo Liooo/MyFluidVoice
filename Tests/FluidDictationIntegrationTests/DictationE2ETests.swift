@@ -3400,6 +3400,48 @@ final class KeyboardInputSourceRoutingTests: XCTestCase {
         }
     }
 
+    func testCloudReadinessUsesCredentialStateInsteadOfLocalArtifactLabels() {
+        XCTAssertEqual(
+            VoiceEngineSettingsView.inputSourceModelReadinessLabel(
+                model: .sonioxV5,
+                usesGlobalFallback: false,
+                isInstalled: true,
+                sonioxCredentialState: .apiKeyRequired
+            ),
+            "Assigned • API Key Required"
+        )
+        XCTAssertEqual(
+            VoiceEngineSettingsView.inputSourceModelReadinessLabel(
+                model: .sonioxV5,
+                usesGlobalFallback: true,
+                isInstalled: true,
+                sonioxCredentialState: .configured
+            ),
+            "Global default • Configured"
+        )
+    }
+
+    func testUnverifiedSonioxAssignmentRoutesToSetupWithoutMutatingAssignment() {
+        XCTAssertTrue(
+            VoiceEngineSettingsViewModel.shouldRouteSonioxAssignmentToSetup(
+                model: .sonioxV5,
+                credentialState: .apiKeyRequired
+            )
+        )
+        XCTAssertFalse(
+            VoiceEngineSettingsViewModel.shouldRouteSonioxAssignmentToSetup(
+                model: .sonioxV5,
+                credentialState: .configured
+            )
+        )
+        XCTAssertFalse(
+            VoiceEngineSettingsViewModel.shouldRouteSonioxAssignmentToSetup(
+                model: .appleSpeech,
+                credentialState: .apiKeyRequired
+            )
+        )
+    }
+
     func testOtherModelReadinessStillReflectsInstallation() {
         XCTAssertEqual(
             VoiceEngineSettingsView.inputSourceModelReadinessLabel(

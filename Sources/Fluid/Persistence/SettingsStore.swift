@@ -4501,7 +4501,7 @@ final class SettingsStore: ObservableObject {
         case nemotronStreaming = "nemotron-3.5-streaming"
         case nemotronStreaming320 = "nemotron-3.5-streaming-320"
 
-        /// Hidden until the cloud runtime and credential UI are complete.
+        /// Cloud streaming model authenticated with the user's own Soniox account.
         case sonioxV5 = "soniox-v5"
 
         // MARK: - Apple Native
@@ -4705,16 +4705,52 @@ final class SettingsStore: ObservableObject {
             }
         }
 
-        /// Returns models available for the current Mac's architecture and OS
+        /// Inputs used when determining which speech models can be shown.
+        ///
+        /// Keeping the capability inputs explicit makes model exposure deterministic in tests and
+        /// prevents cloud models from accidentally inheriting local architecture or cache rules.
+        struct AvailabilityContext: Equatable, Sendable {
+            let isAppleSilicon: Bool
+            let supportsMacOS15: Bool
+            let supportsMacOS26: Bool
+
+            static var current: Self {
+                let supportsMacOS15: Bool
+                if #available(macOS 15.0, *) {
+                    supportsMacOS15 = true
+                } else {
+                    supportsMacOS15 = false
+                }
+                let supportsMacOS26: Bool
+                if #available(macOS 26.0, *) {
+                    supportsMacOS26 = true
+                } else {
+                    supportsMacOS26 = false
+                }
+                return Self(
+                    isAppleSilicon: CPUArchitecture.isAppleSilicon,
+                    supportsMacOS15: supportsMacOS15,
+                    supportsMacOS26: supportsMacOS26
+                )
+            }
+
+            var availableModels: [SpeechModel] {
+                SpeechModel.availableModels(for: self)
+            }
+        }
+
+        /// Returns models available for the current Mac's architecture and OS.
         static var availableModels: [SpeechModel] {
+            Self.availableModels(for: .current)
+        }
+
+        /// Returns models available for explicitly supplied host capabilities.
+        static func availableModels(for context: AvailabilityContext) -> [SpeechModel] {
             allCases.filter { model in
-                if model == .sonioxV5 {
+                if model == .whisperLargeTurbo, !context.isAppleSilicon {
                     return false
                 }
-                if model == .whisperLargeTurbo, !CPUArchitecture.isAppleSilicon {
-                    return false
-                }
-                if model == .whisperLarge, !CPUArchitecture.isAppleSilicon {
+                if model == .whisperLarge, !context.isAppleSilicon {
                     return false
                 }
                 if model == .qwen3Asr, !Self.qwenPreviewEnabled {
@@ -4724,20 +4760,16 @@ final class SettingsStore: ObservableObject {
                     return false
                 }
                 // Filter by Apple Silicon requirement
-                if model.requiresAppleSilicon, !CPUArchitecture.isAppleSilicon {
+                if model.requiresAppleSilicon, !context.isAppleSilicon {
                     return false
                 }
                 // Filter by macOS 15 requirement
-                if model.requiresMacOS15, #unavailable(macOS 15.0) {
+                if model.requiresMacOS15, !context.supportsMacOS15 {
                     return false
                 }
                 // Filter by macOS 26 requirement
                 if model.requiresMacOS26 {
-                    if #available(macOS 26.0, *) {
-                        return true
-                    } else {
-                        return false
-                    }
+                    return context.supportsMacOS26
                 }
                 return true
             }
@@ -5592,6 +5624,108 @@ extension SettingsStore.SpeechModel {
         default:
             return nil
         }
+    }
+}
+
+/// Non-secret state used by Voice Engine to describe the Soniox credential boundary.
+nonisolated enum SonioxCredentialState: String, CaseIterable, Equatable, Identifiable, Sendable {
+    case apiKeyRequired
+    case verifying
+    case configured
+    case ready
+
+    var id: String {
+        self.rawValue
+    }
+
+    var displayName: String {
+        switch self {
+        case .apiKeyRequired: "API Key Required"
+        case .verifying: "Verifying"
+        case .configured: "Configured"
+        case .ready: "Ready"
+        }
+    }
+}
+
+nonisolated struct SonioxCredentialStateResolver: Sendable {
+    static func resolve(
+        cachedCredentialFingerprint: String?,
+        verificationReceipt: SonioxVerificationReceipt?,
+        selectedRegion: SettingsStore.SonioxRegion,
+        isVerifying: Bool,
+        activeRecordingModel: SettingsStore.SpeechModel?
+    ) -> SonioxCredentialState {
+        if isVerifying {
+            return .verifying
+        }
+
+        guard let cachedCredentialFingerprint,
+              cachedCredentialFingerprint.isEmpty == false,
+              let verificationReceipt,
+              verificationReceipt.region == selectedRegion,
+              verificationReceipt.credentialFingerprint == cachedCredentialFingerprint
+        else {
+            return .apiKeyRequired
+        }
+
+        return activeRecordingModel == .sonioxV5 ? .ready : .configured
+    }
+}
+
+nonisolated enum SpeechModelCardAction: Hashable, Sendable {
+    case configure
+    case activate
+    case active
+    case download
+    case cached
+    case delete
+}
+
+nonisolated struct SpeechModelCardActionResolver: Sendable {
+    static func primaryAction(
+        for model: SettingsStore.SpeechModel,
+        credentialState: SonioxCredentialState,
+        isSelected: Bool,
+        isActive: Bool
+    ) -> SpeechModelCardAction {
+        if model.isCloudSpeechModel {
+            switch credentialState {
+            case .apiKeyRequired, .verifying:
+                return .configure
+            case .configured:
+                return .activate
+            case .ready:
+                return isActive ? .active : .activate
+            }
+        }
+        if isActive {
+            return .active
+        }
+        return isSelected && model.isInstalled ? .activate : .download
+    }
+
+    static func allActions(
+        for model: SettingsStore.SpeechModel,
+        credentialState: SonioxCredentialState,
+        isSelected: Bool,
+        isActive: Bool
+    ) -> Set<SpeechModelCardAction> {
+        let primary = self.primaryAction(
+            for: model,
+            credentialState: credentialState,
+            isSelected: isSelected,
+            isActive: isActive
+        )
+        if model.isCloudSpeechModel {
+            return [primary]
+        }
+        var result: Set<SpeechModelCardAction> = [primary]
+        if isSelected, model.isInstalled {
+            result.insert(.delete)
+            result.insert(.cached)
+        }
+        return result
     }
 }
 

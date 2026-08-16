@@ -8,6 +8,194 @@ final class SonioxCredentialSettingsTests: XCTestCase {
     private let regionKey = "SonioxRegion"
     private let receiptKey = "SonioxVerificationReceipt"
 
+    func testCredentialStateResolverCoversSetupVerificationConfiguredAndOwnedReady() {
+        let fingerprint = SonioxVerificationReceipt.fingerprint(apiKey: "configured")
+        let receipt = SonioxVerificationReceipt(region: .global, credentialFingerprint: fingerprint)
+
+        XCTAssertEqual(
+            SonioxCredentialStateResolver.resolve(
+                cachedCredentialFingerprint: nil,
+                verificationReceipt: nil,
+                selectedRegion: .global,
+                isVerifying: false,
+                activeRecordingModel: nil
+            ),
+            .apiKeyRequired
+        )
+        XCTAssertEqual(
+            SonioxCredentialStateResolver.resolve(
+                cachedCredentialFingerprint: fingerprint,
+                verificationReceipt: receipt,
+                selectedRegion: .global,
+                isVerifying: true,
+                activeRecordingModel: nil
+            ),
+            .verifying
+        )
+        XCTAssertEqual(
+            SonioxCredentialStateResolver.resolve(
+                cachedCredentialFingerprint: fingerprint,
+                verificationReceipt: receipt,
+                selectedRegion: .global,
+                isVerifying: false,
+                activeRecordingModel: .appleSpeech
+            ),
+            .configured
+        )
+        XCTAssertEqual(
+            SonioxCredentialStateResolver.resolve(
+                cachedCredentialFingerprint: fingerprint,
+                verificationReceipt: receipt,
+                selectedRegion: .global,
+                isVerifying: false,
+                activeRecordingModel: .sonioxV5
+            ),
+            .ready
+        )
+    }
+
+    func testCredentialStateResolverRejectsStaleReceiptRegionOrFingerprint() {
+        let receipt = SonioxVerificationReceipt.make(apiKey: "configured", region: .global)
+        XCTAssertEqual(
+            SonioxCredentialStateResolver.resolve(
+                cachedCredentialFingerprint: receipt.credentialFingerprint,
+                verificationReceipt: receipt,
+                selectedRegion: .japan,
+                isVerifying: false,
+                activeRecordingModel: nil
+            ),
+            .apiKeyRequired
+        )
+        XCTAssertEqual(
+            SonioxCredentialStateResolver.resolve(
+                cachedCredentialFingerprint: "different",
+                verificationReceipt: receipt,
+                selectedRegion: .global,
+                isVerifying: false,
+                activeRecordingModel: nil
+            ),
+            .apiKeyRequired
+        )
+    }
+
+    func testCloudCardActionResolverNeverReturnsLocalArtifactActions() {
+        let actions = SpeechModelCardActionResolver.allActions(
+            for: .sonioxV5,
+            credentialState: .apiKeyRequired,
+            isSelected: true,
+            isActive: false
+        )
+        XCTAssertFalse(actions.contains(.download))
+        XCTAssertFalse(actions.contains(.cached))
+        XCTAssertFalse(actions.contains(.delete))
+        XCTAssertEqual(
+            SpeechModelCardActionResolver.primaryAction(
+                for: .sonioxV5,
+                credentialState: .apiKeyRequired,
+                isSelected: true,
+                isActive: false
+            ),
+            .configure
+        )
+        XCTAssertEqual(
+            SpeechModelCardActionResolver.primaryAction(
+                for: .sonioxV5,
+                credentialState: .configured,
+                isSelected: true,
+                isActive: false
+            ),
+            .activate
+        )
+    }
+
+    func testAppServicesChangeRefreshesCredentialState() async throws {
+        try await self.withRestoredDefaults {
+            let settings = SettingsStore.shared
+            let fingerprint = SonioxVerificationReceipt.fingerprint(apiKey: "configured-value")
+            settings.sonioxVerificationReceipt = SonioxVerificationReceipt(
+                region: .global,
+                credentialFingerprint: fingerprint
+            )
+            let store = FakeCredentialStore(initialValue: nil)
+            let service = SonioxCredentialService(store: store, verifier: successfulVerifier())
+            let viewModel = VoiceEngineSettingsViewModel(
+                settings: settings,
+                appServices: AppServices.shared,
+                asr: ASRService(),
+                sonioxCredentialService: service
+            )
+
+            XCTAssertEqual(viewModel.sonioxCredentialState, .apiKeyRequired)
+            store.value = "configured-value"
+            AppServices.shared.objectWillChange.send()
+            await Task.yield()
+            await Task.yield()
+
+            XCTAssertEqual(viewModel.sonioxCredentialState, .configured)
+        }
+    }
+
+    func testBackupRestoreInvalidatesVerificationBeforeSameRegionCommit() async throws {
+        try await self.withRestoredDefaults {
+            let settings = SettingsStore.shared
+            let priorReceipt = SonioxVerificationReceipt.make(apiKey: "prior-value", region: .global)
+            settings.sonioxVerificationReceipt = priorReceipt
+            let store = FakeCredentialStore(initialValue: "prior-value")
+            let verifier = SuspendingCredentialVerifier()
+            let service = SonioxCredentialService(store: store, verifier: verifier)
+            let releaseObserver = NotificationCenter.default.addObserver(
+                forName: .settingsBackupDidRestore,
+                object: nil,
+                queue: .main
+            ) { _ in
+                verifier.succeed()
+            }
+            defer { NotificationCenter.default.removeObserver(releaseObserver) }
+
+            let viewModel = VoiceEngineSettingsViewModel(
+                settings: settings,
+                appServices: AppServices.shared,
+                asr: ASRService(),
+                sonioxCredentialService: service
+            )
+            viewModel.sonioxAPIKeyDraft = "candidate-value"
+            viewModel.saveAndVerifySonioxCredential()
+            await verifier.waitUntilStarted()
+
+            NotificationCenter.default.post(name: .settingsBackupDidRestore, object: nil)
+            await Task.yield()
+            await Task.yield()
+
+            XCTAssertEqual(store.value, "prior-value")
+            XCTAssertEqual(store.replaceCount, 0)
+            XCTAssertEqual(settings.sonioxVerificationReceipt, priorReceipt)
+        }
+    }
+
+    func testBlankSaveDoesNotRemoveCredential() async throws {
+        try await self.withRestoredDefaults {
+            let settings = SettingsStore.shared
+            settings.sonioxVerificationReceipt = .make(apiKey: "prior-value", region: .global)
+            let store = FakeCredentialStore(initialValue: "prior-value")
+            let service = SonioxCredentialService(store: store, verifier: successfulVerifier())
+            let viewModel = VoiceEngineSettingsViewModel(
+                settings: settings,
+                appServices: AppServices.shared,
+                asr: ASRService(),
+                sonioxCredentialService: service
+            )
+            viewModel.sonioxAPIKeyDraft = " \n "
+
+            viewModel.saveAndVerifySonioxCredential()
+            await Task.yield()
+            await Task.yield()
+
+            XCTAssertEqual(store.value, "prior-value")
+            XCTAssertEqual(store.removeCount, 0)
+            XCTAssertEqual(settings.sonioxVerificationReceipt, .make(apiKey: "prior-value", region: .global))
+        }
+    }
+
     func testSonioxSettingsDefaultToCurrentInputSourceOnlyAndGlobal() {
         self.withRestoredDefaults {
             XCTAssertEqual(SettingsStore.shared.sonioxLanguageMode, .currentInputSourceOnly)
@@ -540,6 +728,37 @@ private final class FakeCredentialStore: SonioxCredentialStoring {
     func removeAPIKey() throws {
         self.value = nil
         self.removeCount += 1
+    }
+}
+
+private final class SuspendingCredentialVerifier: SonioxCredentialVerifying, @unchecked Sendable {
+    private let lock = NSLock()
+    private var hasStarted = false
+    private var verificationContinuation: CheckedContinuation<Void, Error>?
+
+    func verify(apiKey: String, region: SettingsStore.SonioxRegion) async throws {
+        _ = apiKey
+        _ = region
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            self.lock.withLock {
+                self.hasStarted = true
+                self.verificationContinuation = continuation
+            }
+        }
+    }
+
+    func waitUntilStarted() async {
+        while !self.lock.withLock({ self.hasStarted }) {
+            await Task.yield()
+        }
+    }
+
+    func succeed() {
+        let continuation = self.lock.withLock { () -> CheckedContinuation<Void, Error>? in
+            defer { self.verificationContinuation = nil }
+            return self.verificationContinuation
+        }
+        continuation?.resume()
     }
 }
 

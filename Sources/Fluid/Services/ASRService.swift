@@ -785,7 +785,7 @@ final class ASRService: ObservableObject {
 
     /// The transcription provider, selected based on the unified SpeechModel setting.
     /// Uses the new SettingsStore.selectedSpeechModel instead of old TranscriptionProviderOption.
-    private var transcriptionProvider: TranscriptionProvider {
+    private var transcriptionProvider: TranscriptionProvider? {
         if let activeRecordingProvider = self.activeRecordingProvider {
             return activeRecordingProvider
         }
@@ -811,6 +811,10 @@ final class ASRService: ObservableObject {
             return self.getNemotronProvider(mode: model.nemotronProviderMode)
         case .qwen3Asr:
             return self.getFluidAudioProvider()
+        case .sonioxV5:
+            // Cloud sessions are created through makeRecordingProvider(), which snapshots and
+            // verifies the credential. There is no safe global/local provider fallback.
+            return nil
         default:
             return self.getWhisperProvider()
         }
@@ -1477,6 +1481,9 @@ final class ASRService: ObservableObject {
     ///   - model: The model to download
     ///   - progressHandler: Optional callback for download progress (0.0 to 1.0)
     func downloadModel(_ model: SettingsStore.SpeechModel, progressHandler: ((Double) -> Void)?) async throws {
+        guard !model.isCloudSpeechModel else {
+            throw ASRModelLifecycleError.configureCredentialsInVoiceEngine(model)
+        }
         guard self.modelDownloadTask == nil, self.ensureReadyTask == nil else {
             throw NSError(
                 domain: "ASRService",
@@ -2018,7 +2025,8 @@ final class ASRService: ObservableObject {
     // Note: Only available when using FluidAudioProvider (Apple Silicon)
     #if arch(arm64)
     var asrManager: AsrManager? {
-        (self.transcriptionProvider as? FluidAudioProvider)?.underlyingManager
+        guard let provider = self.transcriptionProvider as? FluidAudioProvider else { return nil }
+        return provider.underlyingManager
     }
     #else
     var asrManager: Any? {
@@ -2407,7 +2415,13 @@ final class ASRService: ObservableObject {
     /// Use `checkIfModelsExistAsync()` for an up-to-date result.
     func checkIfModelsExist() {
         self.modelExistenceCheckID = UUID()
-        self.modelsExistOnDisk = self.transcriptionProvider.modelsExistOnDisk()
+        let model = SettingsStore.shared.selectedSpeechModel
+        guard !model.isCloudSpeechModel else {
+            self.modelsExistOnDisk = false
+            DebugLogger.shared.debug("Cloud speech model has no local artifact state", source: "ASRService")
+            return
+        }
+        self.modelsExistOnDisk = self.transcriptionProvider?.modelsExistOnDisk() ?? false
         DebugLogger.shared.debug("Models exist on disk: \(self.modelsExistOnDisk)", source: "ASRService")
     }
 
@@ -2420,6 +2434,17 @@ final class ASRService: ObservableObject {
         let checkID = UUID()
         self.modelExistenceCheckID = checkID
         let exists: Bool
+
+        guard !model.isCloudSpeechModel else {
+            guard self.modelExistenceCheckID == checkID,
+                  SettingsStore.shared.selectedSpeechModel == model
+            else {
+                return
+            }
+            self.modelsExistOnDisk = false
+            DebugLogger.shared.debug("Cloud speech model has no local artifact state", source: "ASRService")
+            return
+        }
 
         // For Apple Speech Analyzer, use the async refresh method
         if model == .appleSpeechAnalyzer {
@@ -2728,7 +2753,10 @@ final class ASRService: ObservableObject {
             if resolvedConfiguration.model == .sonioxV5 {
                 self.emitRecordingSetupFailure(error, sessionID: resolvedSessionID)
             }
-            self.clearRecordingSession(matching: resolvedSessionID, owner: recordingOwner)
+            // The provider has not been installed yet, so owner matching would reject cleanup
+            // because activeRecordingProviderKey is still nil. The session itself is the owner
+            // at this boundary and must be released before returning the credential failure.
+            self.clearRecordingSession(matching: resolvedSessionID)
             return .failed
         }
         self.activeRecordingProvider = provider
@@ -5333,6 +5361,7 @@ final class ASRService: ObservableObject {
         let task = Task { @MainActor in
             try await self.performEnsureAsrReady(
                 provider: provider,
+                model: model,
                 providerKey: providerKey,
                 sessionID: contextSessionID,
                 operationID: operationID,
@@ -5368,6 +5397,7 @@ final class ASRService: ObservableObject {
 
     private func performEnsureAsrReady(
         provider: TranscriptionProvider,
+        model: SettingsStore.SpeechModel,
         providerKey: String,
         sessionID: RecordingSessionID?,
         operationID: UUID,
@@ -5377,6 +5407,50 @@ final class ASRService: ObservableObject {
               self.isProviderContextCurrent(sessionID: sessionID, providerKey: providerKey)
         else { throw CancellationError() }
         self.isCancellingModelPreparation = false
+
+        if model.isCloudSpeechModel {
+            if self.isAsrReady, self.readyProviderKey == providerKey, provider.isReady {
+                self.modelsExistOnDisk = false
+                self.isDownloadingModel = false
+                self.isLoadingModel = false
+                self.downloadProgress = nil
+                self.modelPreparationPhase = nil
+                self.refreshWordBoostStatus()
+                return
+            }
+
+            self.isAsrReady = false
+            self.modelsExistOnDisk = false
+            self.isDownloadingModel = false
+            self.isLoadingModel = false
+            self.downloadProgress = nil
+            self.modelPreparationPhase = nil
+            try Task.checkCancellation()
+            try await provider.prepare(progressHandler: nil)
+            try Task.checkCancellation()
+            guard self.ensureReadyOperationID == operationID,
+                  self.isProviderContextCurrent(sessionID: sessionID, providerKey: providerKey)
+            else { throw CancellationError() }
+            self.modelsExistOnDisk = false
+            self.isDownloadingModel = false
+            self.isLoadingModel = false
+            self.downloadProgress = nil
+            self.modelPreparationPhase = nil
+            self.isAsrReady = true
+            self.readyProviderKey = providerKey
+            self.isCancellingModelPreparation = false
+            self.refreshWordBoostStatus()
+            if let sessionID,
+               self.isRunning,
+               self.isDictionaryTrainingCaptureActive == false,
+               self.recordingSpeechSessionState.selection(matching: sessionID)?
+               .configuration.model.supportsStreaming == true
+            {
+                self.startStreamingTranscription(sessionID: sessionID)
+            }
+            return
+        }
+
         DebugLogger.shared.debug(
             "ensureAsrReady(begin): provider=\(provider.name), providerReady=\(provider.isReady), isAsrReady=\(self.isAsrReady), isRunning=\(self.isRunning)",
             source: "ASRService"
@@ -5774,6 +5848,9 @@ final class ASRService: ObservableObject {
     }
 
     func clearModelCache(for model: SettingsStore.SpeechModel) async throws {
+        guard !model.isCloudSpeechModel else {
+            throw ASRModelLifecycleError.configureCredentialsInVoiceEngine(model)
+        }
         DebugLogger.shared.debug("Clearing model cache for \(model.displayName)", source: "ASRService")
         if SettingsStore.shared.selectedSpeechModel == model {
             await self.transcriptionExecutor.cancelAndAwaitAll()

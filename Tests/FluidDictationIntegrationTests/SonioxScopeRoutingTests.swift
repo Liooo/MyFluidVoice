@@ -7,7 +7,7 @@ final class SonioxScopeRoutingTests: XCTestCase {
     private let selectedModelKey = "SelectedSpeechModel"
     private let localFallbackKey = "LocalFallbackSpeechModel"
 
-    func testHiddenSonioxMetadataIsCloudStreamingNoArtifactAndNotSelectable() {
+    func testSonioxMetadataIsCloudStreamingNoArtifactAndSelectable() {
         let model = SettingsStore.SpeechModel.sonioxV5
 
         XCTAssertTrue(model.isCloudSpeechModel)
@@ -19,8 +19,18 @@ final class SonioxScopeRoutingTests: XCTestCase {
         XCTAssertTrue(model.supportsStreaming)
         XCTAssertTrue(model.isInstalled)
         XCTAssertEqual(model.expectedDownloadBytes, 0)
-        XCTAssertFalse(SettingsStore.SpeechModel.availableModels.contains(model))
-        XCTAssertFalse(SettingsStore.SpeechModel.models(for: .soniox).contains(model))
+        XCTAssertTrue(SettingsStore.SpeechModel.availableModels.contains(model))
+        XCTAssertTrue(SettingsStore.SpeechModel.models(for: .soniox).contains(model))
+        XCTAssertTrue(SettingsStore.SpeechModel.AvailabilityContext(
+            isAppleSilicon: false,
+            supportsMacOS15: false,
+            supportsMacOS26: false
+        ).availableModels.contains(model))
+        XCTAssertTrue(SettingsStore.SpeechModel.AvailabilityContext(
+            isAppleSilicon: true,
+            supportsMacOS15: true,
+            supportsMacOS26: true
+        ).availableModels.contains(model))
     }
 
     func testActivatingLocalModelUpdatesLocalFallback() {
@@ -40,8 +50,8 @@ final class SonioxScopeRoutingTests: XCTestCase {
             settings.selectedSpeechModel = .sonioxV5
 
             XCTAssertEqual(defaults.string(forKey: self.selectedModelKey), SettingsStore.SpeechModel.sonioxV5.rawValue)
-            XCTAssertEqual(settings.selectedSpeechModel, SettingsStore.SpeechModel.defaultModel)
-            XCTAssertEqual(defaults.string(forKey: self.selectedModelKey), SettingsStore.SpeechModel.defaultModel.rawValue)
+            XCTAssertEqual(settings.selectedSpeechModel, .sonioxV5)
+            XCTAssertEqual(defaults.string(forKey: self.selectedModelKey), SettingsStore.SpeechModel.sonioxV5.rawValue)
             XCTAssertEqual(settings.localFallbackSpeechModel, .appleSpeech)
         }
     }
@@ -122,11 +132,11 @@ final class SonioxScopeRoutingTests: XCTestCase {
             XCTAssertEqual(settings.localFallbackSpeechModel, .appleSpeech)
 
             object["localFallbackSpeechModelID"] = SettingsStore.SpeechModel.sonioxV5.rawValue
-            let cloudPayload = try JSONDecoder().decode(
+            let selectedCloudPayload = try JSONDecoder().decode(
                 SettingsBackupPayload.self,
                 from: JSONSerialization.data(withJSONObject: object)
             )
-            settings.restore(from: cloudPayload)
+            settings.restore(from: selectedCloudPayload)
             XCTAssertEqual(settings.localFallbackSpeechModel, SettingsStore.SpeechModel.defaultModel)
 
             object["localFallbackSpeechModelID"] = "unknown-fallback"
@@ -138,15 +148,15 @@ final class SonioxScopeRoutingTests: XCTestCase {
             XCTAssertEqual(settings.localFallbackSpeechModel, SettingsStore.SpeechModel.defaultModel)
 
             object["selectedSpeechModel"] = SettingsStore.SpeechModel.sonioxV5.rawValue
-            let hiddenCloudPayload = try JSONDecoder().decode(
+            let cloudPayload = try JSONDecoder().decode(
                 SettingsBackupPayload.self,
                 from: JSONSerialization.data(withJSONObject: object)
             )
-            settings.restore(from: hiddenCloudPayload)
-            XCTAssertEqual(settings.selectedSpeechModel, SettingsStore.SpeechModel.defaultModel)
+            settings.restore(from: cloudPayload)
+            XCTAssertEqual(settings.selectedSpeechModel, .sonioxV5)
             XCTAssertEqual(
                 UserDefaults.standard.string(forKey: self.selectedModelKey),
-                SettingsStore.SpeechModel.defaultModel.rawValue
+                SettingsStore.SpeechModel.sonioxV5.rawValue
             )
 
             let encoded = try XCTUnwrap(
@@ -178,6 +188,20 @@ final class SonioxScopeRoutingTests: XCTestCase {
         } catch {
             XCTFail("Expected typed cloud lifecycle error, got \(type(of: error))")
         }
+    }
+
+    func testCloudModelsNeverPublishLocalArtifactStateDuringExistenceChecks() async {
+        let defaults = UserDefaults.standard
+        let prior = defaults.object(forKey: self.selectedModelKey)
+        defer { self.restore(prior, forKey: self.selectedModelKey, defaults: defaults) }
+        defaults.set(SettingsStore.SpeechModel.sonioxV5.rawValue, forKey: self.selectedModelKey)
+
+        let asr = ASRService()
+        asr.modelsExistOnDisk = true
+        asr.checkIfModelsExist()
+        XCTAssertFalse(asr.modelsExistOnDisk)
+        await asr.checkIfModelsExistAsync()
+        XCTAssertFalse(asr.modelsExistOnDisk)
     }
 
     func testParameterlessGlobalLifecycleRejectsHiddenSonioxBeforeProviderLookup() async throws {
