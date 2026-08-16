@@ -1476,7 +1476,9 @@ final class SettingsStore: ObservableObject {
     }
 
     var providerAPIKeys: [String: String] {
-        get { (try? self.keychain.fetchAllKeys()) ?? [:] }
+        get {
+            KeychainService.unreservedKeys((try? self.keychain.fetchAllKeys()) ?? [:])
+        }
         set {
             objectWillChange.send()
             do {
@@ -1490,8 +1492,8 @@ final class SettingsStore: ObservableObject {
     @discardableResult
     func saveProviderAPIKeys(_ values: [String: String]) throws -> [String: String] {
         let trimmed = self.sanitizeAPIKeys(values)
-        try self.keychain.storeAllKeys(trimmed)
-        return try self.keychain.fetchAllKeys()
+        try self.keychain.storeUnreservedKeys(trimmed)
+        return try KeychainService.unreservedKeys(self.keychain.fetchAllKeys())
     }
 
     /// Securely retrieve API key for a provider, handling custom prefix logic

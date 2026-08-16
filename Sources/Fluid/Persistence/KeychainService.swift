@@ -66,6 +66,28 @@ final class KeychainService {
         try self.saveStoredKeys(values)
     }
 
+    func storeUnreservedKeys(_ values: [String: String]) throws {
+        let existing = try self.loadStoredKeys()
+        try self.saveStoredKeys(Self.replacingUnreservedKeys(existing: existing, replacements: values))
+    }
+
+    nonisolated static func unreservedKeys(
+        _ values: [String: String],
+        reservedPrefix: String = "asr:"
+    ) -> [String: String] {
+        values.filter { $0.key.hasPrefix(reservedPrefix) == false }
+    }
+
+    nonisolated static func replacingUnreservedKeys(
+        existing: [String: String],
+        replacements: [String: String],
+        reservedPrefix: String = "asr:"
+    ) -> [String: String] {
+        var result = existing.filter { $0.key.hasPrefix(reservedPrefix) }
+        result.merge(replacements.filter { $0.key.hasPrefix(reservedPrefix) == false }) { _, new in new }
+        return result
+    }
+
     func legacyProviderEntries() throws -> [String: String] {
         var result: [String: String] = [:]
         let query: [String: Any] = [
