@@ -16,16 +16,33 @@ final class SonioxCredentialSettingsTests: XCTestCase {
         }
     }
 
-    func testRegionChangeKeepsCredentialAndClearsVerificationReceipt() {
-        self.withRestoredDefaults {
-            let credentialStore = FakeCredentialStore(initialValue: "retained-value")
+    func testRegionChangeKeepsCredentialAndClearsVerificationReceipt() async throws {
+        try await self.withRestoredDefaults {
+            let credentialStore = FakeCredentialStore(initialValue: nil)
+            let credentialService = SonioxCredentialService(
+                store: credentialStore,
+                verifier: successfulVerifier()
+            )
             let settings = SettingsStore.shared
-            settings.sonioxVerificationReceipt = .make(apiKey: "retained-value", region: .global)
+            let result = try await credentialService.saveAndVerify(
+                apiKey: "retained-value",
+                region: .global,
+                commitIfCurrent: { true }
+            )
+            guard case let .verified(receipt) = result else {
+                return XCTFail("Expected the fake credential to verify")
+            }
+            settings.sonioxVerificationReceipt = receipt
+            let replacementCountAfterSave = credentialStore.replaceCount
+            let removalCountAfterSave = credentialStore.removeCount
+            let fingerprintAfterSave = try credentialService.storedCredentialFingerprint()
 
             settings.sonioxRegion = .japan
 
-            XCTAssertEqual(credentialStore.value, "retained-value")
             XCTAssertNil(settings.sonioxVerificationReceipt)
+            XCTAssertEqual(credentialStore.replaceCount, replacementCountAfterSave)
+            XCTAssertEqual(credentialStore.removeCount, removalCountAfterSave)
+            XCTAssertEqual(try credentialService.storedCredentialFingerprint(), fingerprintAfterSave)
         }
     }
 

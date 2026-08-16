@@ -180,6 +180,41 @@ final class SonioxScopeRoutingTests: XCTestCase {
         }
     }
 
+    func testParameterlessGlobalLifecycleRejectsHiddenSonioxBeforeProviderLookup() async {
+        let provider = GlobalLifecycleProviderProbe()
+        var providerLookupCount = 0
+        let asr = ASRService(
+            globalLifecycleModelProvider: { .sonioxV5 },
+            globalLifecycleProviderFactory: { _ in
+                providerLookupCount += 1
+                return provider
+            }
+        )
+
+        do {
+            try await asr.ensureAsrReady()
+            XCTFail("Expected hidden cloud readiness to fail")
+        } catch let error as ASRModelLifecycleError {
+            XCTAssertEqual(error, .configureCredentialsInVoiceEngine(.sonioxV5))
+        } catch {
+            XCTFail("Expected typed cloud readiness error, got \(type(of: error))")
+        }
+
+        do {
+            try await asr.clearModelCache()
+            XCTFail("Expected hidden cloud cache clearing to fail")
+        } catch let error as ASRModelLifecycleError {
+            XCTAssertEqual(error, .configureCredentialsInVoiceEngine(.sonioxV5))
+        } catch {
+            XCTFail("Expected typed cloud cache error, got \(type(of: error))")
+        }
+
+        XCTAssertEqual(providerLookupCount, 0)
+        XCTAssertEqual(provider.modelsExistCallCount, 0)
+        XCTAssertEqual(provider.prepareCallCount, 0)
+        XCTAssertEqual(provider.clearCacheCallCount, 0)
+    }
+
     func testNonDictationRoutesNeverFetchSonioxCredentialOrBuildSonioxProvider() async throws {
         let credentialStore = CountingSonioxCredentialStore(value: "unused-value")
         let transportFactory = CountingSonioxTransportFactory()
@@ -524,6 +559,35 @@ private final class CountingLocalProvider: TranscriptionProvider {
     func transcribeFile(at fileURL: URL) async throws -> ASRTranscriptionResult {
         self.owner.transcribedFile()
         return ASRTranscriptionResult(text: "local file", confidence: 0.95)
+    }
+}
+
+@MainActor
+private final class GlobalLifecycleProviderProbe: TranscriptionProvider {
+    let name = "Global lifecycle probe"
+    let isAvailable = true
+    let isReady = false
+    private(set) var modelsExistCallCount = 0
+    private(set) var prepareCallCount = 0
+    private(set) var clearCacheCallCount = 0
+
+    func prepare(progressHandler: ((ModelPreparationProgress) -> Void)?) async throws {
+        _ = progressHandler
+        self.prepareCallCount += 1
+    }
+
+    func transcribe(_ samples: [Float]) async throws -> ASRTranscriptionResult {
+        _ = samples
+        return ASRTranscriptionResult(text: "")
+    }
+
+    func modelsExistOnDisk() -> Bool {
+        self.modelsExistCallCount += 1
+        return false
+    }
+
+    func clearCache() async throws {
+        self.clearCacheCallCount += 1
     }
 }
 
