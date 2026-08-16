@@ -35,7 +35,11 @@ final class KeychainService {
         let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
         var keys = try loadStoredKeys()
         keys[providerID] = trimmed
-        try self.saveStoredKeys(keys)
+        try Self.performProviderMutation(
+            requiredCleanup: { try self.removeLegacyEntries(providerIDs: [providerID]) },
+            primary: { try self.writeStoredKeys(keys) },
+            cleanup: { try self.removeLegacyEntries() }
+        )
     }
 
     func fetchKey(for providerID: String) throws -> String? {
@@ -45,8 +49,12 @@ final class KeychainService {
 
     func deleteKey(for providerID: String) throws {
         var keys = try loadStoredKeys()
-        guard keys.removeValue(forKey: providerID) != nil else { return }
-        try self.saveStoredKeys(keys)
+        let shouldCommit = keys.removeValue(forKey: providerID) != nil
+        try Self.performProviderMutation(
+            requiredCleanup: { try self.removeLegacyEntries(providerIDs: [providerID]) },
+            primary: shouldCommit ? { try self.writeStoredKeys(keys) } : nil,
+            cleanup: { try self.removeLegacyEntries() }
+        )
     }
 
     func containsKey(for providerID: String) -> Bool {
@@ -81,6 +89,16 @@ final class KeychainService {
     ) throws {
         try primary()
         _ = try? cleanup()
+    }
+
+    nonisolated static func performProviderMutation(
+        requiredCleanup: () throws -> Void,
+        primary: (() throws -> Void)?,
+        cleanup: () throws -> Void
+    ) throws {
+        try requiredCleanup()
+        guard let primary else { return }
+        try Self.performCommittedMutation(primary: primary, cleanup: cleanup)
     }
 
     nonisolated static func unreservedKeys(
@@ -209,37 +227,38 @@ final class KeychainService {
     }
 
     private func saveStoredKeys(_ keys: [String: String]) throws {
+        try Self.performCommittedMutation(
+            primary: { try self.writeStoredKeys(keys) },
+            cleanup: {
+                try self.removeLegacyEntries()
+            }
+        )
+    }
+
+    private func writeStoredKeys(_ keys: [String: String]) throws {
         let data = try JSONEncoder().encode(keys)
 
         var attributes = self.aggregatedQuery()
         attributes[kSecValueData as String] = data
 
-        try Self.performCommittedMutation(
-            primary: {
-                let status = SecItemAdd(attributes as CFDictionary, nil)
-
-                switch status {
-                case errSecSuccess:
-                    return
-                case errSecDuplicateItem:
-                    let updateAttributes: [String: Any] = [
-                        kSecValueData as String: data,
-                    ]
-                    let updateStatus = SecItemUpdate(
-                        self.aggregatedQuery() as CFDictionary,
-                        updateAttributes as CFDictionary
-                    )
-                    guard updateStatus == errSecSuccess else {
-                        throw KeychainServiceError.unhandled(updateStatus)
-                    }
-                default:
-                    throw KeychainServiceError.unhandled(status)
-                }
-            },
-            cleanup: {
-                try self.removeLegacyEntries()
+        let status = SecItemAdd(attributes as CFDictionary, nil)
+        switch status {
+        case errSecSuccess:
+            return
+        case errSecDuplicateItem:
+            let updateAttributes: [String: Any] = [
+                kSecValueData as String: data,
+            ]
+            let updateStatus = SecItemUpdate(
+                self.aggregatedQuery() as CFDictionary,
+                updateAttributes as CFDictionary
+            )
+            guard updateStatus == errSecSuccess else {
+                throw KeychainServiceError.unhandled(updateStatus)
             }
-        )
+        default:
+            throw KeychainServiceError.unhandled(status)
+        }
     }
 
     private func aggregatedQuery() -> [String: Any] {

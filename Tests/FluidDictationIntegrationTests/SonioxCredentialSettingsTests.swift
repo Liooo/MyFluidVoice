@@ -355,6 +355,54 @@ final class SonioxCredentialSettingsTests: XCTestCase {
         XCTAssertTrue(aggregateCommitted)
     }
 
+    func testRequiredLegacyCleanupFailurePreventsAggregateMutation() {
+        var events: [String] = []
+
+        XCTAssertThrowsError(
+            try KeychainService.performProviderMutation(
+                requiredCleanup: {
+                    events.append("required")
+                    throw NSError(domain: "RequiredCleanup", code: 1)
+                },
+                primary: { events.append("primary") },
+                cleanup: { events.append("unrelated") }
+            )
+        )
+
+        XCTAssertEqual(events, ["required"])
+    }
+
+    func testRequiredLegacyCleanupSucceedsBeforeAggregateAndUnrelatedCleanupIsBestEffort() {
+        var events: [String] = []
+
+        XCTAssertNoThrow(
+            try KeychainService.performProviderMutation(
+                requiredCleanup: { events.append("required") },
+                primary: { events.append("primary") },
+                cleanup: {
+                    events.append("unrelated")
+                    throw NSError(domain: "UnrelatedCleanup", code: 1)
+                }
+            )
+        )
+
+        XCTAssertEqual(events, ["required", "primary", "unrelated"])
+    }
+
+    func testDeletingMissingAggregateKeyStillRunsRequiredLegacyCleanup() {
+        var requiredCleanupRan = false
+
+        XCTAssertNoThrow(
+            try KeychainService.performProviderMutation(
+                requiredCleanup: { requiredCleanupRan = true },
+                primary: nil,
+                cleanup: { XCTFail("Unrelated cleanup should not run without an aggregate mutation") }
+            )
+        )
+
+        XCTAssertTrue(requiredCleanupRan)
+    }
+
     func testAggregateKeychainStateWinsOverStaleLegacyProviderKey() {
         let values = KeychainService.authoritativeProviderKeys(
             aggregateExists: true,
