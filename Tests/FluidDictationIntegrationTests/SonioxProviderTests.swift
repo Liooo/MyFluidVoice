@@ -566,8 +566,9 @@ final class SonioxProviderTests: XCTestCase {
         let finalTask = Task { try await provider.transcribeFinal([]) }
         await self.waitUntil { transport.sentFrames.count >= 6 }
         transport.enqueue(.text(self.serverMessage(tokens: [("answer", true), ("<fin>", true)], finished: false)))
-        await self.waitUntil { transport.sentFrames.count >= 7 }
-
+        // Latch the resume so the test remains deterministic even if the
+        // provider appends the empty frame just before installing the fake
+        // transport's continuation.
         transport.resumeSend(at: 6)
         transport.enqueue(.text(self.serverMessage(tokens: [], finished: true)))
         let result = try await finalTask.value
@@ -732,6 +733,237 @@ final class SonioxProviderTests: XCTestCase {
         XCTAssertEqual(WhisperProvider().minimumFinalAudioSampleCount, 16_000)
     }
 
+    func testSonioxReceivesActualShortPCMWithoutOneSecondAppPadding() async throws {
+        let captured = [Float(0.25), -0.5]
+        let transport = ControllableSonioxTransport()
+        let provider = self.makeProvider(factory: SonioxTestTransportFactory([transport]))
+        try await provider.prepare(progressHandler: nil)
+
+        let finalTask = Task { try await provider.transcribeFinal(captured) }
+        await self.waitUntil { transport.sentFrames.count >= 7 }
+
+        let binaryFrames = transport.sentFrames.compactMap(\.binaryData)
+        XCTAssertEqual(binaryFrames.first.map { $0.count / MemoryLayout<Float>.size }, captured.count)
+        XCTAssertEqual(
+            try self.decodeSamples(XCTUnwrap(binaryFrames.first)),
+            captured
+        )
+        XCTAssertEqual(provider.minimumFinalAudioSampleCount, 0)
+
+        transport.enqueue(.text(self.serverMessage(tokens: [("<fin>", true)], finished: false)))
+        await self.waitUntil { transport.sentFrames.count >= 8 }
+        transport.enqueue(.text(self.serverMessage(tokens: [], finished: true)))
+        _ = try await finalTask.value
+        XCTAssertEqual(transport.closeDispositions, [.normal])
+    }
+
+    func testWhisperStillReceivesAtLeastOneSecondOfFinalAudio() {
+        let captured = [Float(0.25), -0.5]
+        let whisper = WhisperProvider()
+
+        XCTAssertEqual(
+            ASRService.finalAudioSamples(
+                captured,
+                minimumSampleCount: whisper.minimumFinalAudioSampleCount
+            ).count,
+            16_000
+        )
+        XCTAssertEqual(
+            Array(ASRService.finalAudioSamples(
+                captured,
+                minimumSampleCount: whisper.minimumFinalAudioSampleCount
+            ).prefix(2)),
+            captured
+        )
+    }
+
+    func testStaleStreamingOwnerCannotMatchReplacementSession() {
+        let staleSession = RecordingSessionID()
+        let currentSession = RecordingSessionID()
+        let staleOwner = StreamingTaskOwner(
+            sessionID: staleSession,
+            providerKey: "soniox-v5",
+            token: UUID()
+        )
+        let currentOwner = StreamingTaskOwner(
+            sessionID: currentSession,
+            providerKey: "soniox-v5",
+            token: UUID()
+        )
+
+        XCTAssertTrue(ASRService.isStreamingOwnerMatch(
+            currentOwner,
+            activeOwner: currentOwner,
+            activeSessionID: currentSession,
+            activeProviderKey: "soniox-v5"
+        ))
+        XCTAssertFalse(ASRService.isStreamingOwnerMatch(
+            staleOwner,
+            activeOwner: currentOwner,
+            activeSessionID: currentSession,
+            activeProviderKey: "soniox-v5"
+        ))
+        XCTAssertFalse(ASRService.isStreamingOwnerMatch(
+            staleOwner,
+            activeOwner: staleOwner,
+            activeSessionID: currentSession,
+            activeProviderKey: "soniox-v5"
+        ))
+        XCTAssertFalse(ASRService.isStreamingOwnerMatch(
+            currentOwner,
+            activeOwner: currentOwner,
+            activeSessionID: staleSession,
+            activeProviderKey: "soniox-v5"
+        ))
+        XCTAssertFalse(ASRService.isStreamingOwnerMatch(
+            currentOwner,
+            activeOwner: currentOwner,
+            activeSessionID: currentSession,
+            activeProviderKey: "different-provider"
+        ))
+        XCTAssertTrue(ASRService.isStreamingCancellationOwnerMatch(
+            currentOwner,
+            sessionID: currentSession,
+            providerKey: "soniox-v5",
+            activeOwner: currentOwner,
+            activeSessionID: currentSession,
+            activeProviderKey: "soniox-v5"
+        ))
+        XCTAssertFalse(ASRService.isStreamingCancellationOwnerMatch(
+            staleOwner,
+            sessionID: currentSession,
+            providerKey: "soniox-v5",
+            activeOwner: currentOwner,
+            activeSessionID: currentSession,
+            activeProviderKey: "soniox-v5"
+        ))
+        XCTAssertFalse(ASRService.isStreamingCancellationOwnerMatch(
+            currentOwner,
+            sessionID: currentSession,
+            providerKey: "different-provider",
+            activeOwner: currentOwner,
+            activeSessionID: currentSession,
+            activeProviderKey: "soniox-v5"
+        ))
+    }
+
+    func testGracefulQuiesceDoesNotCancelInFlightPreviewSocket() async throws {
+        let transport = ControllableSonioxTransport(suspendedSendIndices: [0])
+        let provider = self.makeProvider(factory: SonioxTestTransportFactory([transport]))
+        try await provider.prepare(progressHandler: nil)
+
+        let previewTask = Task { try await provider.transcribeStreaming([1, 2]) }
+        await self.waitUntil { transport.sentFrames.count == 1 }
+
+        XCTAssertEqual(transport.closeDispositions, [])
+        transport.resumeSend(at: 0)
+        _ = try await previewTask.value
+
+        XCTAssertEqual(transport.closeDispositions, [])
+        await provider.resetAfterCancellation()
+    }
+
+    func testDiscardStillHardCancelsInFlightPreviewAndReceive() async throws {
+        let transport = ControllableSonioxTransport()
+        let provider = self.makeProvider(factory: SonioxTestTransportFactory([transport]))
+        try await provider.prepare(progressHandler: nil)
+
+        let finalTask = Task { try await provider.transcribeFinal([]) }
+        await self.waitUntil { transport.sentFrames.count >= 6 && transport.pendingReceiveCount == 1 }
+
+        await provider.resetAfterCancellation()
+        await self.assertTaskThrows(finalTask)
+
+        XCTAssertEqual(transport.closeDispositions, [.cancelled])
+        XCTAssertEqual(transport.pendingReceiveCount, 0)
+    }
+
+    func testNoAudioAndShortSilenceResetOpenedProviderWithoutFinalizing() async throws {
+        XCTAssertFalse(ASRService.assessShortAudioSilence([]).isEligible)
+        XCTAssertTrue(ASRService.assessShortAudioSilence([Float](repeating: 0, count: 320)).shouldSkipTranscription)
+
+        let transport = ControllableSonioxTransport()
+        let provider = self.makeProvider(factory: SonioxTestTransportFactory([transport]))
+        try await provider.prepare(progressHandler: nil)
+        _ = try await provider.transcribeStreaming([0, 0])
+
+        await provider.resetAfterCancellation()
+
+        XCTAssertEqual(transport.closeDispositions, [.cancelled])
+        XCTAssertFalse(transport.sentFrames.contains { frame in
+            guard case let .text(text) = frame else { return false }
+            return text == "{\"type\":\"finalize\"}"
+        })
+    }
+
+    func testSonioxFinalErrorDoesNotPromotePartialToFinalOutput() async throws {
+        let transport = ControllableSonioxTransport()
+        let provider = self.makeProvider(factory: SonioxTestTransportFactory([transport]))
+        try await provider.prepare(progressHandler: nil)
+        _ = try await provider.transcribeStreaming([1])
+
+        transport.enqueue(.text(self.serverMessage(tokens: [("partial", false)], finished: false)))
+        var preview = try await provider.transcribeStreaming([1])
+        for _ in 0..<1000 where preview.text != "partial" {
+            await Task.yield()
+            preview = try await provider.transcribeStreaming([1])
+        }
+        XCTAssertEqual(preview.text, "partial")
+
+        let finalTask = Task { try await provider.transcribeFinal([1]) }
+        await self.waitUntil { transport.sentFrames.contains { frame in
+            guard case let .text(text) = frame else { return false }
+            return text == "{\"type\":\"finalize\"}"
+        } }
+        transport.enqueueFailure(SonioxTestError.remoteClosed)
+
+        await self.assertTaskThrows(finalTask)
+        XCTAssertEqual(transport.closeDispositions, [.cancelled])
+    }
+
+    func testTerminationClosesOpenSonioxSocketAndUnblocksReceive() async throws {
+        let transport = ControllableSonioxTransport()
+        let provider = self.makeProvider(factory: SonioxTestTransportFactory([transport]))
+        try await provider.prepare(progressHandler: nil)
+
+        let finalTask = Task { try await provider.transcribeFinal([]) }
+        await self.waitUntil { transport.sentFrames.count >= 6 && transport.pendingReceiveCount == 1 }
+
+        await provider.resetAfterCancellation()
+        await self.assertTaskThrows(finalTask)
+
+        XCTAssertEqual(transport.closeDispositions, [.cancelled])
+        XCTAssertEqual(transport.pendingReceiveCount, 0)
+    }
+
+    func testSonioxTranscriptAndConfigurationNeverReachDebugMessages() async throws {
+        let transport = ControllableSonioxTransport()
+        let provider = self.makeProvider(factory: SonioxTestTransportFactory([transport]))
+        let existingLogIDs = Set(DebugLogger.shared.logs.map(\.id))
+        try await provider.prepare(progressHandler: nil)
+        _ = try await provider.transcribeStreaming([1, 2])
+
+        XCTAssertFalse(provider.allowsTranscriptLogging)
+        let newLogEntries = DebugLogger.shared.logs.filter { !existingLogIDs.contains($0.id) }
+        XCTAssertFalse(newLogEntries.contains { entry in
+            entry.message.contains("partial") || entry.message.contains("configuration")
+        })
+
+        await provider.resetAfterCancellation()
+    }
+
+    func testOwnedFailureShowsSanitizedRequestIDButNeverDiagnosticSlugOrServerProse() {
+        let serverSlug = "server said: raw response body"
+        let error = SonioxErrorMapper.error(errorType: serverSlug, requestID: "request_42")
+        let copy = SonioxErrorMapper.userFacingCopy(for: error.category)
+
+        XCTAssertEqual(error.requestID, "request_42")
+        XCTAssertFalse(copy.title.contains(serverSlug))
+        XCTAssertFalse(copy.message.contains(serverSlug))
+        XCTAssertFalse(copy.message.contains(error.diagnosticType))
+        XCTAssertEqual(copy, SonioxErrorMapper.userFacingCopy(for: .temporaryService))
+    }
+
     private func makeProvider(
         apiKey: String = "test-key",
         factory: SonioxTestTransportFactory,
@@ -887,6 +1119,7 @@ private final nonisolated class ControllableSonioxTransport: SonioxWebSocketTran
         var receiveEvents: [Result<SonioxWebSocketFrame, Error>] = []
         var receiveContinuation: CheckedContinuation<SonioxWebSocketFrame, Error>?
         var sendContinuations: [Int: CheckedContinuation<Void, Error>] = [:]
+        var earlyResumeSendIndices: Set<Int> = []
         var isClosed = false
     }
 
@@ -921,6 +1154,10 @@ private final nonisolated class ControllableSonioxTransport: SonioxWebSocketTran
         self.lock.withLock { self.state.receiveContinuation == nil ? 0 : 1 }
     }
 
+    var pendingSendIndices: Set<Int> {
+        self.lock.withLock { Set(self.state.sendContinuations.keys) }
+    }
+
     func start() async throws {
         if let startError {
             throw startError
@@ -936,13 +1173,18 @@ private final nonisolated class ControllableSonioxTransport: SonioxWebSocketTran
         if self.suspendedSendIndices.contains(index) {
             try await withTaskCancellationHandler {
                 try await withCheckedThrowingContinuation { continuation in
-                    let shouldCancel = self.lock.withLock { () -> Bool in
-                        guard self.state.isClosed == false else { return true }
+                    let disposition = self.lock.withLock { () -> (shouldResume: Bool, shouldCancel: Bool) in
+                        guard self.state.isClosed == false else { return (false, true) }
+                        if self.state.earlyResumeSendIndices.remove(index) != nil {
+                            return (true, false)
+                        }
                         self.state.sendContinuations[index] = continuation
-                        return false
+                        return (false, false)
                     }
-                    if shouldCancel {
+                    if disposition.shouldCancel {
                         continuation.resume(throwing: CancellationError())
+                    } else if disposition.shouldResume {
+                        continuation.resume()
                     }
                 }
             } onCancel: {
@@ -1008,7 +1250,14 @@ private final nonisolated class ControllableSonioxTransport: SonioxWebSocketTran
     }
 
     func resumeSend(at index: Int) {
-        let continuation = self.lock.withLock { self.state.sendContinuations.removeValue(forKey: index) }
+        let continuation = self.lock.withLock { () -> CheckedContinuation<Void, Error>? in
+            if let continuation = self.state.sendContinuations.removeValue(forKey: index) {
+                return continuation
+            }
+            guard self.state.isClosed == false else { return nil }
+            self.state.earlyResumeSendIndices.insert(index)
+            return nil
+        }
         continuation?.resume()
     }
 

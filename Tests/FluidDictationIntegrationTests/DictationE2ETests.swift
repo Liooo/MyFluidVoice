@@ -3053,6 +3053,156 @@ final class OverlayFailureStateTests: XCTestCase {
         XCTAssertEqual(cancellationCount, 1)
         XCTAssertEqual(overlayCloseCount, 1)
     }
+
+    func testStreamingTerminalErrorClearsPartialAndReportsOwnedSessionOnce() throws {
+        let coordinator = DictationSessionCoordinator()
+        let configuration = try XCTUnwrap(RecordingSpeechConfiguration(
+            inputSourceID: nil,
+            localeIdentifier: "ja-JP",
+            model: .sonioxV5,
+            languageBinding: .soniox(.init(languageCode: "ja", isStrict: true, region: .japan))
+        ))
+        let session = coordinator.begin(activationStyle: .toggle, speechConfiguration: configuration)
+        let failure = ASRRecordingFailure(
+            sessionID: session.id,
+            category: .temporaryService,
+            title: "Soniox Temporarily Unavailable",
+            message: "Check the network connection and try again.",
+            requestID: "request_42"
+        )
+        var partial = "partial draft"
+        var cancellationCount = 0
+        var shownCount = 0
+
+        XCTAssertTrue(DictationRecordingFailureHandler.handle(
+            failure,
+            coordinator: coordinator,
+            cancelFinalization: {
+                cancellationCount += 1
+                partial.removeAll()
+            },
+            hideOverlay: {},
+            showFailure: { _ in shownCount += 1 }
+        ))
+        XCTAssertFalse(DictationRecordingFailureHandler.handle(
+            failure,
+            coordinator: coordinator,
+            cancelFinalization: {
+                cancellationCount += 1
+                partial.removeAll()
+            },
+            hideOverlay: {},
+            showFailure: { _ in shownCount += 1 }
+        ))
+
+        XCTAssertTrue(partial.isEmpty)
+        XCTAssertEqual(cancellationCount, 1)
+        XCTAssertEqual(shownCount, 1)
+        XCTAssertEqual(coordinator.state(for: session.id), .cancelled)
+        XCTAssertNil(coordinator.outputOutcome(for: session.id))
+        XCTAssertFalse(coordinator.claimOutputDelivery(for: session.id))
+    }
+
+    func testStreamingTerminalErrorStopsCaptureBeforeDismissingAndClearsMatchingSelection() throws {
+        let coordinator = DictationSessionCoordinator()
+        let configuration = try XCTUnwrap(RecordingSpeechConfiguration(
+            inputSourceID: nil,
+            localeIdentifier: "en-US",
+            model: .sonioxV5,
+            languageBinding: .soniox(.init(languageCode: "en", isStrict: true, region: .global))
+        ))
+        let session = coordinator.begin(activationStyle: .toggle, speechConfiguration: configuration)
+        let failure = ASRRecordingFailure(
+            sessionID: session.id,
+            category: .temporaryService,
+            title: "Soniox Temporarily Unavailable",
+            message: "Check the network connection and try again.",
+            requestID: nil
+        )
+        var events: [String] = []
+
+        XCTAssertTrue(DictationRecordingFailureHandler.handle(
+            failure,
+            coordinator: coordinator,
+            cancelFinalization: {
+                XCTAssertEqual(coordinator.state(for: session.id), .cancelled)
+                events.append("cancel")
+            },
+            hideOverlay: {
+                XCTAssertEqual(coordinator.state(for: session.id), .cancelled)
+                events.append("hide")
+            },
+            showFailure: { _ in
+                XCTAssertEqual(coordinator.state(for: session.id), .cancelled)
+                events.append("show")
+            }
+        ))
+
+        XCTAssertEqual(events, ["cancel", "hide", "show"])
+        XCTAssertNil(coordinator.currentSession)
+    }
+
+    func testStaleSessionErrorCannotCancelOrPublishIntoNewSession() throws {
+        let coordinator = DictationSessionCoordinator()
+        let configuration = try XCTUnwrap(RecordingSpeechConfiguration(
+            inputSourceID: nil,
+            localeIdentifier: "en-US",
+            model: .sonioxV5,
+            languageBinding: .soniox(.init(languageCode: "en", isStrict: true, region: .global))
+        ))
+        let staleSession = coordinator.begin(activationStyle: .toggle, speechConfiguration: configuration)
+        let currentSession = coordinator.begin(activationStyle: .toggle, speechConfiguration: configuration)
+        let failure = ASRRecordingFailure(
+            sessionID: staleSession.id,
+            category: .temporaryService,
+            title: "Soniox Temporarily Unavailable",
+            message: "Check the network connection and try again.",
+            requestID: nil
+        )
+        var callbackCount = 0
+
+        XCTAssertFalse(DictationRecordingFailureHandler.handle(
+            failure,
+            coordinator: coordinator,
+            cancelFinalization: { callbackCount += 1 },
+            hideOverlay: { callbackCount += 1 },
+            showFailure: { _ in callbackCount += 1 }
+        ))
+
+        XCTAssertEqual(callbackCount, 0)
+        XCTAssertEqual(coordinator.currentSession?.id, currentSession.id)
+        XCTAssertTrue(coordinator.isCapturing(currentSession.id))
+        XCTAssertFalse(coordinator.claimOutputDelivery(for: staleSession.id))
+        XCTAssertNil(coordinator.outputOutcome(for: staleSession.id))
+    }
+
+    func testFailedSonioxSessionDoesNotForceAudioHistoryPersistence() throws {
+        let coordinator = DictationSessionCoordinator()
+        let configuration = try XCTUnwrap(RecordingSpeechConfiguration(
+            inputSourceID: nil,
+            localeIdentifier: "en-US",
+            model: .sonioxV5,
+            languageBinding: .soniox(.init(languageCode: "en", isStrict: true, region: .global))
+        ))
+        let session = coordinator.begin(activationStyle: .toggle, speechConfiguration: configuration)
+        let failure = ASRRecordingFailure(
+            sessionID: session.id,
+            category: .temporaryService,
+            title: "Soniox Temporarily Unavailable",
+            message: "Check the network connection and try again.",
+            requestID: nil
+        )
+
+        XCTAssertTrue(DictationRecordingFailureHandler.handle(
+            failure,
+            coordinator: coordinator,
+            cancelFinalization: {},
+            hideOverlay: {},
+            showFailure: { _ in }
+        ))
+        XCTAssertNil(coordinator.outputOutcome(for: session.id))
+        XCTAssertFalse(coordinator.claimOutputDelivery(for: session.id))
+    }
 }
 
 @MainActor

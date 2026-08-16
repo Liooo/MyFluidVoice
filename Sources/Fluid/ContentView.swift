@@ -4413,7 +4413,11 @@ extension ContentView {
                 },
                 showFailure: { copy in
                     self.asr.errorTitle = copy.title
-                    self.asr.errorMessage = copy.message
+                    if let requestID = failure.requestID {
+                        self.asr.errorMessage = copy.message + "\nRequest ID: \(requestID)"
+                    } else {
+                        self.asr.errorMessage = copy.message
+                    }
                     self.asr.showError = true
                 }
             )
