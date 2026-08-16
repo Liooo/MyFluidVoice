@@ -24,6 +24,7 @@
 		7CFA1D0B2F500000C0DEF001 /* TypingServiceTransientPasteboardTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7CFA1D0B2F500000C0DEF002 /* TypingServiceTransientPasteboardTests.swift */; };
 		E817C11C2F68000100000002 /* OutsideClickMonitorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E817C11C2F68000100000001 /* OutsideClickMonitorTests.swift */; };
 		534E44012F71000100000001 /* TranscriptionSoundSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 534E44022F71000100000002 /* TranscriptionSoundSettingsTests.swift */; };
+		A5B10C0D0000000000000002 /* SonioxProviderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5B10C0D0000000000000001 /* SonioxProviderTests.swift */; };
 		7C4E4F544943450000000002 /* THIRD_PARTY_NOTICES.txt in Resources */ = {isa = PBXBuildFile; fileRef = 7C4E4F544943450000000001 /* THIRD_PARTY_NOTICES.txt */; };
 		7CDB0A2F2F3C4D5600FB7CAD /* dictation_fixture.wav in Resources */ = {isa = PBXBuildFile; fileRef = 7CDB0A2B2F3C4D5600FB7CAD /* dictation_fixture.wav */; };
 		7CDB0A302F3C4D5600FB7CAD /* XCTest.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7CDB0A2C2F3C4D5600FB7CAD /* XCTest.framework */; };
@@ -71,6 +72,7 @@
 		7CDB0A2C2F3C4D5600FB7CAD /* XCTest.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = XCTest.framework; path = Platforms/MacOSX.platform/Developer/Library/Frameworks/XCTest.framework; sourceTree = DEVELOPER_DIR; };
 		E817C11C2F68000100000001 /* OutsideClickMonitorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OutsideClickMonitorTests.swift; sourceTree = "<group>"; };
 		534E44022F71000100000002 /* TranscriptionSoundSettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptionSoundSettingsTests.swift; sourceTree = "<group>"; };
+		A5B10C0D0000000000000001 /* SonioxProviderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SonioxProviderTests.swift; sourceTree = "<group>"; };
 		7C4E4F544943450000000001 /* THIRD_PARTY_NOTICES.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = Sources/Fluid/Resources/THIRD_PARTY_NOTICES.txt; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
@@ -160,6 +162,7 @@
 				7CFA1D0B2F500000C0DEF002 /* TypingServiceTransientPasteboardTests.swift */,
 				E817C11C2F68000100000001 /* OutsideClickMonitorTests.swift */,
 				534E44022F71000100000002 /* TranscriptionSoundSettingsTests.swift */,
+				A5B10C0D0000000000000001 /* SonioxProviderTests.swift */,
 			);
 			path = FluidDictationIntegrationTests;
 			sourceTree = "<group>";
@@ -323,6 +326,7 @@
 				7CFA1D0B2F500000C0DEF001 /* TypingServiceTransientPasteboardTests.swift in Sources */,
 				E817C11C2F68000100000002 /* OutsideClickMonitorTests.swift in Sources */,
 				534E44012F71000100000001 /* TranscriptionSoundSettingsTests.swift in Sources */,
+				A5B10C0D0000000000000002 /* SonioxProviderTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
