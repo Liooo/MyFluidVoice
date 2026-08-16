@@ -2,6 +2,8 @@
 import Foundation
 import XCTest
 
+// Task-specific integration coverage is intentionally kept in this registered suite.
+// swiftlint:disable file_length
 @MainActor
 final class DictationE2ETests: XCTestCase {
     private let dictationPromptProfilesKey = "DictationPromptProfiles"
@@ -2302,6 +2304,177 @@ final class DictationE2ETests: XCTestCase {
 
 @MainActor
 extension DictationE2ETests {
+    func testLegacyHistoryDecodesNilSpeechProviderAndModel() throws {
+        let entry = TranscriptionHistoryEntry(
+            rawText: "legacy raw",
+            processedText: "legacy processed",
+            appName: "Editor",
+            windowTitle: "Document",
+            wasAIProcessed: false
+        )
+        let encoded = try JSONEncoder().encode(entry)
+        var legacyObject = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        legacyObject.removeValue(forKey: "speechProvider")
+        legacyObject.removeValue(forKey: "speechModel")
+
+        let decoded = try JSONDecoder().decode(
+            TranscriptionHistoryEntry.self,
+            from: JSONSerialization.data(withJSONObject: legacyObject)
+        )
+
+        XCTAssertNil(decoded.speechProvider)
+        XCTAssertNil(decoded.speechModel)
+    }
+
+    func testSonioxHistoryRoundTripsProviderAndBackendModelID() throws {
+        let settings = SettingsStore.shared
+        let originalModel = settings.selectedSpeechModel
+        let historyStore = TranscriptionHistoryStore.shared
+        let originalHistory = historyStore.makeBackupPayload()
+        defer {
+            settings.selectedSpeechModel = originalModel
+            historyStore.restore(from: originalHistory)
+        }
+        historyStore.restore(from: [])
+        let configuration = try XCTUnwrap(RecordingSpeechConfiguration(
+            inputSourceID: "com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese",
+            localeIdentifier: "ja-JP",
+            model: .sonioxV5,
+            languageBinding: .soniox(.init(languageCode: "ja", isStrict: true, region: .japan))
+        ))
+        settings.selectedSpeechModel = .appleSpeech
+
+        historyStore.addEntry(
+            rawText: "captured output",
+            processedText: "delivered output",
+            appName: "Editor",
+            windowTitle: "Document",
+            wasAIProcessed: false,
+            speechProvider: configuration.model.provider.rawValue.lowercased(),
+            speechModel: configuration.model.backendModelIdentifier
+        )
+        let entry = try XCTUnwrap(historyStore.makeBackupPayload().first)
+        let encoded = try JSONEncoder().encode(entry)
+        let decoded = try JSONDecoder().decode(TranscriptionHistoryEntry.self, from: encoded)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+
+        XCTAssertEqual(decoded.speechProvider, "soniox")
+        XCTAssertEqual(decoded.speechModel, "stt-rt-v5")
+        XCTAssertNil(object["apiKey"])
+        XCTAssertNil(object["verificationReceipt"])
+        XCTAssertNil(object["credentialFingerprint"])
+    }
+
+    func testReplacingAudioPreservesSpeechMetadata() {
+        let entry = TranscriptionHistoryEntry(
+            rawText: "raw",
+            processedText: "processed",
+            appName: "Editor",
+            windowTitle: "Document",
+            wasAIProcessed: false,
+            speechProvider: "soniox",
+            speechModel: "stt-rt-v5"
+        )
+        let audio = DictationAudioMetadata(
+            fileName: "dictation.wav",
+            durationMilliseconds: 250,
+            byteCount: 8000,
+            sampleRate: 16_000,
+            channels: 1,
+            model: "stt-rt-v5"
+        )
+
+        let replaced = entry.replacingAudio(audio)
+
+        XCTAssertEqual(replaced.speechProvider, "soniox")
+        XCTAssertEqual(replaced.speechModel, "stt-rt-v5")
+    }
+
+    func testDiscardAndFailedSonioxSessionsAddNoHistory() throws {
+        let historyStore = TranscriptionHistoryStore.shared
+        let originalHistory = historyStore.makeBackupPayload()
+        defer { historyStore.restore(from: originalHistory) }
+        historyStore.restore(from: [])
+        let configuration = try XCTUnwrap(RecordingSpeechConfiguration(
+            inputSourceID: nil,
+            localeIdentifier: "en-US",
+            model: .sonioxV5,
+            languageBinding: .soniox(.init(languageCode: "en", isStrict: true, region: .global))
+        ))
+
+        let discardedCoordinator = DictationSessionCoordinator()
+        let discardedSession = discardedCoordinator.begin(
+            activationStyle: .toggle,
+            speechConfiguration: configuration
+        )
+        XCTAssertTrue(discardedCoordinator.cancel(for: discardedSession.id))
+
+        let failedCoordinator = DictationSessionCoordinator()
+        let failedSession = failedCoordinator.begin(
+            activationStyle: .toggle,
+            speechConfiguration: configuration
+        )
+        let failure = ASRRecordingFailure(
+            sessionID: failedSession.id,
+            category: .temporaryService,
+            title: "Soniox Temporarily Unavailable",
+            message: "Check the network connection and try again.",
+            requestID: nil
+        )
+        XCTAssertTrue(DictationRecordingFailureHandler.handle(
+            failure,
+            coordinator: failedCoordinator,
+            cancelFinalization: {},
+            hideOverlay: {},
+            showFailure: { _ in }
+        ))
+
+        XCTAssertEqual(historyStore.makeBackupPayload(), [])
+        XCTAssertEqual(discardedCoordinator.outputOutcome(for: discardedSession.id), .discarded)
+        XCTAssertEqual(failedCoordinator.outputOutcome(for: failedSession.id), .discarded)
+    }
+
+    func testBackupJSONContainsNoSonioxCredentialOrVerificationReceipt() throws {
+        let credential = "secret-soniox-key"
+        let receipt = SonioxVerificationReceipt.make(apiKey: credential, region: .global)
+        let settings = SettingsStore.shared
+        let originalReceipt = settings.sonioxVerificationReceipt
+        defer { settings.sonioxVerificationReceipt = originalReceipt }
+        settings.sonioxVerificationReceipt = receipt
+        let entry = TranscriptionHistoryEntry(
+            rawText: "raw",
+            processedText: "processed",
+            appName: "Editor",
+            windowTitle: "Document",
+            wasAIProcessed: false,
+            speechProvider: "soniox",
+            speechModel: "stt-rt-v5"
+        )
+        let document = AppBackupDocument(
+            schemaVersion: .current,
+            appVersion: "test",
+            exportedAt: Date(timeIntervalSince1970: 0),
+            settings: settings.makeBackupPayload(),
+            promptProfiles: [],
+            appPromptBindings: [],
+            transcriptionHistory: [entry],
+            pronunciationProfiles: []
+        )
+
+        let encoded = try XCTUnwrap(String(
+            data: BackupService.shared.encode(document),
+            encoding: .utf8
+        ))
+
+        XCTAssertFalse(encoded.contains(credential))
+        XCTAssertFalse(encoded.contains(receipt.credentialFingerprint))
+        XCTAssertFalse(encoded.localizedCaseInsensitiveContains("receipt"))
+        XCTAssertFalse(encoded.localizedCaseInsensitiveContains("fingerprint"))
+        XCTAssertFalse(encoded.localizedCaseInsensitiveContains("requestID"))
+        XCTAssertFalse(encoded.localizedCaseInsensitiveContains("endpoint"))
+        XCTAssertFalse(encoded.localizedCaseInsensitiveContains("server-message"))
+    }
+
     func testStreamingTerminalErrorClearsPartialAndReportsOwnedSessionOnce() throws {
         let coordinator = DictationSessionCoordinator()
         let configuration = try XCTUnwrap(RecordingSpeechConfiguration(

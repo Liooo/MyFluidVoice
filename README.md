@@ -201,8 +201,22 @@ xcodebuild test -project Fluid.xcodeproj -scheme Fluid -destination 'platform=ma
 
 MyFluidVoice is **local-first**. On-device speech models keep audio on your Mac.
 Apple Speech may use Apple's speech service according to macOS availability and
-settings. If you configure a cloud or OpenAI-compatible AI provider, the text and
-context needed for the requested enhancement are sent to that provider.
+settings. Soniox speech recognition is opt-in, bring-your-own-key (BYOK), and can
+be selected as the global dictation model or assigned per IME. Its API key is
+stored only in the macOS Keychain.
+
+When Soniox is selected, audio and transcripts travel directly from your Mac to
+the selected regional Soniox endpoint, and Soniox bills the associated account
+for usage. Japan data residency requires a Japan-region Soniox project, API key,
+and endpoint. Soniox states that realtime audio and transcripts are not retained
+or used for model training; see Soniox's current
+[Security and Privacy documentation](https://soniox.com/docs/security-and-privacy)
+for the provider's policy. These are Soniox's claims, not a MyFluidVoice guarantee.
+
+File transcription, Meeting mode, dictionary training, and the Local API use the
+displayed local fallback model and do not use Soniox. If you configure a cloud or
+OpenAI-compatible AI enhancement provider, the text and context needed for that
+requested enhancement are sent to the selected provider separately.
 
 Analytics transmission is disabled in this fork. MyFluidVoice does not send app-health or feature-usage events. Update checks are also disabled until the fork has its own release infrastructure.
 
@@ -217,8 +231,9 @@ MyFluidVoice stores transcription history locally, including raw and processed
 text plus app and window context. Optional audio history stores recordings locally
 when enabled. Local diagnostic logs can contain operational context such as
 transcripts, app or window names, and file or media paths and titles. These local
-records are not sent through an analytics transport. History can be reviewed and
-cleared from the app.
+history, audio-history, and diagnostic features are separate from Soniox cloud
+processing. These local records are not sent through an analytics transport.
+History can be reviewed and cleared from the app.
 
 ---
 

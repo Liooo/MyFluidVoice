@@ -747,7 +747,7 @@ final class SonioxCredentialSettingsTests: XCTestCase {
         }
     }
 
-    func testCredentialErrorNeverContainsCandidateKeyResponseBodyOrTranscript() async {
+    func testSanitizedSonioxFailureContainsNoTranscriptOrKey() async {
         let candidate = "candidate-value"
         let responseBody = "server-message"
         let transcript = "transcript-value"

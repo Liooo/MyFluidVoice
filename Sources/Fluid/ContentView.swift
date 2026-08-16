@@ -1026,7 +1026,7 @@ struct ContentView: View {
         let selectedModel = speechConfiguration?.model ?? SettingsStore.shared.selectedSpeechModel
         return (
             provider: selectedModel.provider.rawValue.lowercased(),
-            model: selectedModel.rawValue
+            model: selectedModel.backendModelIdentifier
         )
     }
 
@@ -2304,6 +2304,9 @@ struct ContentView: View {
         // the session that actually started this capture so finalization cannot leak or bypass
         // stale-callback guards when Dictate switches to Edit/Command (or back).
         let dictationSessionID = dictationSession?.id
+        let transcriptionModelInfo = self.currentTranscriptionModelInfo(
+            speechConfiguration: dictationSession?.speechConfiguration
+        )
         if let dictationSessionID,
            !self.dictationSessionCoordinator.canContinueFinalization(for: dictationSessionID)
         {
@@ -2506,10 +2509,6 @@ struct ContentView: View {
         let shouldUseAI = activeDictationSlot.map {
             DictationAIPostProcessingGate.isConfigured(for: $0, appBundleID: appInfo.bundleId)
         } ?? DictationAIPostProcessingGate.isConfigured(for: .primary, appBundleID: appInfo.bundleId)
-        let transcriptionModelInfo = self.currentTranscriptionModelInfo(
-            speechConfiguration: dictationSession?.speechConfiguration
-        )
-
         if shouldUseAI {
             DebugLogger.shared.debug("Routing transcription through AI post-processing", source: "ContentView")
             let postProcessingModelInfo = self.currentDictationAIModelInfo(
@@ -2827,6 +2826,8 @@ struct ContentView: View {
                 windowTitle: context.appInfo.windowTitle,
                 wasAIProcessed: context.postProcessingModel != nil && context.aiFallbackReason == nil,
                 processingModel: context.postProcessingModel,
+                speechProvider: context.transcriptionModelInfo.provider,
+                speechModel: context.transcriptionModelInfo.model,
                 aiProcessingError: context.aiFallbackReason,
                 outputOutcome: outputOutcome
             )

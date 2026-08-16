@@ -23,12 +23,12 @@
 	<key>NSAccessibilityUsageDescription</key>
 	<string>MyFluidVoice needs Accessibility permission to listen for global hotkeys and type text into other apps when you stop recording.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>MyFluidVoice needs microphone access to transcribe your voice. On-device models process audio locally; if you choose Apple Speech, macOS may use Apple's speech service.</string>
+	<string>MyFluidVoice needs microphone access to capture dictation. On-device models process audio locally. When you choose Soniox, microphone audio is sent to Soniox for transcription. Apple Speech may use Apple's speech service.</string>
 	<key>LSUIElement</key>
 	<false/>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>MyFluidVoice needs permission to control system events for managing launch at startup settings.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>MyFluidVoice uses Apple's speech recognition when you select an Apple Speech model; macOS may process that audio using Apple's speech service.</string>
+	<string>MyFluidVoice uses Apple Speech when you select an Apple speech model. macOS may process that audio on-device or through Apple's speech service.</string>
 </dict>
 </plist>
