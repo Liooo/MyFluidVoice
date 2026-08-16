@@ -2380,7 +2380,7 @@ struct ContentView: View {
             return
         }
         self.appBench("asr_stop_return elapsedMs=\(Int(((ProcessInfo.processInfo.systemUptime - asrStopStartedAt) * 1000).rounded()))")
-        let audioSnapshot = self.asr.consumeLastCompletedAudioSnapshot()
+        let audioSnapshot = self.asr.consumeLastCompletedAudioSnapshot(for: dictationSessionID)
         DebugLogger.shared.info(
             "Stop transcription result | chars=\(transcribedText.count) | empty=\(transcribedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)",
             source: "ContentView"

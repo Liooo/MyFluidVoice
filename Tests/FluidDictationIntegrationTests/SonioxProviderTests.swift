@@ -964,6 +964,246 @@ final class SonioxProviderTests: XCTestCase {
         XCTAssertEqual(copy, SonioxErrorMapper.userFacingCopy(for: .temporaryService))
     }
 
+    func testStopDoesNotMutateReplacementSessionAfterCaptureTeardownAwaits() async {
+        let captureGate = Task7AsyncGate()
+        let hooks = ASRServiceLifecycleHooks(
+            cancelAudioRouteRecoveryAndWait: {},
+            stopActiveAudioCapture: { _, _ in await captureGate.wait() },
+            retireAudioEngineAndWait: { _ in }
+        )
+        let service = ASRService(lifecycleHooks: hooks)
+        let configuration = self.appleSpeechConfiguration()
+        let providerA = Task7LifecycleProvider(response: ASRTranscriptionResult(text: "old"))
+        let providerB = Task7LifecycleProvider(response: ASRTranscriptionResult(text: "new"))
+        let sessionA = RecordingSessionID()
+        let sessionB = RecordingSessionID()
+        _ = service.installTestingRecordingSession(
+            sessionID: sessionA,
+            configuration: configuration,
+            provider: providerA,
+            isRunning: true,
+            capturedSamples: [0.25]
+        )
+
+        let settledTickBeforeStop = service.audioCaptureStateSettledTick
+        let stopTask = Task { await service.stop(sessionID: sessionA) }
+        await self.waitUntil { captureGate.isWaiting }
+        _ = service.replaceTestingRecordingSession(
+            sessionID: sessionB,
+            configuration: configuration,
+            provider: providerB,
+            isRunning: true,
+            capturedSamples: [0.5]
+        )
+        captureGate.open()
+
+        _ = await stopTask.value
+        XCTAssertTrue(service.hasActiveRecordingSession)
+        XCTAssertTrue(service.isRunningOrStarting)
+        XCTAssertEqual(service.activeRecordingSpeechModel, configuration.model)
+        XCTAssertEqual(service.audioCaptureStateSettledTick, settledTickBeforeStop)
+        XCTAssertEqual(providerB.resetCount, 0)
+    }
+
+    func testDiscardDoesNotRetireReplacementSessionAfterCaptureTeardownAwaits() async {
+        let captureGate = Task7AsyncGate()
+        let retireCalls = Task7Counter()
+        let hooks = ASRServiceLifecycleHooks(
+            cancelAudioRouteRecoveryAndWait: {},
+            stopActiveAudioCapture: { _, _ in await captureGate.wait() },
+            retireAudioEngineAndWait: { _ in retireCalls.increment() }
+        )
+        let service = ASRService(lifecycleHooks: hooks)
+        let configuration = self.appleSpeechConfiguration()
+        let providerA = Task7LifecycleProvider()
+        let providerB = Task7LifecycleProvider()
+        let sessionA = RecordingSessionID()
+        let sessionB = RecordingSessionID()
+        _ = service.installTestingRecordingSession(
+            sessionID: sessionA,
+            configuration: configuration,
+            provider: providerA,
+            isRunning: true
+        )
+
+        let discardTask = Task { await service.stopWithoutTranscription(sessionID: sessionA) }
+        await self.waitUntil { captureGate.isWaiting }
+        _ = service.replaceTestingRecordingSession(
+            sessionID: sessionB,
+            configuration: configuration,
+            provider: providerB,
+            isRunning: true
+        )
+        captureGate.open()
+
+        let didDiscard = await discardTask.value
+        XCTAssertFalse(didDiscard)
+        XCTAssertEqual(retireCalls.value, 0)
+        XCTAssertTrue(service.hasActiveRecordingSession)
+        XCTAssertTrue(service.isRunningOrStarting)
+        XCTAssertEqual(providerB.resetCount, 0)
+    }
+
+    func testTerminationDoesNotMutateReplacementSessionAfterRouteTeardownAwaits() async {
+        let routeGate = Task7AsyncGate()
+        let hooks = ASRServiceLifecycleHooks(
+            cancelAudioRouteRecoveryAndWait: { await routeGate.wait() },
+            stopActiveAudioCapture: { _, _ in },
+            retireAudioEngineAndWait: { _ in },
+            shutdownDirectCapture: { _ in }
+        )
+        let service = ASRService(lifecycleHooks: hooks)
+        let configuration = self.appleSpeechConfiguration()
+        let providerA = Task7LifecycleProvider()
+        let providerB = Task7LifecycleProvider()
+        let sessionA = RecordingSessionID()
+        let sessionB = RecordingSessionID()
+        _ = service.installTestingRecordingSession(
+            sessionID: sessionA,
+            configuration: configuration,
+            provider: providerA,
+            isRunning: true
+        )
+
+        let terminationTask = Task { await service.shutdownForTermination() }
+        await self.waitUntil { routeGate.isWaiting }
+        _ = service.replaceTestingRecordingSession(
+            sessionID: sessionB,
+            configuration: configuration,
+            provider: providerB,
+            isRunning: true
+        )
+        routeGate.open()
+
+        await terminationTask.value
+        XCTAssertTrue(service.hasActiveRecordingSession)
+        XCTAssertTrue(service.isRunningOrStarting)
+        XCTAssertEqual(service.activeRecordingSpeechModel, configuration.model)
+        XCTAssertEqual(providerB.resetCount, 0)
+    }
+
+    func testDiscardCancelsOwnedProviderBeforeBlockedRouteTeardown() async {
+        let routeGate = Task7AsyncGate()
+        let hooks = ASRServiceLifecycleHooks(
+            cancelAudioRouteRecoveryAndWait: { await routeGate.wait() },
+            stopActiveAudioCapture: { _, _ in },
+            retireAudioEngineAndWait: { _ in }
+        )
+        let service = ASRService(lifecycleHooks: hooks)
+        let configuration = self.appleSpeechConfiguration()
+        let provider = Task7LifecycleProvider()
+        let sessionID = RecordingSessionID()
+        let owner = service.installTestingRecordingSession(
+            sessionID: sessionID,
+            configuration: configuration,
+            provider: provider,
+            isRunning: true
+        )
+        let transcriptionTask = service.startTestingOwnedTranscription(
+            provider: provider,
+            sessionID: owner.sessionID
+        )
+        await self.waitUntil { provider.finalOperationEntered }
+
+        let discardTask = Task { await service.stopWithoutTranscription(sessionID: sessionID) }
+        await self.waitUntil { routeGate.isWaiting }
+        XCTAssertTrue(provider.cancellationObserved)
+        routeGate.open()
+
+        let didDiscard = await discardTask.value
+        XCTAssertTrue(didDiscard)
+        _ = await transcriptionTask.value
+    }
+
+    func testTerminationDoesNotCancelUnownedLocalAPIOperation() async throws {
+        let provider = Task7LifecycleProvider()
+        let configuration = self.appleSpeechConfiguration()
+        let service = ASRService(
+            localProviderFactory: { _ in provider },
+            lifecycleHooks: ASRServiceLifecycleHooks(
+                cancelAudioRouteRecoveryAndWait: {},
+                retireAudioEngineAndWait: { _ in },
+                shutdownDirectCapture: { _ in }
+            )
+        )
+        let apiTask = Task {
+            try await service.transcribeSamplesForAPI([0.25], configuration: configuration)
+        }
+        await self.waitUntil { provider.finalOperationEntered }
+
+        await service.shutdownForTermination()
+        XCTAssertFalse(provider.cancellationObserved)
+        provider.completeFinal()
+        let result = try await apiTask.value
+        XCTAssertEqual(result.text, "completed")
+    }
+
+    func testCompletedAudioSnapshotCannotCrossRecordingSessionOwnership() async {
+        let settings = SettingsStore.shared
+        let previousHistory = settings.saveTranscriptionHistory
+        let previousAudioHistory = settings.saveAudioWithTranscriptionHistory
+        let previousSkipSilent = settings.skipSilentRecordingsEnabled
+        defer {
+            settings.saveTranscriptionHistory = previousHistory
+            settings.saveAudioWithTranscriptionHistory = previousAudioHistory
+            settings.skipSilentRecordingsEnabled = previousSkipSilent
+        }
+        settings.saveTranscriptionHistory = true
+        settings.saveAudioWithTranscriptionHistory = true
+        settings.skipSilentRecordingsEnabled = false
+
+        let service = ASRService(
+            lifecycleHooks: ASRServiceLifecycleHooks(
+                cancelAudioRouteRecoveryAndWait: {},
+                stopActiveAudioCapture: { _, _ in },
+                retireAudioEngineAndWait: { _ in }
+            )
+        )
+        let configuration = self.appleSpeechConfiguration()
+        let sessionA = RecordingSessionID()
+        let providerA = Task7LifecycleProvider(
+            response: ASRTranscriptionResult(text: "snapshot-source"),
+            blocksFinalOperation: false
+        )
+        _ = service.installTestingRecordingSession(
+            sessionID: sessionA,
+            configuration: configuration,
+            provider: providerA,
+            isRunning: true,
+            capturedSamples: [0.25]
+        )
+        let output = await service.stop(sessionID: sessionA)
+        XCTAssertEqual(output, "snapshot-source")
+
+        let sessionB = RecordingSessionID()
+        let providerB = Task7LifecycleProvider(
+            response: ASRTranscriptionResult(text: "discarded"),
+            blocksFinalOperation: false
+        )
+        _ = service.replaceTestingRecordingSession(
+            sessionID: sessionB,
+            configuration: configuration,
+            provider: providerB,
+            isRunning: false
+        )
+        XCTAssertNil(service.consumeLastCompletedAudioSnapshot(for: sessionB))
+        let didDiscard = await service.stopWithoutTranscription(sessionID: sessionB)
+        XCTAssertTrue(didDiscard)
+        XCTAssertNil(service.consumeLastCompletedAudioSnapshot(for: sessionA))
+    }
+
+    private func appleSpeechConfiguration() -> RecordingSpeechConfiguration {
+        guard let configuration = RecordingSpeechConfiguration(
+            inputSourceID: "com.apple.keylayout.US",
+            localeIdentifier: "en-US",
+            model: .appleSpeech,
+            languageBinding: .appleSpeech(localeIdentifier: "en-US")
+        ) else {
+            preconditionFailure("The test recording configuration must remain valid")
+        }
+        return configuration
+    }
+
     private func makeProvider(
         apiKey: String = "test-key",
         factory: SonioxTestTransportFactory,
@@ -1358,5 +1598,154 @@ private final class DefaultContractProvider: TranscriptionProvider {
     func transcribe(_ samples: [Float]) async throws -> ASRTranscriptionResult {
         _ = samples
         return ASRTranscriptionResult(text: "")
+    }
+}
+
+private final nonisolated class Task7AsyncGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var opened = false
+
+    var isWaiting: Bool {
+        self.lock.withLock { self.continuation != nil }
+    }
+
+    func wait() async {
+        await withCheckedContinuation { continuation in
+            let shouldResume = self.lock.withLock { () -> Bool in
+                guard self.opened == false else { return true }
+                self.continuation = continuation
+                return false
+            }
+            if shouldResume {
+                continuation.resume()
+            }
+        }
+    }
+
+    func open() {
+        let continuation = self.lock.withLock { () -> CheckedContinuation<Void, Never>? in
+            self.opened = true
+            defer { self.continuation = nil }
+            return self.continuation
+        }
+        continuation?.resume()
+    }
+}
+
+private final nonisolated class Task7Counter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    var value: Int {
+        self.lock.withLock { self.count }
+    }
+
+    func increment() {
+        self.lock.withLock { self.count += 1 }
+    }
+}
+
+private final nonisolated class Task7CancellationLatch: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Error>?
+    private var completion: Result<Void, Error>?
+    private var entered = false
+    private var cancellationWasObserved = false
+
+    var isEntered: Bool {
+        self.lock.withLock { self.entered }
+    }
+
+    var cancellationObserved: Bool {
+        self.lock.withLock { self.cancellationWasObserved }
+    }
+
+    func wait() async throws {
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                let result = self.lock.withLock { () -> Result<Void, Error>? in
+                    self.entered = true
+                    guard self.completion == nil else { return self.completion }
+                    self.continuation = continuation
+                    return nil
+                }
+                result?.resume(continuation)
+            }
+        } onCancel: {
+            self.cancel()
+        }
+    }
+
+    func complete() {
+        self.finish(.success(()))
+    }
+
+    func cancel() {
+        self.lock.withLock { self.cancellationWasObserved = true }
+        self.finish(.failure(CancellationError()))
+    }
+
+    private func finish(_ result: Result<Void, Error>) {
+        let continuation = self.lock.withLock { () -> CheckedContinuation<Void, Error>? in
+            guard self.completion == nil else { return nil }
+            self.completion = result
+            defer { self.continuation = nil }
+            return self.continuation
+        }
+        continuation.map { result.resume($0) }
+    }
+}
+
+private final nonisolated class Task7LifecycleProvider: TranscriptionProvider, @unchecked Sendable {
+    let name = "task-7-lifecycle"
+    let isAvailable = true
+    let isReady = true
+    let response: ASRTranscriptionResult
+    private let blocksFinalOperation: Bool
+    private let finalLatch = Task7CancellationLatch()
+    private let resetCounter = Task7Counter()
+
+    init(
+        response: ASRTranscriptionResult = ASRTranscriptionResult(text: "completed"),
+        blocksFinalOperation: Bool = true
+    ) {
+        self.response = response
+        self.blocksFinalOperation = blocksFinalOperation
+    }
+
+    var finalOperationEntered: Bool {
+        self.finalLatch.isEntered
+    }
+
+    var cancellationObserved: Bool {
+        self.finalLatch.cancellationObserved
+    }
+
+    var resetCount: Int {
+        self.resetCounter.value
+    }
+
+    func prepare(progressHandler: ((ModelPreparationProgress) -> Void)?) async throws {
+        _ = progressHandler
+    }
+
+    func transcribe(_ samples: [Float]) async throws -> ASRTranscriptionResult {
+        try await self.transcribeFinal(samples)
+    }
+
+    func transcribeFinal(_ samples: [Float]) async throws -> ASRTranscriptionResult {
+        _ = samples
+        guard self.blocksFinalOperation else { return self.response }
+        try await self.finalLatch.wait()
+        return self.response
+    }
+
+    func completeFinal() {
+        self.finalLatch.complete()
+    }
+
+    func resetAfterCancellation() async {
+        self.resetCounter.increment()
     }
 }
