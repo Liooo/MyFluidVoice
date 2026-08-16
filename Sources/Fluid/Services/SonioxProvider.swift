@@ -1,5 +1,9 @@
 import Foundation
 
+private nonisolated struct SonioxOperationLease: Hashable, Sendable {
+    let id = UUID()
+}
+
 final class SonioxProvider: TranscriptionProvider {
     static let modelID = "stt-rt-v5"
 
@@ -37,6 +41,9 @@ final class SonioxProvider: TranscriptionProvider {
 
     func prepare(progressHandler: ((ModelPreparationProgress) -> Void)? = nil) async throws {
         _ = progressHandler
+        let lease = SonioxOperationLease()
+        defer { self.cancellationHandle.release(lease) }
+        self.isReady = false
         do {
             try await withTaskCancellationHandler {
                 try Task.checkCancellation()
@@ -47,14 +54,13 @@ final class SonioxProvider: TranscriptionProvider {
                         requestID: nil
                     )
                 }
-                self.isReady = true
             } onCancel: {
-                self.cancellationHandle.cancel()
+                self.cancellationHandle.cancel(lease)
             }
             try Task.checkCancellation()
-            self.cancellationHandle.clear()
+            self.isReady = true
         } catch {
-            self.cancellationHandle.clear()
+            self.isReady = false
             throw error
         }
     }
@@ -64,18 +70,22 @@ final class SonioxProvider: TranscriptionProvider {
     }
 
     func transcribeStreaming(_ samples: [Float]) async throws -> ASRTranscriptionResult {
-        try await withTaskCancellationHandler {
-            try await self.session.preview(cumulativeSamples: samples)
+        let lease = SonioxOperationLease()
+        defer { self.cancellationHandle.release(lease) }
+        return try await withTaskCancellationHandler {
+            try await self.session.preview(cumulativeSamples: samples, lease: lease)
         } onCancel: {
-            self.cancellationHandle.cancel()
+            self.cancellationHandle.cancel(lease)
         }
     }
 
     func transcribeFinal(_ samples: [Float]) async throws -> ASRTranscriptionResult {
-        try await withTaskCancellationHandler {
-            try await self.session.finalize(cumulativeSamples: samples)
+        let lease = SonioxOperationLease()
+        defer { self.cancellationHandle.release(lease) }
+        return try await withTaskCancellationHandler {
+            try await self.session.finalize(cumulativeSamples: samples, lease: lease)
         } onCancel: {
-            self.cancellationHandle.cancel()
+            self.cancellationHandle.cancel(lease)
         }
     }
 
@@ -92,7 +102,7 @@ final class SonioxProvider: TranscriptionProvider {
         await withTaskCancellationHandler {
             await self.session.resetAfterCancellation()
         } onCancel: {
-            self.cancellationHandle.cancel()
+            self.cancellationHandle.cancelTransport()
         }
     }
 }
@@ -100,32 +110,60 @@ final class SonioxProvider: TranscriptionProvider {
 private final nonisolated class SonioxCancellationHandle: @unchecked Sendable {
     private let lock = NSLock()
     private var transport: (any SonioxWebSocketTransport)?
-    private var isCancelled = false
+    private var activeLease: SonioxOperationLease?
+    private var cancelledLeases: Set<SonioxOperationLease> = []
 
-    func install(_ transport: any SonioxWebSocketTransport) {
+    func admit(_ lease: SonioxOperationLease) {
+        let transport = self.lock.withLock { () -> (any SonioxWebSocketTransport)? in
+            precondition(self.activeLease == nil)
+            self.activeLease = lease
+            return self.cancelledLeases.contains(lease) ? self.transport : nil
+        }
+        transport?.close(.cancelled)
+    }
+
+    func install(_ transport: any SonioxWebSocketTransport, for lease: SonioxOperationLease) {
         let shouldClose = self.lock.withLock { () -> Bool in
-            guard self.isCancelled == false else { return true }
+            guard self.activeLease == lease else { return true }
             self.transport = transport
-            return false
+            return self.cancelledLeases.contains(lease)
         }
         if shouldClose {
             transport.close(.cancelled)
         }
     }
 
-    func cancel() {
+    func cancel(_ lease: SonioxOperationLease) {
         let transport = self.lock.withLock { () -> (any SonioxWebSocketTransport)? in
-            guard self.isCancelled == false else { return nil }
-            self.isCancelled = true
+            let inserted = self.cancelledLeases.insert(lease).inserted
+            guard inserted, self.activeLease == lease else { return nil }
             return self.transport
         }
         transport?.close(.cancelled)
     }
 
-    func clear() {
+    func cancelTransport() {
+        let transport = self.lock.withLock { () -> (any SonioxWebSocketTransport)? in
+            if let activeLease {
+                self.cancelledLeases.insert(activeLease)
+            }
+            return self.transport
+        }
+        transport?.close(.cancelled)
+    }
+
+    func release(_ lease: SonioxOperationLease) {
+        self.lock.withLock {
+            if self.activeLease == lease {
+                self.activeLease = nil
+            }
+            self.cancelledLeases.remove(lease)
+        }
+    }
+
+    func clearTransport() {
         self.lock.withLock {
             self.transport = nil
-            self.isCancelled = false
         }
     }
 }
@@ -136,6 +174,37 @@ private nonisolated enum SonioxStreamingError: Error, Sendable {
     case unexpectedBinaryResponse
     case finishedBeforeFin
     case finishedBeforeEmptyFrame
+}
+
+nonisolated struct SonioxFinalizationArbiter: Sendable {
+    private enum Winner: Sendable {
+        case finished
+        case timeout
+    }
+
+    private var winner: Winner?
+
+    init() {}
+
+    var hasAcceptedFinished: Bool {
+        self.winner == .finished
+    }
+
+    mutating func claimFinished() -> Bool {
+        guard self.winner == nil else { return false }
+        self.winner = .finished
+        return true
+    }
+
+    mutating func claimTimeout() -> Bool {
+        guard self.winner == nil else { return false }
+        self.winner = .timeout
+        return true
+    }
+
+    mutating func reset() {
+        self.winner = nil
+    }
 }
 
 private actor SonioxStreamingSession {
@@ -172,6 +241,9 @@ private actor SonioxStreamingSession {
     private var emptyFramePhase = EmptyFramePhase.notStarted
     private var generation = 0
     private var terminalError: Error?
+    private var isOperationInProgress = false
+    private var activeOperationLease: SonioxOperationLease?
+    private var finalizationArbiter = SonioxFinalizationArbiter()
     private var finWaiters: [CheckedContinuation<Void, Error>] = []
     private var finishedWaiters: [CheckedContinuation<Void, Error>] = []
 
@@ -191,7 +263,9 @@ private actor SonioxStreamingSession {
         self.cancellationHandle = cancellationHandle
     }
 
-    func preview(cumulativeSamples: [Float]) async throws -> ASRTranscriptionResult {
+    func preview(cumulativeSamples: [Float], lease: SonioxOperationLease) async throws -> ASRTranscriptionResult {
+        try self.beginOperation(lease)
+        defer { self.endOperation(lease) }
         do {
             try Task.checkCancellation()
             try self.throwTerminalError()
@@ -212,7 +286,9 @@ private actor SonioxStreamingSession {
         }
     }
 
-    func finalize(cumulativeSamples: [Float]) async throws -> ASRTranscriptionResult {
+    func finalize(cumulativeSamples: [Float], lease: SonioxOperationLease) async throws -> ASRTranscriptionResult {
+        try self.beginOperation(lease)
+        defer { self.endOperation(lease) }
         do {
             try Task.checkCancellation()
             try self.throwTerminalError()
@@ -233,8 +309,12 @@ private actor SonioxStreamingSession {
             self.emptyFramePhase = .sending
             try await self.send(.binary(Data()))
             self.emptyFramePhase = .sent
+            if self.snapshot.finished {
+                try self.acceptFinished()
+            }
             try await self.waitForFinished()
             try Task.checkCancellation()
+            try self.throwTerminalError()
 
             let result = ASRTranscriptionResult(
                 text: self.snapshot.finalText,
@@ -251,7 +331,7 @@ private actor SonioxStreamingSession {
 
     func resetAfterCancellation() async {
         guard self.transport != nil || self.receiveTask != nil || self.timeoutTask != nil else {
-            self.cancellationHandle.clear()
+            self.cancellationHandle.clearTransport()
             return
         }
         await self.failAndCleanup(CancellationError())
@@ -259,6 +339,26 @@ private actor SonioxStreamingSession {
 
     private var previewResult: ASRTranscriptionResult {
         ASRTranscriptionResult(text: self.snapshot.completeText, confidence: self.snapshot.confidence)
+    }
+
+    private func beginOperation(_ lease: SonioxOperationLease) throws {
+        guard self.isOperationInProgress == false else {
+            throw SonioxError(
+                category: .configuration,
+                diagnosticType: "operation_in_progress",
+                requestID: nil
+            )
+        }
+        self.isOperationInProgress = true
+        self.activeOperationLease = lease
+        self.cancellationHandle.admit(lease)
+    }
+
+    private func endOperation(_ lease: SonioxOperationLease) {
+        guard self.activeOperationLease == lease else { return }
+        self.cancellationHandle.release(lease)
+        self.activeOperationLease = nil
+        self.isOperationInProgress = false
     }
 
     private func throwTerminalError() throws {
@@ -272,7 +372,10 @@ private actor SonioxStreamingSession {
         guard self.transport == nil else { return }
 
         let transport = self.transportFactory(self.binding.region.webSocketURL)
-        self.cancellationHandle.install(transport)
+        guard let activeOperationLease else {
+            throw SonioxStreamingError.malformedServerMessage
+        }
+        self.cancellationHandle.install(transport, for: activeOperationLease)
         self.transport = transport
         let activeGeneration = self.generation
         try Task.checkCancellation()
@@ -366,7 +469,9 @@ private actor SonioxStreamingSession {
             self.resume(&self.finWaiters)
         }
         if self.snapshot.finished {
-            self.resume(&self.finishedWaiters)
+            if self.emptyFramePhase == .sent {
+                try self.acceptFinished()
+            }
             return false
         }
         return true
@@ -375,7 +480,7 @@ private actor SonioxStreamingSession {
     private func receiveFailed(_ error: Error, generation: Int) {
         guard generation == self.generation, self.terminalError == nil else { return }
         self.beginFailure(self.normalized(error))
-        self.cancellationHandle.clear()
+        self.cancellationHandle.clearTransport()
     }
 
     private func armTimeout() {
@@ -393,7 +498,10 @@ private actor SonioxStreamingSession {
     }
 
     private func timeoutExpired(generation: Int) async {
-        guard generation == self.generation, self.terminalError == nil else { return }
+        guard generation == self.generation,
+              self.terminalError == nil,
+              self.finalizationArbiter.claimTimeout()
+        else { return }
         let error = SonioxError(
             category: .finalizationTimeout,
             diagnosticType: "finalization_timeout",
@@ -401,7 +509,7 @@ private actor SonioxStreamingSession {
         )
         let receiveTask = self.beginFailure(error)
         await receiveTask?.value
-        self.cancellationHandle.clear()
+        self.cancellationHandle.clearTransport()
     }
 
     private func waitForFin() async throws {
@@ -414,10 +522,22 @@ private actor SonioxStreamingSession {
 
     private func waitForFinished() async throws {
         try self.throwTerminalError()
-        guard self.snapshot.finished == false else { return }
+        guard self.finalizationArbiter.hasAcceptedFinished == false else { return }
         try await withCheckedThrowingContinuation { continuation in
             self.finishedWaiters.append(continuation)
         }
+    }
+
+    private func acceptFinished() throws {
+        try self.throwTerminalError()
+        guard self.finalizationArbiter.hasAcceptedFinished == false else { return }
+        guard self.finalizationArbiter.claimFinished() else {
+            try self.throwTerminalError()
+            return
+        }
+        self.timeoutTask?.cancel()
+        self.timeoutTask = nil
+        self.resume(&self.finishedWaiters)
     }
 
     private func finishNormally() async {
@@ -430,7 +550,7 @@ private actor SonioxStreamingSession {
         self.resume(&self.finishedWaiters)
         self.clearVolatileState()
         await receiveTask?.value
-        self.cancellationHandle.clear()
+        self.cancellationHandle.clearTransport()
     }
 
     private func failAndCleanup(_ error: Error) async {
@@ -439,7 +559,7 @@ private actor SonioxStreamingSession {
         }
         let receiveTask = self.beginFailure(error)
         await receiveTask?.value
-        self.cancellationHandle.clear()
+        self.cancellationHandle.clearTransport()
     }
 
     @discardableResult
@@ -447,7 +567,7 @@ private actor SonioxStreamingSession {
         guard self.terminalError == nil else { return nil }
         self.terminalError = error
         self.generation += 1
-        self.cancellationHandle.cancel()
+        self.cancellationHandle.cancelTransport()
         let receiveTask = self.receiveTask
         receiveTask?.cancel()
         self.timeoutTask?.cancel()
@@ -472,6 +592,7 @@ private actor SonioxStreamingSession {
         )
         self.sentSampleCount = 0
         self.emptyFramePhase = .notStarted
+        self.finalizationArbiter.reset()
         self.finWaiters.removeAll()
         self.finishedWaiters.removeAll()
     }

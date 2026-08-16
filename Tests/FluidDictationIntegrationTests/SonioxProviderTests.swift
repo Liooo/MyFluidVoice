@@ -53,6 +53,16 @@ final class SonioxProviderTests: XCTestCase {
         )
     }
 
+    func testFinalizationArbiterGivesTheFirstTerminalEventPrecedence() {
+        var finishedFirst = SonioxFinalizationArbiter()
+        XCTAssertTrue(finishedFirst.claimFinished())
+        XCTAssertFalse(finishedFirst.claimTimeout())
+
+        var timeoutFirst = SonioxFinalizationArbiter()
+        XCTAssertTrue(timeoutFirst.claimTimeout())
+        XCTAssertFalse(timeoutFirst.claimFinished())
+    }
+
     func testReducerAppendsFinalAndReplacesWholeProvisionalSuffix() throws {
         var reducer = SonioxTokenReducer()
         let first = SonioxServerMessage(tokens: [
@@ -297,6 +307,51 @@ final class SonioxProviderTests: XCTestCase {
         XCTAssertEqual(factory.requestedURLs, [SettingsStore.SonioxRegion.japan.webSocketURL])
     }
 
+    func testConcurrentCallDuringConfigurationFailsWithoutSendingAudio() async throws {
+        let transport = ControllableSonioxTransport(suspendedSendIndices: [0])
+        let provider = self.makeProvider(factory: SonioxTestTransportFactory([transport]))
+        try await provider.prepare(progressHandler: nil)
+        let firstPreview = Task { try await provider.transcribeStreaming([1, 2]) }
+        await self.waitUntil { transport.sentFrames.count == 1 }
+
+        do {
+            _ = try await provider.transcribeStreaming([1, 2, 3])
+            XCTFail("Expected an overlapping provider operation to fail")
+        } catch let error as SonioxError {
+            XCTAssertEqual(error.category, .configuration)
+            XCTAssertEqual(error.diagnosticType, "operation_in_progress")
+        }
+        XCTAssertEqual(transport.sentFrames.count, 1)
+
+        transport.resumeSend(at: 0)
+        _ = try await firstPreview.value
+
+        XCTAssertEqual(transport.sentFrames.compactMap(\.binaryData).flatMap(self.decodeSamples), [1, 2])
+        XCTAssertEqual(transport.closeDispositions, [])
+    }
+
+    func testCancelledOverlappingCallCannotCancelActiveOperation() async throws {
+        let transport = ControllableSonioxTransport(suspendedSendIndices: [0])
+        let provider = self.makeProvider(factory: SonioxTestTransportFactory([transport]))
+        try await provider.prepare(progressHandler: nil)
+        let activePreview = Task { try await provider.transcribeStreaming([1, 2]) }
+        await self.waitUntil { transport.sentFrames.count == 1 }
+
+        let cancelledOverlap = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await provider.transcribeStreaming([1, 2, 3])
+        }
+        await self.assertTaskThrows(cancelledOverlap)
+        XCTAssertEqual(transport.closeDispositions, [])
+        XCTAssertEqual(transport.sentFrames.count, 1)
+
+        transport.resumeSend(at: 0)
+        _ = try await activePreview.value
+
+        XCTAssertEqual(transport.sentFrames.compactMap(\.binaryData).flatMap(self.decodeSamples), [1, 2])
+        XCTAssertEqual(transport.closeDispositions, [])
+    }
+
     func testCumulativePrefixesSendOnlyNewSuffixIn960SampleFrames() async throws {
         let transport = ControllableSonioxTransport()
         let provider = self.makeProvider(factory: SonioxTestTransportFactory([transport]))
@@ -524,13 +579,18 @@ final class SonioxProviderTests: XCTestCase {
     func testCancelledPrepareDoesNotLatchCancellationIntoLaterRecording() async throws {
         let transport = ControllableSonioxTransport()
         let provider = self.makeProvider(factory: SonioxTestTransportFactory([transport]))
+        try await provider.prepare(progressHandler: nil)
+        XCTAssertTrue(provider.isReady)
+
         let cancelledPrepare = Task {
             withUnsafeCurrentTask { $0?.cancel() }
             try await provider.prepare(progressHandler: nil)
         }
         await self.assertVoidTaskThrows(cancelledPrepare)
+        XCTAssertFalse(provider.isReady)
 
         try await provider.prepare(progressHandler: nil)
+        XCTAssertTrue(provider.isReady)
         _ = try await provider.transcribeStreaming([1])
 
         XCTAssertEqual(transport.closeDispositions, [])
