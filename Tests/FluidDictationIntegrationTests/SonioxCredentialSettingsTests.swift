@@ -147,6 +147,26 @@ final class SonioxCredentialSettingsTests: XCTestCase {
         }
     }
 
+    func testReflectedCandidateRequestIDNeverReachesCredentialError() async {
+        let candidate = "candidate-value"
+        let verifier = SonioxCredentialVerifier(
+            transport: RecordingTransport(
+                result: .success(modelsResponse(statusCode: 500, requestID: candidate))
+            ),
+            sleep: immediateSleep
+        )
+
+        do {
+            try await verifier.verify(apiKey: candidate, region: .global)
+            XCTFail("Expected verification to fail")
+        } catch let error as SonioxCredentialError {
+            XCTAssertTrue(error.requestID == nil)
+            XCTAssertFalse((error.errorDescription ?? "").contains(candidate))
+        } catch {
+            XCTFail("Expected a sanitized Soniox credential error")
+        }
+    }
+
     func testCredentialErrorNeverContainsCandidateKeyResponseBodyOrTranscript() async {
         let candidate = "candidate-value"
         let responseBody = "server-message"
@@ -272,23 +292,40 @@ final class SonioxCredentialSettingsTests: XCTestCase {
     }
 
     func testSavingGenericAIKeysAtomicallyPreservesReservedASRCredentials() {
-        let result = KeychainService.replacingUnreservedKeys(
-            existing: [
-                "openai": "old-value",
-                "asr:soniox": "reserved-value",
-            ],
-            replacements: ["groq": "new-value"]
-        )
+        let existing = [
+            "openai": "old-value",
+            "groq": "old-groq-value",
+            "asr:soniox": "reserved-value",
+            "asr:other": "other-reserved-value",
+        ]
 
-        XCTAssertEqual(result.keys.sorted(), ["asr:soniox", "groq"])
-        XCTAssertEqual(
-            SonioxVerificationReceipt.fingerprint(apiKey: result["groq"] ?? ""),
-            SonioxVerificationReceipt.fingerprint(apiKey: "new-value")
+        func assertReservedKeysAreUnchanged(_ result: [String: String]) {
+            for (providerID, value) in existing where providerID.hasPrefix("asr:") {
+                XCTAssertTrue(result[providerID] == value)
+            }
+        }
+
+        let added = KeychainService.replacingUnreservedKeys(
+            existing: existing,
+            replacements: ["anthropic": "added-value"]
         )
-        XCTAssertEqual(
-            SonioxVerificationReceipt.fingerprint(apiKey: result["asr:soniox"] ?? ""),
-            SonioxVerificationReceipt.fingerprint(apiKey: "reserved-value")
+        XCTAssertEqual(added.keys.sorted(), ["anthropic", "asr:other", "asr:soniox"])
+        assertReservedKeysAreUnchanged(added)
+
+        let updated = KeychainService.replacingUnreservedKeys(
+            existing: existing,
+            replacements: ["groq": "updated-value"]
         )
+        XCTAssertEqual(updated.keys.sorted(), ["asr:other", "asr:soniox", "groq"])
+        XCTAssertEqual(
+            SonioxVerificationReceipt.fingerprint(apiKey: updated["groq"] ?? ""),
+            SonioxVerificationReceipt.fingerprint(apiKey: "updated-value")
+        )
+        assertReservedKeysAreUnchanged(updated)
+
+        let deleted = KeychainService.replacingUnreservedKeys(existing: existing, replacements: [:])
+        XCTAssertEqual(deleted.keys.sorted(), ["asr:other", "asr:soniox"])
+        assertReservedKeysAreUnchanged(deleted)
     }
 }
 

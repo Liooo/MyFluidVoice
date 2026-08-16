@@ -166,7 +166,7 @@ nonisolated struct SonioxCredentialVerifier: SonioxCredentialVerifying, Sendable
 
         switch result {
         case let .response(data, response):
-            try self.validate(data: data, response: response)
+            try self.validate(data: data, response: response, excludingCredential: apiKey)
         case .timeout:
             throw SonioxCredentialError(
                 category: .temporaryService,
@@ -182,8 +182,15 @@ nonisolated struct SonioxCredentialVerifier: SonioxCredentialVerifying, Sendable
         }
     }
 
-    private func validate(data: Data, response: HTTPURLResponse) throws {
-        let requestID = Self.sanitizedRequestID(response.value(forHTTPHeaderField: "X-Request-ID"))
+    private func validate(
+        data: Data,
+        response: HTTPURLResponse,
+        excludingCredential credential: String
+    ) throws {
+        let requestID = Self.sanitizedRequestID(
+            response.value(forHTTPHeaderField: "X-Request-ID"),
+            excludingCredential: credential
+        )
         guard response.statusCode == 200 else {
             throw SonioxCredentialError(
                 category: Self.category(for: response.statusCode),
@@ -228,11 +235,30 @@ nonisolated struct SonioxCredentialVerifier: SonioxCredentialVerifying, Sendable
         }
     }
 
-    private static func sanitizedRequestID(_ value: String?) -> String? {
-        guard let value else { return nil }
-        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_."))
-        let sanitized = String(value.unicodeScalars.filter(allowed.contains).prefix(128))
-        return sanitized.isEmpty ? nil : sanitized
+    private static func sanitizedRequestID(
+        _ value: String?,
+        excludingCredential credential: String
+    ) -> String? {
+        let leading = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789")
+        guard let value,
+              value.utf8.count <= 128,
+              let first = value.unicodeScalars.first,
+              leading.contains(first)
+        else {
+            return nil
+        }
+
+        let normalizedCredential = credential.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard normalizedCredential.isEmpty || value.range(of: normalizedCredential, options: .literal) == nil
+        else {
+            return nil
+        }
+
+        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.")
+        guard value.unicodeScalars.allSatisfy(allowed.contains) else {
+            return nil
+        }
+        return value
     }
 
     private enum VerificationResult: Sendable {
