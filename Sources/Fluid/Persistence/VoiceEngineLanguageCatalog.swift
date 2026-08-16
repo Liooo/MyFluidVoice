@@ -20,6 +20,7 @@ struct VoiceEngineLanguageRoute: Identifiable, Equatable {
         case appleSpeech(localeIdentifier: String)
         case cohere(SettingsStore.CohereLanguage)
         case nemotron(SettingsStore.NemotronLanguage)
+        case soniox(SonioxSessionBinding)
         case whisper(languageCode: String)
 
         var id: String {
@@ -32,6 +33,10 @@ struct VoiceEngineLanguageRoute: Identifiable, Equatable {
                 return "cohere-\(language.rawValue)"
             case let .nemotron(language):
                 return "nemotron-\(language.rawValue)"
+            case let .soniox(binding):
+                let language = binding.languageCode ?? "auto"
+                let strictness = binding.isStrict ? "strict" : "non-strict"
+                return "soniox-\(binding.region.rawValue)-\(language)-\(strictness)"
             case let .whisper(languageCode):
                 return "whisper-\(languageCode)"
             }
@@ -117,7 +122,7 @@ enum VoiceEngineLanguageCatalog {
         settings.selectedSpeechModel = route.model
 
         switch route.binding {
-        case .automatic, .whisper:
+        case .automatic, .soniox, .whisper:
             break
         case let .appleSpeech(localeIdentifier):
             settings.selectedAppleSpeechLocaleIdentifier = localeIdentifier
@@ -129,9 +134,7 @@ enum VoiceEngineLanguageCatalog {
     }
 
     private static func routeCandidates(for language: VoiceEngineLanguage) -> [VoiceEngineLanguageRoute] {
-        var routes: [VoiceEngineLanguageRoute] = [
-            Self.route(language, .sonioxV5, .automatic),
-        ]
+        var routes: [VoiceEngineLanguageRoute] = []
 
         if language.id == "en" {
             routes.append(Self.route(language, .parakeetTDTv2, .automatic))

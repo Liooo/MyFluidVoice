@@ -21,6 +21,8 @@ struct SettingsBackupPayload: Codable, Equatable {
     let selectedCohereLanguage: SettingsStore.CohereLanguage
     let selectedNemotronLanguage: SettingsStore.NemotronLanguage?
     let selectedAppleSpeechLocaleIdentifier: String?
+    let sonioxLanguageModeID: String?
+    let sonioxRegionID: String?
     // Optional so backups created before per-input-source model routing still decode.
     // swiftlint:disable:next discouraged_optional_collection
     let speechModelAssignmentsByInputSourceID: [String: SettingsStore.SpeechModel]?

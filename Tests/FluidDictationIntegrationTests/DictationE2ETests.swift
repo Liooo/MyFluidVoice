@@ -2577,6 +2577,8 @@ final class DictationSessionCoordinatorTests: XCTestCase {
             (.cohereTranscribeSixBit, .automatic),
             (.parakeetTDT, .cohere(.english)),
             (.nemotronOffline, .automatic),
+            (.sonioxV5, .automatic),
+            (.appleSpeech, .soniox(.init(languageCode: "en", isStrict: true, region: .global))),
         ]
 
         for (model, binding) in incompatiblePairs {
@@ -2599,6 +2601,9 @@ final class WorkflowSettingsTests: XCTestCase {
     private let escapeExitActionKey = "EscapeExitAction"
     private let outsideClickExitActionKey = "OutsideClickExitAction"
     private let copyWhenNoWritableInputFocusedKey = "CopyWhenNoWritableInputFocused"
+    private let sonioxLanguageModeKey = "SonioxLanguageMode"
+    private let sonioxRegionKey = "SonioxRegion"
+    private let sonioxReceiptKey = "SonioxVerificationReceipt"
 
     func testPerInputSourceModelAssignmentsRoundTripWithoutPruningMissingSources() {
         self.withRestoredDefaults(keys: [self.modelAssignmentsKey]) {
@@ -2726,6 +2731,64 @@ final class WorkflowSettingsTests: XCTestCase {
         XCTAssertNil(decoded.escapeExitAction)
         XCTAssertNil(decoded.outsideClickExitAction)
         XCTAssertNil(decoded.copyWhenNoWritableInputFocused)
+    }
+
+    func testLegacyBackupWithoutSonioxSettingsStillDecodes() throws {
+        let encoded = try JSONEncoder().encode(SettingsStore.shared.makeBackupPayload())
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        object.removeValue(forKey: "sonioxLanguageModeID")
+        object.removeValue(forKey: "sonioxRegionID")
+
+        let decoded = try JSONDecoder().decode(
+            SettingsBackupPayload.self,
+            from: JSONSerialization.data(withJSONObject: object)
+        )
+
+        XCTAssertNil(decoded.sonioxLanguageModeID)
+        XCTAssertNil(decoded.sonioxRegionID)
+    }
+
+    func testBackupIncludesOnlyNonSecretSonioxModeAndRegion() throws {
+        try self.withRestoredDefaults(keys: [
+            self.sonioxLanguageModeKey,
+            self.sonioxRegionKey,
+            self.sonioxReceiptKey,
+        ]) {
+            let settings = SettingsStore.shared
+            settings.sonioxLanguageMode = .preferCurrentInputSource
+            settings.sonioxRegion = .japan
+            settings.sonioxVerificationReceipt = .make(apiKey: "never-export", region: .japan)
+
+            let payload = settings.makeBackupPayload()
+            let encoded = try XCTUnwrap(String(data: JSONEncoder().encode(payload), encoding: .utf8))
+
+            XCTAssertEqual(payload.sonioxLanguageModeID, "preferCurrentInputSource")
+            XCTAssertEqual(payload.sonioxRegionID, "japan")
+            XCTAssertFalse(encoded.contains("never-export"))
+            XCTAssertFalse(encoded.localizedCaseInsensitiveContains("receipt"))
+            XCTAssertFalse(encoded.localizedCaseInsensitiveContains("fingerprint"))
+        }
+    }
+
+    func testUnknownBackupSonioxValuesRestoreSafeDefaults() throws {
+        try self.withRestoredDefaults(keys: [self.sonioxLanguageModeKey, self.sonioxRegionKey]) {
+            let settings = SettingsStore.shared
+            var object = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: JSONEncoder().encode(settings.makeBackupPayload()))
+                    as? [String: Any]
+            )
+            object["sonioxLanguageModeID"] = "future-mode"
+            object["sonioxRegionID"] = "future-region"
+            let payload = try JSONDecoder().decode(
+                SettingsBackupPayload.self,
+                from: JSONSerialization.data(withJSONObject: object)
+            )
+
+            settings.restore(from: payload)
+
+            XCTAssertEqual(settings.sonioxLanguageMode, .currentInputSourceOnly)
+            XCTAssertEqual(settings.sonioxRegion, .global)
+        }
     }
 
     private func withRestoredDefaults(keys: [String], run: () throws -> Void) rethrows {
@@ -2945,6 +3008,51 @@ final class OverlayFailureStateTests: XCTestCase {
         XCTAssertEqual(state.aiProcessingFailureMessage, "AI Enhancement failed")
         XCTAssertTrue(state.canRetryAIProcessingFailure)
     }
+
+    func testRecordingSetupFailureOnlyClosesMatchingOwnedSession() throws {
+        let coordinator = DictationSessionCoordinator()
+        let configuration = try XCTUnwrap(RecordingSpeechConfiguration(
+            inputSourceID: nil,
+            localeIdentifier: "en-US",
+            model: .sonioxV5,
+            languageBinding: .soniox(.init(languageCode: "en", isStrict: true, region: .global))
+        ))
+        let session = coordinator.begin(activationStyle: .toggle, speechConfiguration: configuration)
+        var cancellationCount = 0
+        var overlayCloseCount = 0
+        var shownCopy: SonioxUserFacingErrorCopy?
+        let failure = ASRRecordingFailure(
+            sessionID: session.id,
+            category: .credential,
+            title: "Soniox API Key Required",
+            message: "Check or re-verify the Soniox API key for the selected region in Voice Engine settings.",
+            requestID: nil
+        )
+
+        XCTAssertTrue(DictationRecordingFailureHandler.handle(
+            failure,
+            coordinator: coordinator,
+            cancelFinalization: { cancellationCount += 1 },
+            hideOverlay: { overlayCloseCount += 1 },
+            showFailure: { shownCopy = $0 }
+        ))
+        XCTAssertEqual(coordinator.state(for: session.id), .cancelled)
+        XCTAssertEqual(cancellationCount, 1)
+        XCTAssertEqual(overlayCloseCount, 1)
+        XCTAssertEqual(shownCopy, .init(title: failure.title, message: failure.message))
+        XCTAssertNil(coordinator.outputOutcome(for: session.id))
+        XCTAssertFalse(coordinator.claimOutputDelivery(for: session.id))
+
+        XCTAssertFalse(DictationRecordingFailureHandler.handle(
+            failure,
+            coordinator: coordinator,
+            cancelFinalization: { cancellationCount += 1 },
+            hideOverlay: { overlayCloseCount += 1 },
+            showFailure: { shownCopy = $0 }
+        ))
+        XCTAssertEqual(cancellationCount, 1)
+        XCTAssertEqual(overlayCloseCount, 1)
+    }
 }
 
 @MainActor
@@ -2985,6 +3093,8 @@ final class ForkIdentityTests: XCTestCase {
 
 @MainActor
 final class KeyboardInputSourceRoutingTests: XCTestCase {
+    private let sonioxAvailableModels: [SettingsStore.SpeechModel] = [.appleSpeech, .sonioxV5]
+
     func testInstalledInputSourcesExposeStableUniqueIdentities() {
         let inputSources = KeyboardInputSourceService.installedInputSources()
 
@@ -3172,6 +3282,8 @@ final class KeyboardInputSourceRoutingTests: XCTestCase {
             inputSource: source,
             assignedModel: .whisperSmall,
             globalFallback: fallback,
+            sonioxLanguageMode: .currentInputSourceOnly,
+            sonioxRegion: .global,
             availableModels: [.appleSpeech, .whisperSmall],
             fallbackLocaleIdentifier: "en-US"
         )
@@ -3182,6 +3294,114 @@ final class KeyboardInputSourceRoutingTests: XCTestCase {
         XCTAssertEqual(resolved.languageBinding, .whisper(languageCode: "ja"))
     }
 
+    func testAssignedSonioxSnapshotsJapaneseIMEAndRegion() throws {
+        let source = self.source(
+            id: "com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese",
+            languages: ["ja"]
+        )
+        let fallback = try self.sonioxFallback(mode: .automatic, region: .global)
+
+        let resolved = RecordingSpeechConfigurationResolver.resolve(
+            inputSource: source,
+            assignedModel: .sonioxV5,
+            globalFallback: fallback,
+            sonioxLanguageMode: .currentInputSourceOnly,
+            sonioxRegion: .japan,
+            availableModels: self.sonioxAvailableModels,
+            fallbackLocaleIdentifier: "en-US"
+        )
+
+        XCTAssertEqual(resolved.inputSourceID, source.id)
+        XCTAssertEqual(resolved.localeIdentifier, "ja-JP")
+        XCTAssertEqual(resolved.model, .sonioxV5)
+        XCTAssertEqual(
+            resolved.languageBinding,
+            .soniox(.init(languageCode: "ja", isStrict: true, region: .japan))
+        )
+    }
+
+    func testGlobalSonioxWithoutAssignmentReDerivesBindingFromSampledIME() throws {
+        let fallback = try self.sonioxFallback(mode: .automatic, region: .global)
+        let cases: [(KeyboardInputSourceSnapshot, String)] = [
+            (self.source(
+                id: "com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese",
+                languages: ["ja"]
+            ), "ja"),
+            (self.source(id: "com.apple.keylayout.US", languages: ["en"]), "en"),
+        ]
+
+        for (source, expectedCode) in cases {
+            let resolved = RecordingSpeechConfigurationResolver.resolve(
+                inputSource: source,
+                assignedModel: nil,
+                globalFallback: fallback,
+                sonioxLanguageMode: .currentInputSourceOnly,
+                sonioxRegion: .global,
+                availableModels: self.sonioxAvailableModels,
+                fallbackLocaleIdentifier: "fr-FR"
+            )
+
+            XCTAssertEqual(resolved.inputSourceID, source.id)
+            XCTAssertEqual(
+                resolved.languageBinding,
+                .soniox(.init(languageCode: expectedCode, isStrict: true, region: .global))
+            )
+        }
+    }
+
+    func testUnsupportedSonioxLocaleUsesAutomaticNonStrictBinding() throws {
+        let source = self.source(id: "com.example.Unsupported", languages: ["eo"])
+        let fallback = try self.sonioxFallback(mode: .automatic, region: .global)
+
+        let resolved = RecordingSpeechConfigurationResolver.resolve(
+            inputSource: source,
+            assignedModel: .sonioxV5,
+            globalFallback: fallback,
+            sonioxLanguageMode: .currentInputSourceOnly,
+            sonioxRegion: .japan,
+            availableModels: self.sonioxAvailableModels,
+            fallbackLocaleIdentifier: "eo"
+        )
+
+        XCTAssertEqual(
+            resolved.languageBinding,
+            .soniox(.init(languageCode: nil, isStrict: false, region: .japan))
+        )
+    }
+
+    func testResolvedSonioxConfigurationIsImmutableAcrossLaterSnapshots() throws {
+        let fallback = try self.sonioxFallback(mode: .automatic, region: .global)
+        let japanese = self.source(
+            id: "com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese",
+            languages: ["ja"]
+        )
+        let first = RecordingSpeechConfigurationResolver.resolve(
+            inputSource: japanese,
+            assignedModel: .sonioxV5,
+            globalFallback: fallback,
+            sonioxLanguageMode: .currentInputSourceOnly,
+            sonioxRegion: .japan,
+            availableModels: self.sonioxAvailableModels,
+            fallbackLocaleIdentifier: "en-US"
+        )
+
+        _ = RecordingSpeechConfigurationResolver.resolve(
+            inputSource: self.source(id: "com.apple.keylayout.US", languages: ["en"]),
+            assignedModel: .sonioxV5,
+            globalFallback: fallback,
+            sonioxLanguageMode: .automatic,
+            sonioxRegion: .global,
+            availableModels: self.sonioxAvailableModels,
+            fallbackLocaleIdentifier: "en-US"
+        )
+
+        XCTAssertEqual(first.localeIdentifier, "ja-JP")
+        XCTAssertEqual(
+            first.languageBinding,
+            .soniox(.init(languageCode: "ja", isStrict: true, region: .japan))
+        )
+    }
+
     func testGlobalFallbackSnapshotsWhisperLanguageWithoutMutatingSettings() throws {
         let configuration = try XCTUnwrap(
             RecordingSpeechConfigurationResolver.globalFallbackConfiguration(
@@ -3189,7 +3409,9 @@ final class KeyboardInputSourceRoutingTests: XCTestCase {
                 selectedLanguageID: "ja",
                 appleLocaleIdentifier: "en-US",
                 cohereLanguage: .english,
-                nemotronLanguage: .english
+                nemotronLanguage: .english,
+                sonioxLanguageMode: .currentInputSourceOnly,
+                sonioxRegion: .global
             )
         )
 
@@ -3205,7 +3427,9 @@ final class KeyboardInputSourceRoutingTests: XCTestCase {
                 selectedLanguageID: "en",
                 appleLocaleIdentifier: "fr-CA",
                 cohereLanguage: .english,
-                nemotronLanguage: .english
+                nemotronLanguage: .english,
+                sonioxLanguageMode: .currentInputSourceOnly,
+                sonioxRegion: .global
             )
         )
         let cohere = try XCTUnwrap(
@@ -3214,7 +3438,9 @@ final class KeyboardInputSourceRoutingTests: XCTestCase {
                 selectedLanguageID: "es",
                 appleLocaleIdentifier: "en-US",
                 cohereLanguage: .spanish,
-                nemotronLanguage: .english
+                nemotronLanguage: .english,
+                sonioxLanguageMode: .currentInputSourceOnly,
+                sonioxRegion: .global
             )
         )
 
@@ -3230,7 +3456,9 @@ final class KeyboardInputSourceRoutingTests: XCTestCase {
                 selectedLanguageID: "en",
                 appleLocaleIdentifier: "en-US",
                 cohereLanguage: .english,
-                nemotronLanguage: .english
+                nemotronLanguage: .english,
+                sonioxLanguageMode: .currentInputSourceOnly,
+                sonioxRegion: .global
             )
         )
     }
@@ -3251,6 +3479,8 @@ final class KeyboardInputSourceRoutingTests: XCTestCase {
             inputSource: source,
             assignedModel: nil,
             globalFallback: fallback,
+            sonioxLanguageMode: .currentInputSourceOnly,
+            sonioxRegion: .global,
             availableModels: [.appleSpeech, .whisperSmall],
             fallbackLocaleIdentifier: "en-US"
         )
@@ -3277,6 +3507,8 @@ final class KeyboardInputSourceRoutingTests: XCTestCase {
             inputSource: source,
             assignedModel: .whisperSmall,
             globalFallback: fallback,
+            sonioxLanguageMode: .currentInputSourceOnly,
+            sonioxRegion: .global,
             availableModels: [.appleSpeech],
             fallbackLocaleIdentifier: "en-US"
         )
@@ -3284,6 +3516,8 @@ final class KeyboardInputSourceRoutingTests: XCTestCase {
             inputSource: source,
             assignedModel: .parakeetRealtime,
             globalFallback: fallback,
+            sonioxLanguageMode: .currentInputSourceOnly,
+            sonioxRegion: .global,
             availableModels: [.appleSpeech, .parakeetRealtime],
             fallbackLocaleIdentifier: "en-US"
         )
@@ -3311,6 +3545,8 @@ final class KeyboardInputSourceRoutingTests: XCTestCase {
             inputSource: japaneseSource,
             assignedModel: .whisperSmall,
             globalFallback: fallback,
+            sonioxLanguageMode: .currentInputSourceOnly,
+            sonioxRegion: .global,
             availableModels: [.appleSpeech, .whisperSmall],
             fallbackLocaleIdentifier: "en-US"
         )
@@ -3318,6 +3554,8 @@ final class KeyboardInputSourceRoutingTests: XCTestCase {
             inputSource: englishSource,
             assignedModel: .appleSpeech,
             globalFallback: fallback,
+            sonioxLanguageMode: .currentInputSourceOnly,
+            sonioxRegion: .global,
             availableModels: [.appleSpeech, .whisperSmall],
             fallbackLocaleIdentifier: "en-US"
         )
@@ -3334,6 +3572,21 @@ final class KeyboardInputSourceRoutingTests: XCTestCase {
         languages: [String] = []
     ) -> KeyboardInputSourceSnapshot {
         KeyboardInputSourceSnapshot(id: id, localizedName: name, languages: languages)
+    }
+
+    private func sonioxFallback(
+        mode: SettingsStore.SonioxLanguageMode,
+        region: SettingsStore.SonioxRegion
+    ) throws -> RecordingSpeechConfiguration {
+        try XCTUnwrap(RecordingSpeechConfigurationResolver.globalFallbackConfiguration(
+            model: .sonioxV5,
+            selectedLanguageID: "en",
+            appleLocaleIdentifier: "en-US",
+            cohereLanguage: .english,
+            nemotronLanguage: .english,
+            sonioxLanguageMode: mode,
+            sonioxRegion: region
+        ))
     }
 }
 
@@ -3407,6 +3660,28 @@ final class RecordingSpeechSessionSelectionTests: XCTestCase {
         ))
 
         XCTAssertNotEqual(englishSelection.providerKey, japaneseSelection.providerKey)
+    }
+
+    func testSonioxBindingIDIncludesOnlyImmutableScope() throws {
+        let binding = VoiceEngineLanguageRoute.LanguageBinding.soniox(.init(
+            languageCode: "ja",
+            isStrict: true,
+            region: .japan
+        ))
+        let configuration = try XCTUnwrap(RecordingSpeechConfiguration(
+            inputSourceID: nil,
+            localeIdentifier: "ja-JP",
+            model: .sonioxV5,
+            languageBinding: binding
+        ))
+        let selection = try XCTUnwrap(RecordingSpeechSessionSelection(
+            sessionID: RecordingSessionID(),
+            configuration: configuration
+        ))
+
+        XCTAssertEqual(binding.id, "soniox-japan-ja-strict")
+        XCTAssertEqual(selection.providerKey, "soniox-v5:soniox-japan-ja-strict")
+        XCTAssertFalse(binding.id.localizedCaseInsensitiveContains("key"))
     }
 
     func testQwenSelectionIsRejectedWhileRuntimeIsUnavailable() throws {

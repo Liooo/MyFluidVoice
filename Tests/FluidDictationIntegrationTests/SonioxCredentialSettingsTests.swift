@@ -4,6 +4,95 @@ import XCTest
 
 @MainActor
 final class SonioxCredentialSettingsTests: XCTestCase {
+    private let languageModeKey = "SonioxLanguageMode"
+    private let regionKey = "SonioxRegion"
+    private let receiptKey = "SonioxVerificationReceipt"
+
+    func testSonioxSettingsDefaultToCurrentInputSourceOnlyAndGlobal() {
+        self.withRestoredDefaults {
+            XCTAssertEqual(SettingsStore.shared.sonioxLanguageMode, .currentInputSourceOnly)
+            XCTAssertEqual(SettingsStore.shared.sonioxRegion, .global)
+            XCTAssertNil(SettingsStore.shared.sonioxVerificationReceipt)
+        }
+    }
+
+    func testRegionChangeKeepsCredentialAndClearsVerificationReceipt() {
+        self.withRestoredDefaults {
+            let credentialStore = FakeCredentialStore(initialValue: "retained-value")
+            let settings = SettingsStore.shared
+            settings.sonioxVerificationReceipt = .make(apiKey: "retained-value", region: .global)
+
+            settings.sonioxRegion = .japan
+
+            XCTAssertEqual(credentialStore.value, "retained-value")
+            XCTAssertNil(settings.sonioxVerificationReceipt)
+        }
+    }
+
+    func testFreshRecordingProviderReadsCredentialOnceAndIsNeverCached() throws {
+        try self.withRestoredDefaults {
+            let credentialStore = FakeCredentialStore(initialValue: "snapshot-value")
+            SettingsStore.shared.sonioxVerificationReceipt = .make(
+                apiKey: "snapshot-value",
+                region: .global
+            )
+            let service = ASRService(
+                sonioxCredentialStore: credentialStore,
+                sonioxTransportFactory: { _ in InertSonioxTransport() }
+            )
+            let configuration = try XCTUnwrap(RecordingSpeechConfiguration(
+                inputSourceID: "com.apple.keylayout.US",
+                localeIdentifier: "en-US",
+                model: .sonioxV5,
+                languageBinding: .soniox(.init(languageCode: "en", isStrict: true, region: .global))
+            ))
+            let selection = try XCTUnwrap(RecordingSpeechSessionSelection(
+                sessionID: RecordingSessionID(),
+                configuration: configuration
+            ))
+
+            let first = try service.makeRecordingProvider(for: selection)
+            let second = try service.makeRecordingProvider(for: selection)
+
+            XCTAssertEqual(credentialStore.fetchCount, 2)
+            XCTAssertFalse((first as AnyObject) === (second as AnyObject))
+            XCTAssertFalse(selection.providerKey.contains("snapshot-value"))
+            XCTAssertFalse(String(describing: configuration).contains("snapshot-value"))
+        }
+    }
+
+    func testConstructedProviderSnapshotsCredentialBeforeKeychainChanges() async throws {
+        try await self.withRestoredDefaults {
+            let credentialStore = FakeCredentialStore(initialValue: "first-value")
+            SettingsStore.shared.sonioxVerificationReceipt = .make(apiKey: "first-value", region: .global)
+            let transport = InertSonioxTransport()
+            let service = ASRService(
+                sonioxCredentialStore: credentialStore,
+                sonioxTransportFactory: { _ in transport }
+            )
+            let configuration = try XCTUnwrap(RecordingSpeechConfiguration(
+                inputSourceID: nil,
+                localeIdentifier: "en-US",
+                model: .sonioxV5,
+                languageBinding: .soniox(.init(languageCode: "en", isStrict: true, region: .global))
+            ))
+            let selection = try XCTUnwrap(RecordingSpeechSessionSelection(
+                sessionID: RecordingSessionID(),
+                configuration: configuration
+            ))
+            let provider = try service.makeRecordingProvider(for: selection)
+
+            credentialStore.value = "second-value"
+            try await provider.prepare(progressHandler: nil)
+            _ = try await provider.transcribeStreaming([0])
+
+            let start = try XCTUnwrap(transport.sentFrames.first?.textValue)
+            let object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(start.utf8)) as? [String: Any])
+            XCTAssertEqual(object["api_key"] as? String, "first-value")
+            XCTAssertFalse(start.contains("second-value"))
+        }
+    }
+
     func testVerificationUsesRegionModelsEndpointBearerHeaderGETAndTenSecondTimeout() async throws {
         let transport = RecordingTransport(result: .success(modelsResponse()))
         let verifier = SonioxCredentialVerifier(transport: transport, sleep: immediateSleep)
@@ -327,6 +416,44 @@ final class SonioxCredentialSettingsTests: XCTestCase {
         XCTAssertEqual(deleted.keys.sorted(), ["asr:other", "asr:soniox"])
         assertReservedKeysAreUnchanged(deleted)
     }
+
+    private func withRestoredDefaults<T>(_ operation: () throws -> T) rethrows -> T {
+        let defaults = UserDefaults.standard
+        let keys = [self.languageModeKey, self.regionKey, self.receiptKey]
+        let snapshot = Dictionary(uniqueKeysWithValues: keys.compactMap { key in
+            defaults.object(forKey: key).map { (key, $0) }
+        })
+        defer {
+            for key in keys {
+                if let value = snapshot[key] {
+                    defaults.set(value, forKey: key)
+                } else {
+                    defaults.removeObject(forKey: key)
+                }
+            }
+        }
+        keys.forEach(defaults.removeObject(forKey:))
+        return try operation()
+    }
+
+    private func withRestoredDefaults<T>(_ operation: () async throws -> T) async rethrows -> T {
+        let defaults = UserDefaults.standard
+        let keys = [self.languageModeKey, self.regionKey, self.receiptKey]
+        let snapshot = Dictionary(uniqueKeysWithValues: keys.compactMap { key in
+            defaults.object(forKey: key).map { (key, $0) }
+        })
+        defer {
+            for key in keys {
+                if let value = snapshot[key] {
+                    defaults.set(value, forKey: key)
+                } else {
+                    defaults.removeObject(forKey: key)
+                }
+            }
+        }
+        keys.forEach(defaults.removeObject(forKey:))
+        return try await operation()
+    }
 }
 
 private let immediateSleep: SonioxCredentialSleep = { _ in
@@ -377,13 +504,15 @@ private final class FakeCredentialStore: SonioxCredentialStoring {
     var value: String?
     private(set) var replaceCount = 0
     private(set) var removeCount = 0
+    private(set) var fetchCount = 0
 
     init(initialValue: String?) {
         self.value = initialValue
     }
 
     func fetchAPIKey() throws -> String? {
-        self.value
+        self.fetchCount += 1
+        return self.value
     }
 
     func replaceAPIKey(_ value: String) throws {
@@ -394,6 +523,37 @@ private final class FakeCredentialStore: SonioxCredentialStoring {
     func removeAPIKey() throws {
         self.value = nil
         self.removeCount += 1
+    }
+}
+
+private final class InertSonioxTransport: SonioxWebSocketTransport, @unchecked Sendable {
+    private let lock = NSLock()
+    private var frames: [SonioxWebSocketFrame] = []
+
+    var sentFrames: [SonioxWebSocketFrame] {
+        self.lock.withLock { self.frames }
+    }
+
+    func start() async throws {}
+
+    func send(_ frame: SonioxWebSocketFrame) async throws {
+        self.lock.withLock { self.frames.append(frame) }
+    }
+
+    func receive() async throws -> SonioxWebSocketFrame {
+        try await Task.sleep(for: .seconds(3600))
+        throw CancellationError()
+    }
+
+    func close(_ disposition: SonioxTransportCloseDisposition) {
+        _ = disposition
+    }
+}
+
+private extension SonioxWebSocketFrame {
+    var textValue: String? {
+        guard case let .text(value) = self else { return nil }
+        return value
     }
 }
 

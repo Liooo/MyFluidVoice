@@ -1,6 +1,6 @@
 import Foundation
 
-struct RecordingSessionID: Hashable {
+nonisolated struct RecordingSessionID: Hashable, Sendable {
     let rawValue: UUID
 
     init(rawValue: UUID = UUID()) {
@@ -51,6 +51,7 @@ struct RecordingSpeechConfiguration: Equatable {
              (.nemotronOffline, .nemotron),
              (.nemotronStreaming, .nemotron),
              (.nemotronStreaming320, .nemotron),
+             (.sonioxV5, .soniox),
              (.whisperTiny, .whisper),
              (.whisperBase, .whisper),
              (.whisperSmall, .whisper),

@@ -163,11 +163,120 @@ final class SonioxScopeRoutingTests: XCTestCase {
         do {
             try await asr.clearModelCache(for: .sonioxV5)
             XCTFail("Expected hidden cloud model cache request to fail")
+        } catch let error as ASRModelLifecycleError {
+            XCTAssertEqual(error, .configureCredentialsInVoiceEngine(.sonioxV5))
+            XCTAssertTrue(error.localizedDescription.contains("Voice Engine"))
         } catch {
-            let error = error as NSError
-            XCTAssertEqual(error.domain, "ASRService.LocalOnly")
-            XCTAssertEqual(error.code, -2100)
+            XCTFail("Expected typed cloud lifecycle error, got \(type(of: error))")
         }
+
+        do {
+            try await asr.downloadModel(.sonioxV5, progressHandler: nil)
+            XCTFail("Expected hidden cloud download request to fail")
+        } catch let error as ASRModelLifecycleError {
+            XCTAssertEqual(error, .configureCredentialsInVoiceEngine(.sonioxV5))
+        } catch {
+            XCTFail("Expected typed cloud lifecycle error, got \(type(of: error))")
+        }
+    }
+
+    func testNonDictationRoutesNeverFetchSonioxCredentialOrBuildSonioxProvider() async throws {
+        let credentialStore = CountingSonioxCredentialStore(value: "unused-value")
+        let transportFactory = CountingSonioxTransportFactory()
+        let localFactory = CountingLocalProviderFactory()
+        let asr = ASRService(
+            localProviderFactory: localFactory.make(configuration:),
+            sonioxCredentialStore: credentialStore,
+            sonioxTransportFactory: transportFactory.make
+        )
+        let configuration = try XCTUnwrap(RecordingSpeechConfiguration(
+            inputSourceID: nil,
+            localeIdentifier: "en-US",
+            model: .appleSpeech,
+            languageBinding: .appleSpeech(localeIdentifier: "en-US")
+        ))
+
+        _ = try await asr.preparedLocalProvider(for: configuration)
+
+        XCTAssertEqual(credentialStore.fetchCount, 0)
+        XCTAssertEqual(transportFactory.makeCount, 0)
+        XCTAssertEqual(localFactory.createdProviderCount, 1)
+    }
+
+    func testFailedSonioxDictationDoesNotInvokeLocalFallbackFactory() async throws {
+        let credentialStore = CountingSonioxCredentialStore(value: nil)
+        let localFactory = CountingLocalProviderFactory()
+        let asr = ASRService(
+            localProviderFactory: localFactory.make(configuration:),
+            sonioxCredentialStore: credentialStore,
+            sonioxTransportFactory: { _ in ScopeInertSonioxTransport() }
+        )
+        asr.micStatus = .authorized
+        let sessionID = RecordingSessionID()
+        let configuration = try XCTUnwrap(RecordingSpeechConfiguration(
+            inputSourceID: nil,
+            localeIdentifier: "en-US",
+            model: .sonioxV5,
+            languageBinding: .soniox(.init(languageCode: "en", isStrict: true, region: .global))
+        ))
+        var failures: [ASRRecordingFailure] = []
+        asr.setRecordingFailureHandler { failures.append($0) }
+
+        let outcome = await asr.start(sessionID: sessionID, speechConfiguration: configuration)
+
+        XCTAssertEqual(outcome, .failed)
+        XCTAssertEqual(credentialStore.fetchCount, 1)
+        XCTAssertEqual(localFactory.createdProviderCount, 0)
+        XCTAssertEqual(failures.map(\.sessionID), [sessionID])
+        XCTAssertEqual(failures.map(\.category), [.credential])
+        XCTAssertFalse(asr.hasActiveRecordingSession)
+        XCTAssertNil(asr.activeRecordingSpeechModel)
+    }
+
+    func testReceiptMismatchEmitsOneSanitizedOwnedSessionFailure() async throws {
+        let receiptKey = "SonioxVerificationReceipt"
+        let defaults = UserDefaults.standard
+        let priorReceipt = defaults.object(forKey: receiptKey)
+        defer { self.restore(priorReceipt, forKey: receiptKey, defaults: defaults) }
+        SettingsStore.shared.sonioxVerificationReceipt = .make(apiKey: "different-value", region: .global)
+        let credentialStore = CountingSonioxCredentialStore(value: "candidate-value")
+        let localFactory = CountingLocalProviderFactory()
+        let asr = ASRService(
+            localProviderFactory: localFactory.make(configuration:),
+            sonioxCredentialStore: credentialStore,
+            sonioxTransportFactory: { _ in ScopeInertSonioxTransport() }
+        )
+        asr.micStatus = .authorized
+        let sessionID = RecordingSessionID()
+        let configuration = try XCTUnwrap(RecordingSpeechConfiguration(
+            inputSourceID: nil,
+            localeIdentifier: "en-US",
+            model: .sonioxV5,
+            languageBinding: .soniox(.init(languageCode: "en", isStrict: true, region: .global))
+        ))
+        var failures: [ASRRecordingFailure] = []
+        var activeModelDuringFailure: SettingsStore.SpeechModel?
+        asr.setRecordingFailureHandler {
+            activeModelDuringFailure = asr.activeRecordingSpeechModel
+            failures.append($0)
+        }
+
+        let outcome = await asr.start(sessionID: sessionID, speechConfiguration: configuration)
+
+        XCTAssertEqual(outcome, .failed)
+        XCTAssertEqual(activeModelDuringFailure, .sonioxV5)
+        XCTAssertEqual(failures.count, 1)
+        XCTAssertEqual(failures.first?.sessionID, sessionID)
+        XCTAssertEqual(failures.first?.category, .credential)
+        XCTAssertNil(failures.first?.requestID)
+        let presented = failures.map { "\($0.title) \($0.message)" }.joined()
+        XCTAssertFalse(presented.contains("candidate-value"))
+        XCTAssertFalse(presented.contains("different-value"))
+        XCTAssertFalse(presented.contains("server prose"))
+        XCTAssertFalse(presented.contains("transcript"))
+        XCTAssertEqual(credentialStore.fetchCount, 1)
+        XCTAssertEqual(localFactory.createdProviderCount, 0)
+        XCTAssertFalse(asr.hasActiveRecordingSession)
     }
 
     func testDictionaryTrainingUsesLocalFallbackWhenGlobalModelIsSoniox() async {
@@ -415,6 +524,62 @@ private final class CountingLocalProvider: TranscriptionProvider {
     func transcribeFile(at fileURL: URL) async throws -> ASRTranscriptionResult {
         self.owner.transcribedFile()
         return ASRTranscriptionResult(text: "local file", confidence: 0.95)
+    }
+}
+
+@MainActor
+private final class CountingSonioxCredentialStore: SonioxCredentialStoring {
+    var value: String?
+    private(set) var fetchCount = 0
+
+    init(value: String?) {
+        self.value = value
+    }
+
+    func fetchAPIKey() throws -> String? {
+        self.fetchCount += 1
+        return self.value
+    }
+
+    func replaceAPIKey(_ value: String) throws {
+        self.value = value
+    }
+
+    func removeAPIKey() throws {
+        self.value = nil
+    }
+}
+
+private final class CountingSonioxTransportFactory: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    var makeCount: Int {
+        self.lock.withLock { self.count }
+    }
+
+    func make(_ endpoint: URL) -> any SonioxWebSocketTransport {
+        _ = endpoint
+        self.lock.withLock { self.count += 1 }
+        return ScopeInertSonioxTransport()
+    }
+}
+
+private final class ScopeInertSonioxTransport: SonioxWebSocketTransport, @unchecked Sendable {
+    func start() async throws {
+        // No-op transport used to prove the network boundary stays untouched.
+    }
+
+    func send(_ frame: SonioxWebSocketFrame) async throws {
+        _ = frame
+    }
+
+    func receive() async throws -> SonioxWebSocketFrame {
+        throw CancellationError()
+    }
+
+    func close(_ disposition: SonioxTransportCloseDisposition) {
+        _ = disposition
     }
 }
 

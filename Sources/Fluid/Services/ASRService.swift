@@ -126,6 +126,25 @@ enum AudioCaptureStartOutcome: Equatable {
     case failed
 }
 
+nonisolated struct ASRRecordingFailure: Equatable, Sendable {
+    let sessionID: RecordingSessionID
+    let category: SonioxFailureCategory
+    let title: String
+    let message: String
+    let requestID: String?
+}
+
+nonisolated enum ASRModelLifecycleError: Error, Equatable, LocalizedError {
+    case configureCredentialsInVoiceEngine(SettingsStore.SpeechModel)
+
+    var errorDescription: String? {
+        switch self {
+        case .configureCredentialsInVoiceEngine:
+            return "Configure cloud speech credentials in Voice Engine settings."
+        }
+    }
+}
+
 struct RecordingSpeechSessionSelection: Equatable {
     let sessionID: RecordingSessionID
     let configuration: RecordingSpeechConfiguration
@@ -399,6 +418,23 @@ final class ASRService: ObservableObject {
     private var cachedRecordingProviderKey: String?
     private var readyProviderKey: String?
     private let localProviderFactory: ((RecordingSpeechConfiguration) throws -> TranscriptionProvider)?
+    private let sonioxCredentialStore: any SonioxCredentialStoring
+    private let sonioxTransportFactory: SonioxTransportFactory
+    private var recordingFailureHandler: (@MainActor (ASRRecordingFailure) -> Void)?
+
+    var activeRecordingSpeechModel: SettingsStore.SpeechModel? {
+        self.activeRecordingSelection?.configuration.model
+    }
+
+    var hasActiveRecordingSession: Bool {
+        self.activeRecordingSelection != nil
+    }
+
+    func setRecordingFailureHandler(
+        _ handler: (@MainActor (ASRRecordingFailure) -> Void)?
+    ) {
+        self.recordingFailureHandler = handler
+    }
 
     /// Prevent concurrent provider.prepare() calls (download/load) from overlapping.
     /// Subsequent callers await the in-flight task.
@@ -521,18 +557,60 @@ final class ASRService: ObservableObject {
             ?? SettingsStore.shared.selectedSpeechModel
     }
 
-    private func makeRecordingProvider(
+    func makeRecordingProvider(
         for selection: RecordingSpeechSessionSelection
-    ) -> TranscriptionProvider? {
+    ) throws -> TranscriptionProvider {
+        if case let (.sonioxV5, .soniox(binding)) = (
+            selection.configuration.model,
+            selection.configuration.languageBinding
+        ) {
+            guard let apiKey = try self.sonioxCredentialStore.fetchAPIKey(),
+                  apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            else {
+                throw SonioxCredentialError.apiKeyRequired
+            }
+            let expectedReceipt = SonioxVerificationReceipt.make(apiKey: apiKey, region: binding.region)
+            guard SettingsStore.shared.sonioxVerificationReceipt == expectedReceipt else {
+                throw SonioxCredentialError.notVerifiedForRegion(binding.region)
+            }
+            return SonioxProvider(
+                apiKey: apiKey,
+                binding: binding,
+                transportFactory: self.sonioxTransportFactory
+            )
+        }
         if self.cachedRecordingProviderKey == selection.providerKey,
            let cachedRecordingProvider = self.cachedRecordingProvider
         {
             return cachedRecordingProvider
         }
-        let provider = try? self.makeLocalProvider(for: selection.configuration)
+        let provider = try self.makeLocalProvider(for: selection.configuration)
         self.cachedRecordingProvider = provider
-        self.cachedRecordingProviderKey = provider == nil ? nil : selection.providerKey
+        self.cachedRecordingProviderKey = selection.providerKey
         return provider
+    }
+
+    private func emitRecordingSetupFailure(
+        _ error: Error,
+        sessionID: RecordingSessionID
+    ) {
+        let category: SonioxFailureCategory
+        let requestID: String?
+        if let credentialError = error as? SonioxCredentialError {
+            category = credentialError.category
+            requestID = SonioxErrorMapper.sanitizedRequestID(credentialError.requestID)
+        } else {
+            category = .credential
+            requestID = nil
+        }
+        let copy = SonioxErrorMapper.userFacingCopy(for: category)
+        self.recordingFailureHandler?(ASRRecordingFailure(
+            sessionID: sessionID,
+            category: category,
+            title: copy.title,
+            message: copy.message,
+            requestID: requestID
+        ))
     }
 
     private func makeLocalProvider(
@@ -840,11 +918,7 @@ final class ASRService: ObservableObject {
     /// Used for downloading models without switching the active model.
     private func getProvider(for model: SettingsStore.SpeechModel) throws -> TranscriptionProvider {
         guard !model.isCloudSpeechModel else {
-            throw NSError(
-                domain: "ASRService.LocalOnly",
-                code: -2100,
-                userInfo: [NSLocalizedDescriptionKey: "Cloud speech models do not have local model artifacts."]
-            )
+            throw ASRModelLifecycleError.configureCredentialsInVoiceEngine(model)
         }
         switch model {
         case .appleSpeechAnalyzer:
@@ -1509,9 +1583,13 @@ final class ASRService: ObservableObject {
     }()
 
     init(
-        localProviderFactory: ((RecordingSpeechConfiguration) throws -> TranscriptionProvider)? = nil
+        localProviderFactory: ((RecordingSpeechConfiguration) throws -> TranscriptionProvider)? = nil,
+        sonioxCredentialStore: (any SonioxCredentialStoring)? = nil,
+        sonioxTransportFactory: @escaping SonioxTransportFactory = URLSessionSonioxWebSocketTransport.make
     ) {
         self.localProviderFactory = localProviderFactory
+        self.sonioxCredentialStore = sonioxCredentialStore ?? KeychainSonioxCredentialStore()
+        self.sonioxTransportFactory = sonioxTransportFactory
         // CRITICAL FIX: Do NOT call any framework-triggering APIs here!
         // This includes:
         // - AVCaptureDevice.authorizationStatus (triggers AVFCapture/CoreAudio)
@@ -2056,8 +2134,7 @@ final class ASRService: ObservableObject {
         guard let selection = RecordingSpeechSessionSelection(
             sessionID: resolvedSessionID,
             configuration: resolvedConfiguration
-        ), let provider = self.makeRecordingProvider(for: selection),
-        self.recordingSpeechSessionState.begin(
+        ), self.recordingSpeechSessionState.begin(
             sessionID: resolvedSessionID,
             configuration: resolvedConfiguration
         ) else {
@@ -2065,6 +2142,16 @@ final class ASRService: ObservableObject {
                 "START() blocked - speech configuration is unavailable for \(resolvedConfiguration.model.displayName)",
                 source: "ASRService"
             )
+            return .failed
+        }
+        let provider: TranscriptionProvider
+        do {
+            provider = try self.makeRecordingProvider(for: selection)
+        } catch {
+            if resolvedConfiguration.model == .sonioxV5 {
+                self.emitRecordingSetupFailure(error, sessionID: resolvedSessionID)
+            }
+            self.clearRecordingSession(matching: resolvedSessionID)
             return .failed
         }
         self.activeRecordingProvider = provider

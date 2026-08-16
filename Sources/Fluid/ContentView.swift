@@ -46,6 +46,27 @@ enum AIProcessingError: LocalizedError {
 }
 
 @MainActor
+enum DictationRecordingFailureHandler {
+    @discardableResult
+    static func handle(
+        _ failure: ASRRecordingFailure,
+        coordinator: DictationSessionCoordinator,
+        cancelFinalization: () -> Void,
+        hideOverlay: () -> Void,
+        showFailure: (SonioxUserFacingErrorCopy) -> Void
+    ) -> Bool {
+        guard coordinator.currentSession?.id == failure.sessionID,
+              coordinator.cancel(for: failure.sessionID)
+        else { return false }
+
+        cancelFinalization()
+        hideOverlay()
+        showFailure(.init(title: failure.title, message: failure.message))
+        return true
+    }
+}
+
+@MainActor
 private final class DictationAIStreamPreviewBuffer {
     private var chunks: [String] = []
     private var lastUIUpdate = CFAbsoluteTimeGetCurrent()
@@ -3644,8 +3665,9 @@ struct ContentView: View {
                     break
                 }
             } else {
-                self.dictationSessionCoordinator.cancel(for: session.id)
-                self.menuBarManager.hideRecordingOverlayImmediately(reason: "asr_start_failed")
+                if self.dictationSessionCoordinator.cancel(for: session.id) {
+                    self.menuBarManager.hideRecordingOverlayImmediately(reason: "asr_start_failed")
+                }
             }
         }
     }
@@ -4338,11 +4360,23 @@ extension ContentView {
         let assignedModel = inputSource.flatMap {
             SettingsStore.shared.speechModelAssignment(forInputSourceID: $0.id)
         }
-        let fallback = RecordingSpeechConfigurationResolver.currentDictationFallbackConfiguration()
+        let sonioxLanguageMode = SettingsStore.shared.sonioxLanguageMode
+        let sonioxRegion = SettingsStore.shared.sonioxRegion
+        let fallback = RecordingSpeechConfigurationResolver.globalFallbackConfiguration(
+            model: SettingsStore.shared.selectedSpeechModel,
+            selectedLanguageID: SettingsStore.shared.onboardingSelectedLanguageID,
+            appleLocaleIdentifier: SettingsStore.shared.selectedAppleSpeechLocale.identifier,
+            cohereLanguage: SettingsStore.shared.selectedCohereLanguage,
+            nemotronLanguage: SettingsStore.shared.selectedNemotronLanguage,
+            sonioxLanguageMode: sonioxLanguageMode,
+            sonioxRegion: sonioxRegion
+        ) ?? RecordingSpeechConfigurationResolver.currentLocalFallbackConfiguration()
         let configuration = RecordingSpeechConfigurationResolver.resolve(
             inputSource: inputSource,
             assignedModel: assignedModel,
-            globalFallback: fallback
+            globalFallback: fallback,
+            sonioxLanguageMode: sonioxLanguageMode,
+            sonioxRegion: sonioxRegion
         )
         let activationStyle: DictationActivationStyle = activationStyleOverride ?? (
             self.hotkeyMode == .toggle ? .toggle : .pushToTalk
@@ -4352,6 +4386,7 @@ extension ContentView {
             speechConfiguration: configuration,
             exitPoliciesEnabled: exitPoliciesEnabled
         )
+        self.installRecordingFailureHandler()
         DebugLogger.shared.info(
             "Dictation session started id=\(session.id.rawValue.uuidString) " +
                 "source=\(configuration.inputSourceID ?? "global") " +
@@ -4360,6 +4395,29 @@ extension ContentView {
             source: "ContentView"
         )
         return session
+    }
+
+    private func installRecordingFailureHandler() {
+        self.asr.setRecordingFailureHandler { failure in
+            _ = DictationRecordingFailureHandler.handle(
+                failure,
+                coordinator: self.dictationSessionCoordinator,
+                cancelFinalization: {
+                    self.cancelTrackedRecordingFinalization()
+                    self.cancelPrewarmDictationIfNeeded()
+                    self.clearActiveRecordingMode()
+                },
+                hideOverlay: {
+                    self.menuBarManager.setProcessing(false)
+                    self.menuBarManager.hideRecordingOverlayImmediately(reason: "soniox_setup_failed")
+                },
+                showFailure: { copy in
+                    self.asr.errorTitle = copy.title
+                    self.asr.errorMessage = copy.message
+                    self.asr.showError = true
+                }
+            )
+        }
     }
 
     private func startScopedAuxiliaryCapture(
@@ -4389,10 +4447,11 @@ extension ContentView {
                     break
                 }
             } else {
-                self.dictationSessionCoordinator.cancel(for: session.id)
-                self.menuBarManager.hideRecordingOverlayImmediately(
-                    reason: "\(mode.rawValue)_asr_start_failed"
-                )
+                if self.dictationSessionCoordinator.cancel(for: session.id) {
+                    self.menuBarManager.hideRecordingOverlayImmediately(
+                        reason: "\(mode.rawValue)_asr_start_failed"
+                    )
+                }
             }
         }
     }
@@ -4457,8 +4516,9 @@ extension ContentView {
                     break
                 }
             } else {
-                self.dictationSessionCoordinator.cancel(for: session.id)
-                self.menuBarManager.hideRecordingOverlayImmediately(reason: "asr_start_failed")
+                if self.dictationSessionCoordinator.cancel(for: session.id) {
+                    self.menuBarManager.hideRecordingOverlayImmediately(reason: "asr_start_failed")
+                }
             }
             DebugLogger.shared.benchmark(
                 "APP_BENCH",

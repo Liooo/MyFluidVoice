@@ -1862,6 +1862,46 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    var sonioxLanguageMode: SonioxLanguageMode {
+        get {
+            self.defaults.string(forKey: Keys.sonioxLanguageMode)
+                .flatMap(SonioxLanguageMode.init(rawValue:)) ?? .currentInputSourceOnly
+        }
+        set {
+            guard newValue != self.sonioxLanguageMode else { return }
+            objectWillChange.send()
+            self.defaults.set(newValue.rawValue, forKey: Keys.sonioxLanguageMode)
+        }
+    }
+
+    var sonioxRegion: SonioxRegion {
+        get {
+            self.defaults.string(forKey: Keys.sonioxRegion)
+                .flatMap(SonioxRegion.init(rawValue:)) ?? .global
+        }
+        set {
+            guard newValue != self.sonioxRegion else { return }
+            objectWillChange.send()
+            self.defaults.set(newValue.rawValue, forKey: Keys.sonioxRegion)
+            self.sonioxVerificationReceipt = nil
+        }
+    }
+
+    var sonioxVerificationReceipt: SonioxVerificationReceipt? {
+        get {
+            guard let data = self.defaults.data(forKey: Keys.sonioxVerificationReceipt) else { return nil }
+            return try? JSONDecoder().decode(SonioxVerificationReceipt.self, from: data)
+        }
+        set {
+            objectWillChange.send()
+            if let newValue, let data = try? JSONEncoder().encode(newValue) {
+                self.defaults.set(data, forKey: Keys.sonioxVerificationReceipt)
+            } else {
+                self.defaults.removeObject(forKey: Keys.sonioxVerificationReceipt)
+            }
+        }
+    }
+
     func speechModelAssignment(forInputSourceID inputSourceID: String) -> SpeechModel? {
         self.speechModelAssignmentsByInputSourceID[inputSourceID]
     }
@@ -3265,6 +3305,8 @@ final class SettingsStore: ObservableObject {
             selectedCohereLanguage: self.selectedCohereLanguage,
             selectedNemotronLanguage: self.selectedNemotronLanguage,
             selectedAppleSpeechLocaleIdentifier: self.selectedAppleSpeechLocaleIdentifier,
+            sonioxLanguageModeID: self.sonioxLanguageMode.rawValue,
+            sonioxRegionID: self.sonioxRegion.rawValue,
             speechModelAssignmentsByInputSourceID: self.speechModelAssignmentsByInputSourceID,
             hotkeyShortcut: self.hotkeyShortcut,
             primaryDictationShortcuts: self.primaryDictationShortcuts,
@@ -3399,6 +3441,10 @@ final class SettingsStore: ObservableObject {
         if let selectedAppleSpeechLocaleIdentifier = payload.selectedAppleSpeechLocaleIdentifier {
             self.selectedAppleSpeechLocaleIdentifier = selectedAppleSpeechLocaleIdentifier
         }
+        self.sonioxLanguageMode = payload.sonioxLanguageModeID
+            .flatMap(SonioxLanguageMode.init(rawValue:)) ?? .currentInputSourceOnly
+        self.sonioxRegion = payload.sonioxRegionID
+            .flatMap(SonioxRegion.init(rawValue:)) ?? .global
         if let speechModelAssignmentsByInputSourceID = payload.speechModelAssignmentsByInputSourceID {
             self.speechModelAssignmentsByInputSourceID = speechModelAssignmentsByInputSourceID
         }
@@ -5289,6 +5335,9 @@ private extension SettingsStore {
         static let copyTranscriptionToClipboard = "CopyTranscriptionToClipboard"
         static let copyWhenNoWritableInputFocused = "CopyWhenNoWritableInputFocused"
         static let speechModelAssignmentsByInputSourceID = "SpeechModelAssignmentsByInputSourceID"
+        static let sonioxLanguageMode = "SonioxLanguageMode"
+        static let sonioxRegion = "SonioxRegion"
+        static let sonioxVerificationReceipt = "SonioxVerificationReceipt"
         static let escapeExitAction = "EscapeExitAction"
         static let outsideClickExitAction = "OutsideClickExitAction"
         static let textInsertionMode = "TextInsertionMode"

@@ -255,7 +255,9 @@ enum RecordingSpeechConfigurationResolver {
         selectedLanguageID: String,
         appleLocaleIdentifier: String,
         cohereLanguage: SettingsStore.CohereLanguage,
-        nemotronLanguage: SettingsStore.NemotronLanguage
+        nemotronLanguage: SettingsStore.NemotronLanguage,
+        sonioxLanguageMode: SettingsStore.SonioxLanguageMode,
+        sonioxRegion: SettingsStore.SonioxRegion
     ) -> RecordingSpeechConfiguration? {
         guard model != .qwen3Asr else { return nil }
 
@@ -266,7 +268,11 @@ enum RecordingSpeechConfigurationResolver {
         switch model {
         case .sonioxV5:
             localeIdentifier = selectedLocaleIdentifier
-            binding = .automatic
+            binding = .soniox(SonioxLanguageCatalog.binding(
+                localeIdentifier: localeIdentifier,
+                mode: sonioxLanguageMode,
+                region: sonioxRegion
+            ))
         case .appleSpeech, .appleSpeechAnalyzer:
             localeIdentifier = appleLocaleIdentifier.replacingOccurrences(of: "_", with: "-")
             binding = .appleSpeech(localeIdentifier: localeIdentifier)
@@ -306,7 +312,9 @@ enum RecordingSpeechConfigurationResolver {
             selectedLanguageID: settings.onboardingSelectedLanguageID,
             appleLocaleIdentifier: settings.selectedAppleSpeechLocale.identifier,
             cohereLanguage: settings.selectedCohereLanguage,
-            nemotronLanguage: settings.selectedNemotronLanguage
+            nemotronLanguage: settings.selectedNemotronLanguage,
+            sonioxLanguageMode: settings.sonioxLanguageMode,
+            sonioxRegion: settings.sonioxRegion
         ) {
             return configuration
         }
@@ -330,7 +338,9 @@ enum RecordingSpeechConfigurationResolver {
             selectedLanguageID: settings.onboardingSelectedLanguageID,
             appleLocaleIdentifier: settings.selectedAppleSpeechLocale.identifier,
             cohereLanguage: settings.selectedCohereLanguage,
-            nemotronLanguage: settings.selectedNemotronLanguage
+            nemotronLanguage: settings.selectedNemotronLanguage,
+            sonioxLanguageMode: settings.sonioxLanguageMode,
+            sonioxRegion: settings.sonioxRegion
         ) {
             return configuration
         }
@@ -364,20 +374,36 @@ enum RecordingSpeechConfigurationResolver {
         inputSource: KeyboardInputSourceSnapshot?,
         assignedModel: SettingsStore.SpeechModel?,
         globalFallback: RecordingSpeechConfiguration,
+        sonioxLanguageMode: SettingsStore.SonioxLanguageMode,
+        sonioxRegion: SettingsStore.SonioxRegion,
         availableModels: [SettingsStore.SpeechModel] = SettingsStore.SpeechModel.availableModels,
         fallbackLocaleIdentifier: String = Locale.current.identifier
     ) -> RecordingSpeechConfiguration {
         let fallback = self.globalFallback(globalFallback, inputSourceID: inputSource?.id)
-        guard let inputSource,
-              let assignedModel,
-              availableModels.contains(assignedModel)
-        else { return fallback }
+        let resolvedModel = assignedModel ?? globalFallback.model
+        guard availableModels.contains(resolvedModel) else { return fallback }
 
-        let localeIdentifier = KeyboardInputSourceLocaleResolver.localeIdentifier(
-            for: inputSource,
-            fallbackLocaleIdentifier: fallbackLocaleIdentifier
-        )
-        guard let binding = self.languageBinding(for: assignedModel, localeIdentifier: localeIdentifier),
+        let localeIdentifier = inputSource.map {
+            KeyboardInputSourceLocaleResolver.localeIdentifier(
+                for: $0,
+                fallbackLocaleIdentifier: fallbackLocaleIdentifier
+            )
+        } ?? fallback.localeIdentifier
+        if resolvedModel == .sonioxV5 {
+            return RecordingSpeechConfiguration(
+                inputSourceID: inputSource?.id,
+                localeIdentifier: localeIdentifier,
+                model: resolvedModel,
+                languageBinding: .soniox(SonioxLanguageCatalog.binding(
+                    localeIdentifier: localeIdentifier,
+                    mode: sonioxLanguageMode,
+                    region: sonioxRegion
+                ))
+            ) ?? fallback
+        }
+
+        guard let inputSource, let assignedModel,
+              let binding = self.languageBinding(for: assignedModel, localeIdentifier: localeIdentifier),
               let configuration = RecordingSpeechConfiguration(
                   inputSourceID: inputSource.id,
                   localeIdentifier: localeIdentifier,
@@ -402,7 +428,11 @@ enum RecordingSpeechConfigurationResolver {
 
         switch model {
         case .sonioxV5:
-            return .automatic
+            return .soniox(SonioxLanguageCatalog.binding(
+                localeIdentifier: normalizedLocale,
+                mode: .currentInputSourceOnly,
+                region: .global
+            ))
         case .parakeetTDT:
             return self.parakeetTDTLanguageCodes.contains(languageCode) ? .automatic : nil
         case .parakeetTDTv2, .parakeetRealtime:

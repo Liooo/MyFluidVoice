@@ -2670,6 +2670,8 @@ struct OnboardingFlowView: View {
         }
 
         switch route.binding {
+        case .soniox:
+            return false
         case .automatic, .whisper:
             return self.settings.onboardingSelectedLanguageID == route.language.id
         case let .appleSpeech(localeIdentifier):
@@ -2687,6 +2689,8 @@ struct OnboardingFlowView: View {
         }
 
         switch route.binding {
+        case .soniox:
+            return false
         case .automatic, .whisper:
             return true
         case let .appleSpeech(localeIdentifier):
@@ -2709,6 +2713,8 @@ struct OnboardingFlowView: View {
 
         let languageChanged: Bool
         switch route.binding {
+        case .soniox:
+            languageChanged = false
         case .automatic, .whisper:
             languageChanged = false
         case .appleSpeech:
