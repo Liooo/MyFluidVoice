@@ -7,6 +7,8 @@ final class SonioxCredentialSettingsTests: XCTestCase {
     private let languageModeKey = "SonioxLanguageMode"
     private let regionKey = "SonioxRegion"
     private let receiptKey = "SonioxVerificationReceipt"
+    private let selectedSpeechModelKey = "SelectedSpeechModel"
+    private let speechModelAssignmentsKey = "SpeechModelAssignmentsByInputSourceID"
 
     func testCredentialStateResolverCoversSetupVerificationConfiguredAndOwnedReady() {
         let fingerprint = SonioxVerificationReceipt.fingerprint(apiKey: "configured")
@@ -194,6 +196,163 @@ final class SonioxCredentialSettingsTests: XCTestCase {
             XCTAssertEqual(store.removeCount, 0)
             XCTAssertEqual(settings.sonioxVerificationReceipt, .make(apiKey: "prior-value", region: .global))
         }
+    }
+
+    func testRemoveRemainsAvailableForStoredButUnverifiedCredential() async throws {
+        try await self.withRestoredDefaults {
+            let settings = SettingsStore.shared
+            let store = FakeCredentialStore(initialValue: "prior-value")
+            let service = SonioxCredentialService(store: store, verifier: successfulVerifier())
+            let viewModel = VoiceEngineSettingsViewModel(
+                settings: settings,
+                appServices: AppServices.shared,
+                asr: ASRService(),
+                sonioxCredentialService: service
+            )
+
+            settings.sonioxRegion = .japan
+            viewModel.refreshSonioxCredentialState()
+
+            XCTAssertEqual(viewModel.sonioxCredentialState, .apiKeyRequired)
+            XCTAssertTrue(viewModel.canRemoveSonioxCredential)
+        }
+    }
+
+    func testUnverifiedSonioxActivationRoutesToSetupWithoutMutatingSelection() async throws {
+        try await self.withRestoredDefaults {
+            let settings = SettingsStore.shared
+            settings.selectedSpeechModel = .appleSpeech
+            let service = SonioxCredentialService(
+                store: FakeCredentialStore(initialValue: nil),
+                verifier: successfulVerifier()
+            )
+            let viewModel = VoiceEngineSettingsViewModel(
+                settings: settings,
+                appServices: AppServices.shared,
+                asr: ASRService(),
+                sonioxCredentialService: service
+            )
+
+            viewModel.activateSpeechModel(.sonioxV5)
+
+            XCTAssertEqual(settings.selectedSpeechModel, .appleSpeech)
+            XCTAssertEqual(viewModel.previewSpeechModel, .sonioxV5)
+            XCTAssertTrue(viewModel.showSonioxSetup)
+        }
+    }
+
+    func testProductionSonioxAssignmentRoutesSetupThenAssignsAfterVerification() async throws {
+        try await self.withRestoredDefaults {
+            let settings = SettingsStore.shared
+            let inputSourceID = "com.apple.keylayout.US"
+            settings.setSpeechModelAssignment(.appleSpeech, forInputSourceID: inputSourceID)
+            let store = FakeCredentialStore(initialValue: nil)
+            let service = SonioxCredentialService(store: store, verifier: successfulVerifier())
+            let viewModel = VoiceEngineSettingsViewModel(
+                settings: settings,
+                appServices: AppServices.shared,
+                asr: ASRService(),
+                sonioxCredentialService: service
+            )
+
+            viewModel.assignSpeechModel(.sonioxV5, forInputSourceID: inputSourceID)
+            XCTAssertEqual(settings.speechModelAssignment(forInputSourceID: inputSourceID), .appleSpeech)
+            XCTAssertTrue(viewModel.showSonioxSetup)
+
+            store.value = "configured-value"
+            settings.sonioxVerificationReceipt = .make(apiKey: "configured-value", region: .global)
+            viewModel.refreshSonioxCredentialState()
+            viewModel.assignSpeechModel(.sonioxV5, forInputSourceID: inputSourceID)
+
+            XCTAssertEqual(settings.speechModelAssignment(forInputSourceID: inputSourceID), .sonioxV5)
+        }
+    }
+
+    func testFailedVerificationErrorSurvivesCredentialStateRefresh() async throws {
+        try await self.withRestoredDefaults {
+            let settings = SettingsStore.shared
+            settings.sonioxVerificationReceipt = .make(apiKey: "prior-value", region: .global)
+            let store = FakeCredentialStore(initialValue: "prior-value")
+            let service = SonioxCredentialService(
+                store: store,
+                verifier: FailingCredentialVerifier(
+                    error: SonioxCredentialError(
+                        category: .credential,
+                        diagnosticType: "authentication_rejected",
+                        requestID: nil
+                    )
+                )
+            )
+            let viewModel = VoiceEngineSettingsViewModel(
+                settings: settings,
+                appServices: AppServices.shared,
+                asr: ASRService(),
+                sonioxCredentialService: service
+            )
+            viewModel.sonioxAPIKeyDraft = "candidate-value"
+
+            viewModel.saveAndVerifySonioxCredential()
+            while viewModel.isVerifyingSonioxCredential {
+                await Task.yield()
+            }
+
+            XCTAssertEqual(
+                viewModel.sonioxCredentialError,
+                "Soniox credential verification failed: credential, authentication_rejected"
+            )
+        }
+    }
+
+    func testStoppingSonioxSessionPublishesConfiguredCredentialState() async throws {
+        try await self.withRestoredDefaults {
+            let settings = SettingsStore.shared
+            let configuredValue = "configured-value"
+            settings.sonioxVerificationReceipt = .make(apiKey: configuredValue, region: .global)
+            let service = SonioxCredentialService(
+                store: FakeCredentialStore(initialValue: configuredValue),
+                verifier: successfulVerifier()
+            )
+            let asr = ASRService()
+            let viewModel = VoiceEngineSettingsViewModel(
+                settings: settings,
+                appServices: AppServices.shared,
+                asr: asr,
+                sonioxCredentialService: service
+            )
+            let sessionID = RecordingSessionID()
+            let configuration = try XCTUnwrap(RecordingSpeechConfiguration(
+                inputSourceID: nil,
+                localeIdentifier: "en-US",
+                model: .sonioxV5,
+                languageBinding: .soniox(.init(languageCode: "en", isStrict: true, region: .global))
+            ))
+            asr.installTestingRecordingSession(
+                sessionID: sessionID,
+                configuration: configuration,
+                provider: NoopTranscriptionProvider(),
+                isRunning: false
+            )
+            viewModel.refreshSonioxCredentialState()
+            XCTAssertEqual(viewModel.sonioxCredentialState, .ready)
+
+            let didStop = await asr.stopWithoutTranscription(sessionID: sessionID)
+            XCTAssertTrue(didStop)
+            await Task.yield()
+
+            XCTAssertEqual(viewModel.sonioxCredentialState, .configured)
+        }
+    }
+
+    func testKeychainCommittedAggregateIgnoresLegacyCleanupFailure() {
+        var aggregateCommitted = false
+
+        XCTAssertNoThrow(
+            try KeychainService.performCommittedMutation(
+                primary: { aggregateCommitted = true },
+                cleanup: { throw NSError(domain: "LegacyCleanup", code: 1) }
+            )
+        )
+        XCTAssertTrue(aggregateCommitted)
     }
 
     func testSonioxSettingsDefaultToCurrentInputSourceOnlyAndGlobal() {
@@ -624,7 +783,13 @@ final class SonioxCredentialSettingsTests: XCTestCase {
 
     private func withRestoredDefaults<T>(_ operation: () throws -> T) rethrows -> T {
         let defaults = UserDefaults.standard
-        let keys = [self.languageModeKey, self.regionKey, self.receiptKey]
+        let keys = [
+            self.languageModeKey,
+            self.regionKey,
+            self.receiptKey,
+            self.selectedSpeechModelKey,
+            self.speechModelAssignmentsKey,
+        ]
         let snapshot = Dictionary(uniqueKeysWithValues: keys.compactMap { key in
             defaults.object(forKey: key).map { (key, $0) }
         })
@@ -643,7 +808,13 @@ final class SonioxCredentialSettingsTests: XCTestCase {
 
     private func withRestoredDefaults<T>(_ operation: () async throws -> T) async rethrows -> T {
         let defaults = UserDefaults.standard
-        let keys = [self.languageModeKey, self.regionKey, self.receiptKey]
+        let keys = [
+            self.languageModeKey,
+            self.regionKey,
+            self.receiptKey,
+            self.selectedSpeechModelKey,
+            self.speechModelAssignmentsKey,
+        ]
         let snapshot = Dictionary(uniqueKeysWithValues: keys.compactMap { key in
             defaults.object(forKey: key).map { (key, $0) }
         })
@@ -759,6 +930,29 @@ private final class SuspendingCredentialVerifier: SonioxCredentialVerifying, @un
             return self.verificationContinuation
         }
         continuation?.resume()
+    }
+}
+
+private struct FailingCredentialVerifier: SonioxCredentialVerifying {
+    let error: SonioxCredentialError
+
+    func verify(apiKey: String, region: SettingsStore.SonioxRegion) async throws {
+        _ = apiKey
+        _ = region
+        throw self.error
+    }
+}
+
+private final class NoopTranscriptionProvider: TranscriptionProvider {
+    let name = "No-op test provider"
+    let isAvailable = true
+    let isReady = true
+
+    func prepare(progressHandler: ((ModelPreparationProgress) -> Void)?) async throws {}
+
+    func transcribe(_ samples: [Float]) async throws -> ASRTranscriptionResult {
+        _ = samples
+        return ASRTranscriptionResult(text: "")
     }
 }
 

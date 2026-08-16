@@ -1135,6 +1135,7 @@ final class ASRService: ObservableObject {
             self.hasPendingProviderReset = false
             self.resetTranscriptionProvider()
         }
+        self.objectWillChange.send()
         return true
     }
 

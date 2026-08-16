@@ -71,6 +71,14 @@ final class KeychainService {
         try self.saveStoredKeys(Self.replacingUnreservedKeys(existing: existing, replacements: values))
     }
 
+    nonisolated static func performCommittedMutation(
+        primary: () throws -> Void,
+        cleanup: () throws -> Void
+    ) throws {
+        try primary()
+        _ = try? cleanup()
+    }
+
     nonisolated static func unreservedKeys(
         _ values: [String: String],
         reservedPrefix: String = "asr:"
@@ -117,7 +125,9 @@ final class KeychainService {
                 var dataItem: CFTypeRef?
                 let dataStatus = SecItemCopyMatching(dataQuery as CFDictionary, &dataItem)
                 guard dataStatus == errSecSuccess else {
-                    if dataStatus == errSecItemNotFound { continue }
+                    if dataStatus == errSecItemNotFound {
+                        continue
+                    }
                     throw KeychainServiceError.unhandled(dataStatus)
                 }
                 guard let data = dataItem as? Data,
@@ -187,27 +197,32 @@ final class KeychainService {
         var attributes = self.aggregatedQuery()
         attributes[kSecValueData as String] = data
 
-        let status = SecItemAdd(attributes as CFDictionary, nil)
+        try Self.performCommittedMutation(
+            primary: {
+                let status = SecItemAdd(attributes as CFDictionary, nil)
 
-        switch status {
-        case errSecSuccess:
-            try self.removeLegacyEntries()
-            return
-        case errSecDuplicateItem:
-            let updateAttributes: [String: Any] = [
-                kSecValueData as String: data,
-            ]
-            let updateStatus = SecItemUpdate(
-                aggregatedQuery() as CFDictionary,
-                updateAttributes as CFDictionary
-            )
-            guard updateStatus == errSecSuccess else {
-                throw KeychainServiceError.unhandled(updateStatus)
+                switch status {
+                case errSecSuccess:
+                    return
+                case errSecDuplicateItem:
+                    let updateAttributes: [String: Any] = [
+                        kSecValueData as String: data,
+                    ]
+                    let updateStatus = SecItemUpdate(
+                        self.aggregatedQuery() as CFDictionary,
+                        updateAttributes as CFDictionary
+                    )
+                    guard updateStatus == errSecSuccess else {
+                        throw KeychainServiceError.unhandled(updateStatus)
+                    }
+                default:
+                    throw KeychainServiceError.unhandled(status)
+                }
+            },
+            cleanup: {
+                try self.removeLegacyEntries()
             }
-            try self.removeLegacyEntries()
-        default:
-            throw KeychainServiceError.unhandled(status)
-        }
+        )
     }
 
     private func aggregatedQuery() -> [String: Any] {

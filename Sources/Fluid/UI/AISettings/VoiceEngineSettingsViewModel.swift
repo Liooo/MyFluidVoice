@@ -83,6 +83,15 @@ final class VoiceEngineSettingsViewModel: ObservableObject {
                 }
             }
             .store(in: &self.cancellables)
+        self.asr.objectWillChange
+            .sink { [weak self] _ in
+                guard let self else { return }
+                MainActor.assumeIsolated {
+                    self.refreshSonioxCredentialState()
+                    self.objectWillChange.send()
+                }
+            }
+            .store(in: &self.cancellables)
         settings.objectWillChange
             .sink { [weak self] _ in
                 guard let self else { return }
@@ -139,6 +148,10 @@ final class VoiceEngineSettingsViewModel: ObservableObject {
         self.isVerifyingSonioxCredential || self.asr.hasActiveRecordingSession || self.asr.isRunningOrStarting
     }
 
+    var canRemoveSonioxCredential: Bool {
+        self.sonioxStoredCredentialFingerprint != nil && !self.sonioxCredentialMutationBlocked
+    }
+
     static func shouldRouteSonioxAssignmentToSetup(
         model: SettingsStore.SpeechModel,
         credentialState: SonioxCredentialState
@@ -149,7 +162,6 @@ final class VoiceEngineSettingsViewModel: ObservableObject {
     func refreshSonioxCredentialState() {
         do {
             self.sonioxStoredCredentialFingerprint = try self.sonioxCredentialService.storedCredentialFingerprint()
-            self.sonioxCredentialError = nil
         } catch {
             self.sonioxStoredCredentialFingerprint = nil
             self.sonioxCredentialError = "Unable to read Soniox credential state."
@@ -312,6 +324,13 @@ final class VoiceEngineSettingsViewModel: ObservableObject {
         guard !self.areSpeechModelActionsBlocked,
               SettingsStore.SpeechModel.availableModels.contains(model)
         else { return }
+        if model.isCloudSpeechModel {
+            self.refreshSonioxCredentialState()
+            guard self.sonioxCredentialState == .configured || self.sonioxCredentialState == .ready else {
+                self.requestSonioxSetup()
+                return
+            }
+        }
         withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
             self.settings.selectedSpeechModel = model
             self.previewSpeechModel = model
@@ -319,7 +338,6 @@ final class VoiceEngineSettingsViewModel: ObservableObject {
         }
         self.asr.resetTranscriptionProvider()
         if model.isCloudSpeechModel {
-            self.refreshSonioxCredentialState()
             return
         }
         Task {

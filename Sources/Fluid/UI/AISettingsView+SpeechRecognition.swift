@@ -213,10 +213,7 @@ extension VoiceEngineSettingsView {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .disabled(
-                    self.viewModel.sonioxCredentialMutationBlocked
-                        || self.viewModel.sonioxCredentialState == .apiKeyRequired
-                )
+                .disabled(!self.viewModel.canRemoveSonioxCredential)
 
                 if self.viewModel.isVerifyingSonioxCredential {
                     ProgressView()
