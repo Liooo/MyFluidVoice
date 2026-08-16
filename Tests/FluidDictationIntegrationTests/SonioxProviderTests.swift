@@ -1014,6 +1014,53 @@ final class SonioxProviderTests: XCTestCase {
         XCTAssertTrue(didDiscard)
     }
 
+    func testNormalStopOverlappingTerminalFailureWaitsForTeardownAndDeliversFailureOnce() async {
+        let captureGate = Task7AsyncGate()
+        let provider = Task7StreamingFailureProvider(blocksStreaming: false)
+        let sessionID = RecordingSessionID()
+        let failureExpectation = expectation(description: "owned streaming failure delivered")
+        var failureCount = 0
+        let service = ASRService(
+            lifecycleHooks: ASRServiceLifecycleHooks(
+                cancelAudioRouteRecoveryAndWait: {},
+                stopActiveAudioCapture: { _, _ in await captureGate.wait() },
+                retireAudioEngineAndWait: { _ in }
+            )
+        )
+        service.setRecordingFailureHandler { failure in
+            failureCount += 1
+            XCTAssertEqual(failure.sessionID, sessionID)
+            XCTAssertEqual(provider.resetCount, 1)
+            XCTAssertFalse(service.hasActiveRecordingSession)
+            XCTAssertFalse(service.isRunning)
+            XCTAssertEqual(service.partialTranscription, "")
+            failureExpectation.fulfill()
+        }
+        _ = service.installTestingRecordingSession(
+            sessionID: sessionID,
+            configuration: self.sonioxConfiguration(),
+            provider: provider,
+            isRunning: true,
+            capturedSamples: [Float](repeating: 0.25, count: 1600)
+        )
+
+        service.startTestingStreamingTranscription(sessionID: sessionID)
+        await self.waitUntil { provider.streamingOperationEntered && captureGate.isWaiting }
+
+        let normalStopTask = Task { await service.stop(sessionID: sessionID) }
+        for _ in 0..<100 {
+            await Task.yield()
+        }
+        XCTAssertTrue(service.hasActiveRecordingSession)
+        XCTAssertEqual(provider.resetCount, 0)
+
+        captureGate.open()
+        _ = await normalStopTask.value
+        await fulfillment(of: [failureExpectation], timeout: 1)
+        XCTAssertEqual(failureCount, 1)
+        XCTAssertFalse(service.hasActiveRecordingSession)
+    }
+
     func testStreamingTerminalErrorStopsCaptureBeforeDismissingAndClearsMatchingSelection() async {
         let events = Task7EventLog()
         let provider = Task7StreamingFailureProvider(blocksStreaming: false)

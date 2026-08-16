@@ -1168,12 +1168,14 @@ final class ASRService: ObservableObject {
     private func resetOwnedRecordingProviderAfterCancellation(
         _ provider: TranscriptionProvider,
         sessionID: RecordingSessionID,
-        owner: RecordingTaskOwner? = nil
+        owner: RecordingTaskOwner? = nil,
+        retainingStreamingFailureMonitor: Bool = false
     ) async -> Bool {
         await self.cancelStreamingTranscriptionAndAwait(
             provider: provider,
             sessionID: sessionID,
-            recordingOwner: owner
+            recordingOwner: owner,
+            retainingStreamingFailureMonitor: retainingStreamingFailureMonitor
         )
         guard self.activeRecordingSelection?.sessionID == sessionID,
               owner.map({ self.isRecordingOwnerCurrent($0) }) ?? true
@@ -3236,12 +3238,13 @@ final class ASRService: ObservableObject {
         guard let recordingOwner = self.recordingOwner,
               self.isRecordingOwnerCurrent(recordingOwner)
         else { return "" }
-        let streamingFailureOwner = self.streamingOwner
-        let streamingFailureMonitor = self.streamingCompletionMonitorOwner == streamingFailureOwner &&
-            streamingFailureOwner?.sessionID == ownedSessionID &&
-            streamingFailureOwner?.providerKey == selection.providerKey
-            ? self.streamingCompletionMonitorTask
+        let streamingFailureOwner = self.streamingCompletionMonitorOwner?.sessionID == ownedSessionID &&
+            self.streamingCompletionMonitorOwner?.providerKey == selection.providerKey
+            ? self.streamingCompletionMonitorOwner
             : nil
+        let streamingFailureMonitor = streamingFailureOwner == nil
+            ? nil
+            : self.streamingCompletionMonitorTask
         var shouldClearRecordingSessionOnReturn = true
         defer {
             if shouldClearRecordingSessionOnReturn {
@@ -3264,6 +3267,14 @@ final class ASRService: ObservableObject {
             guard self.isRecordingOwnerCurrent(recordingOwner) else { return "" }
         }
         guard self.isRunning else {
+            if await self.finishStreamingFailureCleanupIfNeeded(
+                sessionID: ownedSessionID,
+                owner: streamingFailureOwner,
+                monitor: streamingFailureMonitor
+            ) {
+                shouldClearRecordingSessionOnReturn = false
+                return ""
+            }
             self.isDictionaryTrainingCaptureActive = false
             await self.cancelModelPreparationAndAwait(
                 sessionID: ownedSessionID,
@@ -3797,7 +3808,10 @@ final class ASRService: ObservableObject {
     }
 
     @discardableResult
-    func stopWithoutTranscription(sessionID: RecordingSessionID? = nil) async -> Bool {
+    func stopWithoutTranscription(
+        sessionID: RecordingSessionID? = nil,
+        retainingStreamingFailureMonitor: Bool = false
+    ) async -> Bool {
         guard let selection = self.activeRecordingSelection,
               sessionID == nil || sessionID == selection.sessionID,
               let provider = self.activeRecordingProvider,
@@ -3807,6 +3821,23 @@ final class ASRService: ObservableObject {
         guard let recordingOwner = self.recordingOwner,
               self.isRecordingOwnerCurrent(recordingOwner)
         else { return false }
+        let streamingFailureMonitorOwner = self.streamingCompletionMonitorOwner?.sessionID == ownedSessionID &&
+            self.streamingCompletionMonitorOwner?.providerKey == selection.providerKey
+            ? self.streamingCompletionMonitorOwner
+            : nil
+        let streamingFailureMonitor = streamingFailureMonitorOwner == nil
+            ? nil
+            : self.streamingCompletionMonitorTask
+        if retainingStreamingFailureMonitor == false,
+           self.streamingFailureSessionIDs.contains(ownedSessionID)
+        {
+            if await self.awaitStreamingFailureCleanup(
+                owner: streamingFailureMonitorOwner,
+                monitor: streamingFailureMonitor
+            ) {
+                return true
+            }
+        }
         let ownerAtStop = self.streamingOwner
         self.lastCompletedAudioSnapshot = nil
         self.lastCompletedAudioSnapshotSessionID = nil
@@ -3829,7 +3860,8 @@ final class ASRService: ObservableObject {
             _ = await self.resetOwnedRecordingProviderAfterCancellation(
                 provider,
                 sessionID: ownedSessionID,
-                owner: recordingOwner
+                owner: recordingOwner,
+                retainingStreamingFailureMonitor: retainingStreamingFailureMonitor
             )
             guard self.isRecordingOwnerCurrent(recordingOwner) else { return false }
             self.isDictionaryTrainingCaptureActive = false
@@ -3885,7 +3917,8 @@ final class ASRService: ObservableObject {
         _ = await self.resetOwnedRecordingProviderAfterCancellation(
             provider,
             sessionID: ownedSessionID,
-            owner: recordingOwner
+            owner: recordingOwner,
+            retainingStreamingFailureMonitor: retainingStreamingFailureMonitor
         )
         guard self.isRecordingOwnerCurrent(recordingOwner) else { return false }
 
@@ -5842,10 +5875,6 @@ final class ASRService: ObservableObject {
                 return
             }
 
-            // Detach the monitor before entering the hard cleanup path. This
-            // prevents stopWithoutTranscription from cancelling/awaiting itself.
-            self.streamingCompletionMonitorTask = nil
-            self.streamingCompletionMonitorOwner = nil
             await self.handleStreamingTerminalFailure(
                 failure,
                 owner: owner,
@@ -5853,6 +5882,10 @@ final class ASRService: ObservableObject {
                 providerKey: selection.providerKey,
                 sessionID: sessionID
             )
+            if self.streamingCompletionMonitorOwner == owner {
+                self.streamingCompletionMonitorTask = nil
+                self.streamingCompletionMonitorOwner = nil
+            }
         }
     }
 
@@ -6141,7 +6174,10 @@ final class ASRService: ObservableObject {
         }
 
         self.partialTranscription.removeAll()
-        let didStopOwnedSession = await self.stopWithoutTranscription(sessionID: sessionID)
+        let didStopOwnedSession = await self.stopWithoutTranscription(
+            sessionID: sessionID,
+            retainingStreamingFailureMonitor: true
+        )
 
         // A new recording may have taken ownership while cleanup awaited. Do
         // not let the stale monitor cancel or report into that session. The
@@ -6470,6 +6506,29 @@ private extension SettingsStore.SpeechModel {
 }
 
 private extension ASRService {
+    func finishStreamingFailureCleanupIfNeeded(
+        sessionID: RecordingSessionID,
+        owner: StreamingTaskOwner?,
+        monitor: Task<Void, Never>?
+    ) async -> Bool {
+        guard self.streamingFailureSessionIDs.contains(sessionID),
+              await self.awaitStreamingFailureCleanup(owner: owner, monitor: monitor)
+        else { return false }
+        self.clearVolatileRecordingState()
+        self.audioBuffer.clear()
+        return true
+    }
+
+    func awaitStreamingFailureCleanup(
+        owner: StreamingTaskOwner?,
+        monitor: Task<Void, Never>?
+    ) async -> Bool {
+        await monitor?.value
+        return self.lastStreamingCleanupOwner == owner &&
+            self.activeRecordingSelection == nil &&
+            self.activeRecordingProviderKey == nil
+    }
+
     func cancelModelPreparationAndAwait(
         sessionID: RecordingSessionID,
         owner: RecordingTaskOwner? = nil
@@ -6501,7 +6560,8 @@ private extension ASRService {
     func cancelStreamingTranscriptionAndAwait(
         provider: TranscriptionProvider,
         sessionID: RecordingSessionID,
-        recordingOwner: RecordingTaskOwner? = nil
+        recordingOwner: RecordingTaskOwner? = nil,
+        retainingStreamingFailureMonitor: Bool = false
     ) async {
         guard recordingOwner.map({ self.isRecordingOwnerCurrent($0) }) ?? true else { return }
         guard let selection = self.recordingSpeechSessionState.selection(matching: sessionID),
@@ -6534,7 +6594,10 @@ private extension ASRService {
         task?.cancel()
         worker?.cancel()
         completionMonitor?.cancel()
-        if ownerMatchesSession, self.streamingCompletionMonitorOwner == owner {
+        if ownerMatchesSession,
+           self.streamingCompletionMonitorOwner == owner,
+           retainingStreamingFailureMonitor == false
+        {
             self.streamingCompletionMonitorTask = nil
             self.streamingCompletionMonitorOwner = nil
         }
@@ -6568,7 +6631,9 @@ private extension ASRService {
                 return
             }
             self.streamingStopRequestedSessionID = nil
-            if self.streamingCompletionMonitorOwner == owner {
+            if self.streamingCompletionMonitorOwner == owner,
+               retainingStreamingFailureMonitor == false
+            {
                 self.streamingCompletionMonitorTask = nil
                 self.streamingCompletionMonitorOwner = nil
             }
@@ -6579,7 +6644,9 @@ private extension ASRService {
             self.streamingWorkerTask = nil
             self.streamingTask = nil
             self.streamingOwner = nil
-            self.streamingFailureSessionIDs.remove(sessionID)
+            if retainingStreamingFailureMonitor == false {
+                self.streamingFailureSessionIDs.remove(sessionID)
+            }
             return
         }
 
@@ -6596,7 +6663,9 @@ private extension ASRService {
               self.activeRecordingProviderKey == selection.providerKey,
               recordingOwner.map({ self.isRecordingOwnerCurrent($0) }) ?? true
         else { return }
-        self.streamingFailureSessionIDs.remove(sessionID)
+        if retainingStreamingFailureMonitor == false {
+            self.streamingFailureSessionIDs.remove(sessionID)
+        }
     }
 
     func quiesceStreamingForFinalization(
