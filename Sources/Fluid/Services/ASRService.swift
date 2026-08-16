@@ -416,11 +416,13 @@ final class ASRService: ObservableObject {
     private var activeRecordingProviderKey: String?
     private var cachedRecordingProvider: TranscriptionProvider?
     private var cachedRecordingProviderKey: String?
+    private var cachedGlobalLifecycleProvider: TranscriptionProvider?
+    private var cachedGlobalLifecycleProviderModel: SettingsStore.SpeechModel?
     private var readyProviderKey: String?
     private let localProviderFactory: ((RecordingSpeechConfiguration) throws -> TranscriptionProvider)?
     private let sonioxCredentialStore: any SonioxCredentialStoring
     private let sonioxTransportFactory: SonioxTransportFactory
-    private let globalLifecycleModelProvider: @MainActor () -> SettingsStore.SpeechModel
+    private let globalLifecycleConfigurationProvider: @MainActor () -> RecordingSpeechConfiguration
     private let globalLifecycleProviderFactory: (@MainActor (SettingsStore.SpeechModel) throws -> TranscriptionProvider)?
     private var recordingFailureHandler: (@MainActor (ASRRecordingFailure) -> Void)?
 
@@ -512,6 +514,8 @@ final class ASRService: ObservableObject {
         self.whisperProvider = nil
         self.appleSpeechProvider = nil
         self._appleSpeechAnalyzerProvider = nil
+        self.cachedGlobalLifecycleProvider = nil
+        self.cachedGlobalLifecycleProviderModel = nil
         self.isAsrReady = false
         self.isLoadingModel = false
         self.isDownloadingModel = false
@@ -1079,6 +1083,8 @@ final class ASRService: ObservableObject {
         self._appleSpeechAnalyzerProvider = nil
         self.cachedRecordingProvider = nil
         self.cachedRecordingProviderKey = nil
+        self.cachedGlobalLifecycleProvider = nil
+        self.cachedGlobalLifecycleProviderModel = nil
 
         // CRITICAL FIX: Check if the NEW model's files exist on disk
         // This prevents UI from showing "Download" when model is already downloaded
@@ -1588,14 +1594,14 @@ final class ASRService: ObservableObject {
         localProviderFactory: ((RecordingSpeechConfiguration) throws -> TranscriptionProvider)? = nil,
         sonioxCredentialStore: (any SonioxCredentialStoring)? = nil,
         sonioxTransportFactory: @escaping SonioxTransportFactory = URLSessionSonioxWebSocketTransport.make,
-        globalLifecycleModelProvider: (@MainActor () -> SettingsStore.SpeechModel)? = nil,
+        globalLifecycleConfigurationProvider: (@MainActor () -> RecordingSpeechConfiguration)? = nil,
         globalLifecycleProviderFactory: (@MainActor (SettingsStore.SpeechModel) throws -> TranscriptionProvider)? = nil
     ) {
         self.localProviderFactory = localProviderFactory
         self.sonioxCredentialStore = sonioxCredentialStore ?? KeychainSonioxCredentialStore()
         self.sonioxTransportFactory = sonioxTransportFactory
-        self.globalLifecycleModelProvider = globalLifecycleModelProvider ?? {
-            SettingsStore.shared.selectedSpeechModel
+        self.globalLifecycleConfigurationProvider = globalLifecycleConfigurationProvider ?? {
+            RecordingSpeechConfigurationResolver.currentDictationFallbackConfiguration()
         }
         self.globalLifecycleProviderFactory = globalLifecycleProviderFactory
         // CRITICAL FIX: Do NOT call any framework-triggering APIs here!
@@ -4415,7 +4421,9 @@ final class ASRService: ObservableObject {
         } else {
             selection = self.activeRecordingSelection
         }
-        let globalLifecycleModel = try selection == nil ? self.validatedGlobalLifecycleModel() : nil
+        let globalLifecycleConfiguration = try selection == nil
+            ? self.validatedGlobalLifecycleConfiguration()
+            : nil
         guard self.modelDownloadTask == nil else {
             throw NSError(
                 domain: "ASRService",
@@ -4442,11 +4450,10 @@ final class ASRService: ObservableObject {
             providerKey = selection.providerKey
             contextSessionID = selection.sessionID
         } else {
-            guard let globalLifecycleModel else { throw CancellationError() }
-            let configuration = RecordingSpeechConfigurationResolver.currentDictationFallbackConfiguration()
+            guard let globalLifecycleConfiguration else { throw CancellationError() }
             guard let globalSelection = RecordingSpeechSessionSelection(
                 sessionID: RecordingSessionID(),
-                configuration: configuration
+                configuration: globalLifecycleConfiguration
             ) else {
                 throw NSError(
                     domain: "ASRService",
@@ -4454,8 +4461,8 @@ final class ASRService: ObservableObject {
                     userInfo: [NSLocalizedDescriptionKey: "The selected speech model is unavailable."]
                 )
             }
-            provider = try self.globalLifecycleProvider(for: globalLifecycleModel)
-            model = configuration.model
+            provider = try self.globalLifecycleProvider(for: globalLifecycleConfiguration.model)
+            model = globalLifecycleConfiguration.model
             providerKey = globalSelection.providerKey
             contextSessionID = nil
         }
@@ -4893,21 +4900,21 @@ final class ASRService: ObservableObject {
     // MARK: - Cache management
 
     func clearModelCache() async throws {
-        let model = try self.validatedGlobalLifecycleModel()
+        let configuration = try self.validatedGlobalLifecycleConfiguration()
         DebugLogger.shared.debug("Clearing model cache via transcription provider", source: "ASRService")
         await self.transcriptionExecutor.cancelAndAwaitAll()
-        let provider = try self.globalLifecycleProvider(for: model)
+        let provider = try self.globalLifecycleProvider(for: configuration.model)
         try await provider.clearCache()
         self.isAsrReady = false
         self.modelsExistOnDisk = false
     }
 
-    private func validatedGlobalLifecycleModel() throws -> SettingsStore.SpeechModel {
-        let model = self.globalLifecycleModelProvider()
-        guard !model.isCloudSpeechModel else {
-            throw ASRModelLifecycleError.configureCredentialsInVoiceEngine(model)
+    private func validatedGlobalLifecycleConfiguration() throws -> RecordingSpeechConfiguration {
+        let configuration = self.globalLifecycleConfigurationProvider()
+        guard !configuration.model.isCloudSpeechModel else {
+            throw ASRModelLifecycleError.configureCredentialsInVoiceEngine(configuration.model)
         }
-        return model
+        return configuration
     }
 
     private func globalLifecycleProvider(
@@ -4916,7 +4923,15 @@ final class ASRService: ObservableObject {
         if let globalLifecycleProviderFactory {
             return try globalLifecycleProviderFactory(model)
         }
-        return self.transcriptionProvider
+        if self.cachedGlobalLifecycleProviderModel == model,
+           let cachedGlobalLifecycleProvider
+        {
+            return cachedGlobalLifecycleProvider
+        }
+        let provider = try self.getProvider(for: model)
+        self.cachedGlobalLifecycleProvider = provider
+        self.cachedGlobalLifecycleProviderModel = model
+        return provider
     }
 
     func clearModelCache(for model: SettingsStore.SpeechModel) async throws {

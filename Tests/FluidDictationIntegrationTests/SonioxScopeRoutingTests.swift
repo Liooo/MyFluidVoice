@@ -180,11 +180,17 @@ final class SonioxScopeRoutingTests: XCTestCase {
         }
     }
 
-    func testParameterlessGlobalLifecycleRejectsHiddenSonioxBeforeProviderLookup() async {
+    func testParameterlessGlobalLifecycleRejectsHiddenSonioxBeforeProviderLookup() async throws {
         let provider = GlobalLifecycleProviderProbe()
         var providerLookupCount = 0
+        let configuration = try XCTUnwrap(RecordingSpeechConfiguration(
+            inputSourceID: nil,
+            localeIdentifier: "en-US",
+            model: .sonioxV5,
+            languageBinding: .soniox(.init(languageCode: "en", isStrict: true, region: .global))
+        ))
         let asr = ASRService(
-            globalLifecycleModelProvider: { .sonioxV5 },
+            globalLifecycleConfigurationProvider: { configuration },
             globalLifecycleProviderFactory: { _ in
                 providerLookupCount += 1
                 return provider
@@ -213,6 +219,75 @@ final class SonioxScopeRoutingTests: XCTestCase {
         XCTAssertEqual(provider.modelsExistCallCount, 0)
         XCTAssertEqual(provider.prepareCallCount, 0)
         XCTAssertEqual(provider.clearCacheCallCount, 0)
+    }
+
+    func testGlobalReadinessUsesCapturedConfigurationWhenResolverChangesToSoniox() async throws {
+        let localConfiguration = RecordingSpeechConfigurationResolver.currentDictationFallbackConfiguration()
+        let sonioxConfiguration = try XCTUnwrap(RecordingSpeechConfiguration(
+            inputSourceID: nil,
+            localeIdentifier: "en-US",
+            model: .sonioxV5,
+            languageBinding: .soniox(.init(languageCode: "en", isStrict: true, region: .global))
+        ))
+        var currentConfiguration = localConfiguration
+        var configurationReadCount = 0
+        var providerModels: [SettingsStore.SpeechModel] = []
+        var modelAtProviderLookup: SettingsStore.SpeechModel?
+        let provider = GlobalLifecycleProviderProbe()
+        let asr = ASRService(
+            globalLifecycleConfigurationProvider: {
+                configurationReadCount += 1
+                defer { currentConfiguration = sonioxConfiguration }
+                return currentConfiguration
+            },
+            globalLifecycleProviderFactory: { model in
+                modelAtProviderLookup = currentConfiguration.model
+                providerModels.append(model)
+                return provider
+            }
+        )
+
+        try await asr.ensureAsrReady()
+
+        XCTAssertEqual(configurationReadCount, 1)
+        XCTAssertEqual(modelAtProviderLookup, .sonioxV5)
+        XCTAssertEqual(providerModels, [localConfiguration.model])
+        XCTAssertEqual(provider.modelsExistCallCount, 1)
+        XCTAssertEqual(provider.prepareCallCount, 1)
+    }
+
+    func testGlobalCacheClearUsesCapturedModelWhenResolverChangesToSoniox() async throws {
+        let localConfiguration = RecordingSpeechConfigurationResolver.currentDictationFallbackConfiguration()
+        let sonioxConfiguration = try XCTUnwrap(RecordingSpeechConfiguration(
+            inputSourceID: nil,
+            localeIdentifier: "en-US",
+            model: .sonioxV5,
+            languageBinding: .soniox(.init(languageCode: "en", isStrict: true, region: .global))
+        ))
+        var currentConfiguration = localConfiguration
+        var configurationReadCount = 0
+        var providerModels: [SettingsStore.SpeechModel] = []
+        var modelAtProviderLookup: SettingsStore.SpeechModel?
+        let provider = GlobalLifecycleProviderProbe()
+        let asr = ASRService(
+            globalLifecycleConfigurationProvider: {
+                configurationReadCount += 1
+                defer { currentConfiguration = sonioxConfiguration }
+                return currentConfiguration
+            },
+            globalLifecycleProviderFactory: { model in
+                modelAtProviderLookup = currentConfiguration.model
+                providerModels.append(model)
+                return provider
+            }
+        )
+
+        try await asr.clearModelCache()
+
+        XCTAssertEqual(configurationReadCount, 1)
+        XCTAssertEqual(modelAtProviderLookup, .sonioxV5)
+        XCTAssertEqual(providerModels, [localConfiguration.model])
+        XCTAssertEqual(provider.clearCacheCallCount, 1)
     }
 
     func testNonDictationRoutesNeverFetchSonioxCredentialOrBuildSonioxProvider() async throws {
@@ -566,7 +641,7 @@ private final class CountingLocalProvider: TranscriptionProvider {
 private final class GlobalLifecycleProviderProbe: TranscriptionProvider {
     let name = "Global lifecycle probe"
     let isAvailable = true
-    let isReady = false
+    private(set) var isReady = false
     private(set) var modelsExistCallCount = 0
     private(set) var prepareCallCount = 0
     private(set) var clearCacheCallCount = 0
@@ -574,6 +649,7 @@ private final class GlobalLifecycleProviderProbe: TranscriptionProvider {
     func prepare(progressHandler: ((ModelPreparationProgress) -> Void)?) async throws {
         _ = progressHandler
         self.prepareCallCount += 1
+        self.isReady = true
     }
 
     func transcribe(_ samples: [Float]) async throws -> ASRTranscriptionResult {
