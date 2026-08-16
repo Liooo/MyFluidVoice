@@ -3261,6 +3261,7 @@ final class SettingsStore: ObservableObject {
             privateAIBackendPreference: self.privateAIBackendPreference,
             privateAIContextTokenLimit: self.privateAIContextTokenLimit,
             selectedSpeechModel: self.selectedSpeechModel,
+            localFallbackSpeechModelID: self.localFallbackSpeechModel.rawValue,
             selectedCohereLanguage: self.selectedCohereLanguage,
             selectedNemotronLanguage: self.selectedNemotronLanguage,
             selectedAppleSpeechLocaleIdentifier: self.selectedAppleSpeechLocaleIdentifier,
@@ -3382,6 +3383,15 @@ final class SettingsStore: ObservableObject {
             self.privateAIContextTokenLimit = privateAIContextTokenLimit
         }
         self.selectedSpeechModel = payload.selectedSpeechModel
+        let restoredFallback = if let fallbackID = payload.localFallbackSpeechModelID {
+            SpeechModel(rawValue: fallbackID)
+        } else {
+            payload.selectedSpeechModel
+        }
+        self.defaults.set(
+            Self.normalizedLocalFallbackSpeechModel(restoredFallback).rawValue,
+            forKey: Keys.localFallbackSpeechModel
+        )
         self.selectedCohereLanguage = payload.selectedCohereLanguage
         if let selectedNemotronLanguage = payload.selectedNemotronLanguage {
             self.selectedNemotronLanguage = selectedNemotronLanguage
@@ -4445,6 +4455,9 @@ final class SettingsStore: ObservableObject {
         case nemotronStreaming = "nemotron-3.5-streaming"
         case nemotronStreaming320 = "nemotron-3.5-streaming-320"
 
+        /// Hidden until the cloud runtime and credential UI are complete.
+        case sonioxV5 = "soniox-v5"
+
         // MARK: - Apple Native
 
         case appleSpeech = "apple-speech"
@@ -4475,6 +4488,7 @@ final class SettingsStore: ObservableObject {
             case .nemotronOffline: return "Nemotron 3.5 Multilingual"
             case .nemotronStreaming: return "Nemotron Speech 3.5 - Ultra Fast Low Latency"
             case .nemotronStreaming320: return "Nemotron Speech 3.5 - Ultra Fast Low Latency"
+            case .sonioxV5: return "Soniox v5 Realtime"
             case .appleSpeech: return "Apple ASR Legacy"
             case .appleSpeechAnalyzer: return "Apple Speech - macOS 26+"
             case .whisperTiny: return "Whisper Tiny"
@@ -4495,6 +4509,7 @@ final class SettingsStore: ObservableObject {
             case .qwen3Asr: return "30 Languages"
             case .cohereTranscribeSixBit: return "14 Languages (Select Manually)"
             case .nemotronOffline, .nemotronStreaming, .nemotronStreaming320: return "Around 40 Languages"
+            case .sonioxV5: return "60+ Languages (Automatic or IME Hint)"
             case .appleSpeech: return "System Languages"
             case .appleSpeechAnalyzer: return "EN, ES, FR, DE, IT, JA, KO, PT, ZH"
             case .whisperTiny, .whisperBase, .whisperSmall, .whisperMedium, .whisperLargeTurbo, .whisperLarge:
@@ -4512,6 +4527,7 @@ final class SettingsStore: ObservableObject {
             case .nemotronOffline: return "~530.8 MiB"
             case .nemotronStreaming: return "~668.2 MiB"
             case .nemotronStreaming320: return "~668.2 MiB"
+            case .sonioxV5: return "Cloud (usage billed by Soniox)"
             case .appleSpeech: return "Built-in"
             case .appleSpeechAnalyzer: return "Built-in"
             case .whisperTiny: return "~43.9 MiB"
@@ -4532,6 +4548,7 @@ final class SettingsStore: ObservableObject {
             case .cohereTranscribeSixBit: return 1_650_748_785
             case .nemotronOffline: return 556_552_620
             case .nemotronStreaming, .nemotronStreaming320: return 700_685_415
+            case .sonioxV5: return 0
             case .whisperTiny: return 45_981_088
             case .whisperBase: return 84_962_880
             case .whisperSmall: return 269_751_136
@@ -4549,9 +4566,30 @@ final class SettingsStore: ObservableObject {
             }
         }
 
+        var isCloudSpeechModel: Bool {
+            self == .sonioxV5
+        }
+
+        var requiresCredential: Bool {
+            self == .sonioxV5
+        }
+
+        var requiresModelDownload: Bool {
+            switch self {
+            case .appleSpeech, .appleSpeechAnalyzer, .sonioxV5:
+                return false
+            default:
+                return true
+            }
+        }
+
+        var backendModelIdentifier: String {
+            self == .sonioxV5 ? SonioxProvider.modelID : self.rawValue
+        }
+
         var isWhisperModel: Bool {
             switch self {
-            case .parakeetTDT, .parakeetTDTv2, .parakeetRealtime, .qwen3Asr, .cohereTranscribeSixBit, .nemotronOffline, .nemotronStreaming, .nemotronStreaming320, .appleSpeech, .appleSpeechAnalyzer: return false
+            case .parakeetTDT, .parakeetTDTv2, .parakeetRealtime, .qwen3Asr, .cohereTranscribeSixBit, .nemotronOffline, .nemotronStreaming, .nemotronStreaming320, .appleSpeech, .appleSpeechAnalyzer, .sonioxV5: return false
             default: return true
             }
         }
@@ -4624,6 +4662,9 @@ final class SettingsStore: ObservableObject {
         /// Returns models available for the current Mac's architecture and OS
         static var availableModels: [SpeechModel] {
             allCases.filter { model in
+                if model == .sonioxV5 {
+                    return false
+                }
                 if model == .whisperLargeTurbo, !CPUArchitecture.isAppleSilicon {
                     return false
                 }
@@ -4674,6 +4715,7 @@ final class SettingsStore: ObservableObject {
             case .nemotronOffline: return "Nemotron 3.5 Multilingual"
             case .nemotronStreaming: return "Nemotron Speech 3.5 - Ultra Fast Low Latency"
             case .nemotronStreaming320: return "Nemotron Speech 3.5 - Ultra Fast Low Latency"
+            case .sonioxV5: return "Soniox v5 Realtime"
             case .appleSpeech: return "Apple ASR Legacy"
             case .appleSpeechAnalyzer: return "Apple Speech - macOS 26+"
             case .whisperTiny: return "Fast & Light"
@@ -4707,6 +4749,8 @@ final class SettingsStore: ObservableObject {
                 return "NVIDIA Nemotron 3.5 streaming-capable transcription. Supports 40 language-locales with auto or manual language selection."
             case .nemotronStreaming320:
                 return "NVIDIA Nemotron 3.5 streaming-capable transcription. Supports 40 language-locales with auto or manual language selection."
+            case .sonioxV5:
+                return "Cloud streaming transcription with automatic language detection or an input-language hint."
             case .appleSpeech:
                 return "Built-in macOS speech recognition. No model download required."
             case .appleSpeechAnalyzer:
@@ -4737,6 +4781,8 @@ final class SettingsStore: ObservableObject {
                 return 8.0
             case .nemotronOffline, .nemotronStreaming, .nemotronStreaming320:
                 return 8.0
+            case .sonioxV5:
+                return 0
             case .appleSpeech, .appleSpeechAnalyzer:
                 return 2.0 // Built-in, minimal overhead
             case .whisperTiny:
@@ -4780,6 +4826,7 @@ final class SettingsStore: ObservableObject {
             case .cohereTranscribeSixBit: return 3
             case .nemotronOffline: return 3
             case .nemotronStreaming, .nemotronStreaming320: return 4
+            case .sonioxV5: return 5
             case .appleSpeech: return 4
             case .appleSpeechAnalyzer: return 4
             case .whisperTiny: return 4
@@ -4801,6 +4848,7 @@ final class SettingsStore: ObservableObject {
             case .cohereTranscribeSixBit: return 5
             case .nemotronOffline: return 5
             case .nemotronStreaming, .nemotronStreaming320: return 4
+            case .sonioxV5: return 5
             case .appleSpeech: return 4
             case .appleSpeechAnalyzer: return 4
             case .whisperTiny: return 2
@@ -4822,6 +4870,7 @@ final class SettingsStore: ObservableObject {
             case .cohereTranscribeSixBit: return 0.85
             case .nemotronOffline: return 0.85
             case .nemotronStreaming, .nemotronStreaming320: return 1.0
+            case .sonioxV5: return 0.95
             case .appleSpeech: return 0.60
             case .appleSpeechAnalyzer: return 0.85
             case .whisperTiny: return 0.90
@@ -4843,6 +4892,7 @@ final class SettingsStore: ObservableObject {
             case .cohereTranscribeSixBit: return 0.98
             case .nemotronOffline: return 0.90
             case .nemotronStreaming, .nemotronStreaming320: return 0.85
+            case .sonioxV5: return 0.98
             case .appleSpeech: return 0.60
             case .appleSpeechAnalyzer: return 0.80
             case .whisperTiny: return 0.40
@@ -4864,6 +4914,7 @@ final class SettingsStore: ObservableObject {
             case .cohereTranscribeSixBit: return "New"
             case .nemotronOffline, .nemotronStreaming, .nemotronStreaming320: return "New + Beta"
             case .appleSpeechAnalyzer: return "New"
+            case .sonioxV5: return "Cloud"
             default: return nil
             }
         }
@@ -4906,6 +4957,8 @@ final class SettingsStore: ObservableObject {
         /// Models without native incremental decoding should use a slower interval.
         var streamingPreviewIntervalSeconds: Double {
             switch self {
+            case .sonioxV5:
+                return 0.1
             case .parakeetRealtime:
                 return 0.2
             case .nemotronStreaming, .nemotronStreaming320:
@@ -4921,6 +4974,8 @@ final class SettingsStore: ObservableObject {
         /// Cohere performs better with a slightly larger prefix than the default 1 second.
         var minimumStreamingPreviewSeconds: Double {
             switch self {
+            case .sonioxV5:
+                return 0.1
             case .parakeetRealtime:
                 return 0.2
             case .nemotronStreaming, .nemotronStreaming320:
@@ -4939,6 +4994,7 @@ final class SettingsStore: ObservableObject {
             case openai = "OpenAI"
             case qwen = "Qwen"
             case cohere = "Cohere"
+            case soniox = "Soniox"
         }
 
         /// Which provider this model belongs to
@@ -4952,6 +5008,8 @@ final class SettingsStore: ObservableObject {
                 return .qwen
             case .cohereTranscribeSixBit:
                 return .cohere
+            case .sonioxV5:
+                return .soniox
             case .whisperTiny, .whisperBase, .whisperSmall, .whisperMedium, .whisperLargeTurbo, .whisperLarge:
                 return .openai
             }
@@ -4965,7 +5023,7 @@ final class SettingsStore: ObservableObject {
         /// Whether this model is built-in or already downloaded on disk
         var isInstalled: Bool {
             switch self {
-            case .appleSpeech, .appleSpeechAnalyzer:
+            case .appleSpeech, .appleSpeechAnalyzer, .sonioxV5:
                 return true
             case .parakeetTDT:
                 #if canImport(FluidAudio)
@@ -5079,6 +5137,8 @@ final class SettingsStore: ObservableObject {
                 return "Qwen"
             case .cohereTranscribeSixBit:
                 return "Cohere"
+            case .sonioxV5:
+                return "Soniox"
             case .appleSpeech, .appleSpeechAnalyzer:
                 return "Apple"
             case .whisperTiny, .whisperBase, .whisperSmall, .whisperMedium, .whisperLargeTurbo, .whisperLarge:
@@ -5103,6 +5163,8 @@ final class SettingsStore: ObservableObject {
                 return "#E67E22"
             case .cohereTranscribeSixBit:
                 return "#FA6B3C"
+            case .sonioxV5:
+                return "#5B5BD6"
             case .appleSpeech, .appleSpeechAnalyzer:
                 return "#A2AAAD" // Apple Gray
             case .whisperTiny, .whisperBase, .whisperSmall, .whisperMedium, .whisperLargeTurbo, .whisperLarge:
@@ -5314,6 +5376,7 @@ private extension SettingsStore {
 
         /// Unified Speech Model (replaces above two)
         static let selectedSpeechModel = "SelectedSpeechModel"
+        static let localFallbackSpeechModel = "LocalFallbackSpeechModel"
         static let selectedCohereLanguage = "SelectedCohereLanguage"
         static let selectedNemotronLanguage = "SelectedNemotronLanguage"
         static let selectedAppleSpeechLocaleIdentifier = "SelectedAppleSpeechLocaleIdentifier"
@@ -5569,6 +5632,45 @@ extension SettingsStore {
             objectWillChange.send()
             let model = newValue == .nemotronStreaming320 ? SpeechModel.nemotronStreaming : newValue
             self.defaults.set(model.rawValue, forKey: Keys.selectedSpeechModel)
+            if !model.isCloudSpeechModel, SpeechModel.availableModels.contains(model) {
+                self.defaults.set(model.rawValue, forKey: Keys.localFallbackSpeechModel)
+            }
+        }
+    }
+
+    static func normalizedLocalFallbackSpeechModel(
+        _ candidate: SpeechModel?,
+        availableModels: [SpeechModel] = SpeechModel.availableModels,
+        defaultModel: SpeechModel = SpeechModel.defaultModel
+    ) -> SpeechModel {
+        guard let candidate,
+              !candidate.isCloudSpeechModel,
+              availableModels.contains(candidate)
+        else {
+            return defaultModel
+        }
+        return candidate
+    }
+
+    var localFallbackSpeechModel: SpeechModel {
+        get {
+            let storedRawValue = self.defaults.string(forKey: Keys.localFallbackSpeechModel)
+            let candidate: SpeechModel?
+            if let storedRawValue {
+                candidate = SpeechModel(rawValue: storedRawValue)
+            } else {
+                candidate = self.selectedSpeechModel
+            }
+            let normalized = Self.normalizedLocalFallbackSpeechModel(candidate)
+            if storedRawValue != normalized.rawValue {
+                self.defaults.set(normalized.rawValue, forKey: Keys.localFallbackSpeechModel)
+            }
+            return normalized
+        }
+        set {
+            objectWillChange.send()
+            let normalized = Self.normalizedLocalFallbackSpeechModel(newValue)
+            self.defaults.set(normalized.rawValue, forKey: Keys.localFallbackSpeechModel)
         }
     }
 

@@ -66,7 +66,7 @@ struct CustomDictionaryView: View {
     }
 
     private var activePronunciationMatching: Bool {
-        self.pronunciationMatchingEnabled && SettingsStore.shared.selectedSpeechModel.supportsPronunciationMatching
+        self.pronunciationMatchingEnabled && SettingsStore.shared.localFallbackSpeechModel.supportsPronunciationMatching
     }
 
     private var pronunciationMatchingBinding: Binding<Bool> {
@@ -295,7 +295,7 @@ struct CustomDictionaryView: View {
             self.loadBoostTerms()
             self.automaticDictionaryLearningEnabled = SettingsStore.shared.automaticDictionaryLearningEnabled
             self.pronunciationMatchingEnabled = SettingsStore.shared.pronunciationMatchingEnabled
-            if !SettingsStore.shared.selectedSpeechModel.supportsPronunciationMatching {
+            if !SettingsStore.shared.localFallbackSpeechModel.supportsPronunciationMatching {
                 self.pronunciationMatchingEnabled = false
                 SettingsStore.shared.pronunciationMatchingEnabled = false
             }
@@ -633,7 +633,7 @@ struct CustomDictionaryView: View {
         VoiceMatchingSettingsRow(
             isEnabled: self.pronunciationMatchingBinding,
             isDisabled: self.isTrainingRecording || self.isTrainingProcessing,
-            isAdvancedAvailable: SettingsStore.shared.selectedSpeechModel.supportsPronunciationMatching,
+            isAdvancedAvailable: SettingsStore.shared.localFallbackSpeechModel.supportsPronunciationMatching,
             onChange: self.handlePronunciationMatchingChange(enabled:)
         )
     }
@@ -642,6 +642,13 @@ struct CustomDictionaryView: View {
         VStack(alignment: .leading, spacing: self.theme.metrics.spacing.md) {
             Text("Teach MyFluidVoice your pronunciation")
                 .font(self.theme.typography.bodySmallStrong)
+
+            Text(
+                "Training uses \(SettingsStore.shared.localFallbackSpeechModel.displayName) locally · " +
+                    (SettingsStore.shared.localFallbackSpeechModel.isInstalled ? "ready" : "downloads when needed")
+            )
+            .font(self.theme.typography.caption)
+            .foregroundStyle(self.theme.palette.secondaryText)
 
             if self.trainingAlreadyCorrectWithoutReplacement {
                 Label("\(self.trainingTargetReference) is already recognized correctly.", systemImage: "checkmark.circle.fill")
@@ -1794,7 +1801,10 @@ struct CustomDictionaryView: View {
         self.isTrainingStarting = true
         self.isTrainingRecording = true
 
-        await self.asr.start(forDictionaryTraining: true)
+        await self.asr.start(
+            speechConfiguration: RecordingSpeechConfigurationResolver.currentLocalFallbackConfiguration(),
+            forDictionaryTraining: true
+        )
         self.isTrainingStarting = false
         if !self.asr.isRunning {
             self.isTrainingRecording = false

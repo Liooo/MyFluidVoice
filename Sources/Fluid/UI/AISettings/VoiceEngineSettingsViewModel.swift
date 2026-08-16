@@ -122,7 +122,9 @@ final class VoiceEngineSettingsViewModel: ObservableObject {
     }
 
     func activateSpeechModel(_ model: SettingsStore.SpeechModel) {
-        guard !self.areSpeechModelActionsBlocked else { return }
+        guard !self.areSpeechModelActionsBlocked,
+              SettingsStore.SpeechModel.availableModels.contains(model)
+        else { return }
         withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
             self.settings.selectedSpeechModel = model
             self.previewSpeechModel = model
@@ -226,6 +228,8 @@ final class VoiceEngineSettingsViewModel: ObservableObject {
             return "Nemotron 3.5 Multilingual is slower but more accurate. Supports around 40 languages with auto or manual language selection. Best on Apple Silicon with 8GB+ RAM."
         case .nemotronStreaming, .nemotronStreaming320:
             return "Nemotron Speech 3.5 Streaming Capable uses NVIDIA's streaming CoreML pipeline. Supports around 40 languages with auto or manual language selection."
+        case .sonioxV5:
+            return "Soniox v5 Realtime streams dictation through Soniox with automatic language detection or an input-language hint."
         default:
             return "Whisper models support 99 languages and work on any Mac."
         }

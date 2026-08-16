@@ -68,6 +68,7 @@ enum ModelSortOption: String, CaseIterable, Identifiable {
 }
 
 enum SpeechProviderFilter: String, CaseIterable, Identifiable {
+    // Soniox intentionally has no filter until its gated cloud UI ships.
     case all = "All"
     case nvidia = "NVIDIA"
     case apple = "Apple"

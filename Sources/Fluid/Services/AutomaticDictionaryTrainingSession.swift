@@ -197,7 +197,10 @@ final class AutomaticDictionaryTrainingSession: ObservableObject {
         self.hasError = false
         self.statusMessage = "Starting..."
 
-        await self.asr.start(forDictionaryTraining: true) { [weak self] in
+        await self.asr.start(
+            speechConfiguration: RecordingSpeechConfigurationResolver.currentLocalFallbackConfiguration(),
+            forDictionaryTraining: true
+        ) { [weak self] in
             guard let self else { return }
             self.didStartAudioCapture = true
             self.capturePhase = .recording

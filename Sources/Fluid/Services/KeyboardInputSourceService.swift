@@ -264,6 +264,9 @@ enum RecordingSpeechConfigurationResolver {
         let binding: VoiceEngineLanguageRoute.LanguageBinding?
 
         switch model {
+        case .sonioxV5:
+            localeIdentifier = selectedLocaleIdentifier
+            binding = .automatic
         case .appleSpeech, .appleSpeechAnalyzer:
             localeIdentifier = appleLocaleIdentifier.replacingOccurrences(of: "_", with: "-")
             binding = .appleSpeech(localeIdentifier: localeIdentifier)
@@ -295,7 +298,7 @@ enum RecordingSpeechConfigurationResolver {
         )
     }
 
-    static func currentGlobalFallbackConfiguration(
+    static func currentDictationFallbackConfiguration(
         settings: SettingsStore = .shared
     ) -> RecordingSpeechConfiguration {
         if let configuration = self.globalFallbackConfiguration(
@@ -317,6 +320,38 @@ enum RecordingSpeechConfigurationResolver {
             preconditionFailure("Built-in Parakeet fallback configuration must be valid")
         }
         return safeFallback
+    }
+
+    static func currentLocalFallbackConfiguration(
+        settings: SettingsStore = .shared
+    ) -> RecordingSpeechConfiguration {
+        if let configuration = self.globalFallbackConfiguration(
+            model: settings.localFallbackSpeechModel,
+            selectedLanguageID: settings.onboardingSelectedLanguageID,
+            appleLocaleIdentifier: settings.selectedAppleSpeechLocale.identifier,
+            cohereLanguage: settings.selectedCohereLanguage,
+            nemotronLanguage: settings.selectedNemotronLanguage
+        ) {
+            return configuration
+        }
+
+        guard let safeFallback = RecordingSpeechConfiguration(
+            inputSourceID: nil,
+            localeIdentifier: "en-US",
+            model: .parakeetTDT,
+            languageBinding: .automatic
+        ) else {
+            preconditionFailure("Built-in Parakeet fallback configuration must be valid")
+        }
+        return safeFallback
+    }
+
+    /// Kept for source compatibility with older integration coverage. Production callers use
+    /// one of the explicitly scoped APIs above.
+    static func currentGlobalFallbackConfiguration(
+        settings: SettingsStore = .shared
+    ) -> RecordingSpeechConfiguration {
+        self.currentDictationFallbackConfiguration(settings: settings)
     }
 
     static func compatibleModels(
@@ -374,6 +409,8 @@ enum RecordingSpeechConfigurationResolver {
         else { return nil }
 
         switch model {
+        case .sonioxV5:
+            return .automatic
         case .parakeetTDT:
             return self.parakeetTDTLanguageCodes.contains(languageCode) ? .automatic : nil
         case .parakeetTDTv2, .parakeetRealtime:

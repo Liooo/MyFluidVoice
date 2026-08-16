@@ -4338,7 +4338,7 @@ extension ContentView {
         let assignedModel = inputSource.flatMap {
             SettingsStore.shared.speechModelAssignment(forInputSourceID: $0.id)
         }
-        let fallback = RecordingSpeechConfigurationResolver.currentGlobalFallbackConfiguration()
+        let fallback = RecordingSpeechConfigurationResolver.currentDictationFallbackConfiguration()
         let configuration = RecordingSpeechConfigurationResolver.resolve(
             inputSource: inputSource,
             assignedModel: assignedModel,

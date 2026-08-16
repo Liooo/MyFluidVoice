@@ -129,7 +129,9 @@ enum VoiceEngineLanguageCatalog {
     }
 
     private static func routeCandidates(for language: VoiceEngineLanguage) -> [VoiceEngineLanguageRoute] {
-        var routes: [VoiceEngineLanguageRoute] = []
+        var routes: [VoiceEngineLanguageRoute] = [
+            Self.route(language, .sonioxV5, .automatic),
+        ]
 
         if language.id == "en" {
             routes.append(Self.route(language, .parakeetTDTv2, .automatic))

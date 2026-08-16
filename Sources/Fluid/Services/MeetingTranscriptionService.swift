@@ -179,17 +179,16 @@ final class MeetingTranscriptionService: ObservableObject {
     }
 
     /// Initialize the ASR models (reuses models from ASRService - no duplicate download!)
-    func initializeModels() async throws {
-        guard !self.asrService.isAsrReady else { return }
-
+    func initializeModels() async throws -> TranscriptionProvider {
         self.currentStatus = "Preparing ASR models..."
         self.progress = 0.1
 
         do {
-            try await self.asrService.ensureAsrReady()
+            let provider = try await self.asrService.preparedLocalFallbackProvider()
 
             self.currentStatus = "Models ready"
             self.progress = 0.0
+            return provider
         } catch {
             throw TranscriptionError.modelLoadFailed(error.localizedDescription)
         }
@@ -211,16 +210,8 @@ final class MeetingTranscriptionService: ObservableObject {
         }
 
         do {
-            // Initialize models if not already done (reuses ASRService models)
-            if !self.asrService.isAsrReady {
-                try await self.initializeModels()
-            }
-
-            // Get the current transcription provider (works for both Parakeet and Whisper)
-            let provider = self.asrService.fileTranscriptionProvider
-            guard provider.isReady else {
-                throw TranscriptionError.modelLoadFailed("Transcription provider not ready")
-            }
+            // Prepare one saved local fallback provider and retain it for the full operation.
+            let provider = try await self.initializeModels()
 
             // Check file extension
             let fileExtension = fileURL.pathExtension.lowercased()

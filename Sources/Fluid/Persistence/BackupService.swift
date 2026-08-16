@@ -17,6 +17,7 @@ struct SettingsBackupPayload: Codable, Equatable {
     let privateAIBackendPreference: SettingsStore.PrivateAIBackendPreference?
     let privateAIContextTokenLimit: Int?
     let selectedSpeechModel: SettingsStore.SpeechModel
+    let localFallbackSpeechModelID: String?
     let selectedCohereLanguage: SettingsStore.CohereLanguage
     let selectedNemotronLanguage: SettingsStore.NemotronLanguage?
     let selectedAppleSpeechLocaleIdentifier: String?

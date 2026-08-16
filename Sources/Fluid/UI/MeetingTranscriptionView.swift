@@ -39,6 +39,11 @@ struct MeetingTranscriptionView: View {
         return UTType(filenameExtension: fileExtension)?.conforms(to: .movie) ?? false
     }
 
+    private var localFallbackReadinessText: String {
+        let model = self.settings.localFallbackSpeechModel
+        return model.isInstalled ? "ready" : "downloads when needed"
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             // Header
@@ -54,6 +59,13 @@ struct MeetingTranscriptionView: View {
                 Text("Choose an audio or video file to transcribe")
                     .font(.subheadline)
                     .foregroundColor(.secondary)
+
+                Text(
+                    "Uses \(self.settings.localFallbackSpeechModel.displayName) locally · " +
+                        self.localFallbackReadinessText
+                )
+                .font(.caption)
+                .foregroundColor(.secondary)
             }
             .padding(.top, 40)
             .padding(.bottom, 30)

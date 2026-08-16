@@ -2,6 +2,14 @@ import Foundation
 
 @MainActor
 final class InferenceAPIController: LocalAPIRouteHandler {
+    private let asrService: ASRService
+    private let settings: SettingsStore
+
+    init(asrService: ASRService? = nil, settings: SettingsStore? = nil) {
+        self.asrService = asrService ?? AppServices.shared.asr
+        self.settings = settings ?? SettingsStore.shared
+    }
+
     struct TranscribeJSONRequest: Decodable {
         let path: String?
         let audioBase64: String?
@@ -43,25 +51,25 @@ final class InferenceAPIController: LocalAPIRouteHandler {
     private func transcribe(_ request: LocalAPI.Request) async -> LocalAPI.Response {
         do {
             if let fileURL = try self.decodeFilePath(from: request) {
-                let apiResult = try await AppServices.shared.asr.transcribeFileForAPI(fileURL)
+                let apiResult = try await self.asrService.transcribeFileForAPI(fileURL)
                 return LocalAPI.json(
                     TranscribeResponse(
                         text: apiResult.result.text,
                         confidence: apiResult.result.confidence,
                         sampleCount: apiResult.sampleCount,
-                        provider: SettingsStore.shared.selectedSpeechModel.displayName
+                        provider: self.settings.localFallbackSpeechModel.displayName
                     )
                 )
             }
 
             let samples = try self.decodeAudioSamples(from: request)
-            let result = try await AppServices.shared.asr.transcribeSamplesForAPI(samples)
+            let result = try await self.asrService.transcribeSamplesForAPI(samples)
             return LocalAPI.json(
                 TranscribeResponse(
                     text: result.text,
                     confidence: result.confidence,
                     sampleCount: samples.count,
-                    provider: SettingsStore.shared.selectedSpeechModel.displayName
+                    provider: self.settings.localFallbackSpeechModel.displayName
                 )
             )
         } catch {

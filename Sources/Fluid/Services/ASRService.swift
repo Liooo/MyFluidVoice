@@ -398,6 +398,7 @@ final class ASRService: ObservableObject {
     private var cachedRecordingProvider: TranscriptionProvider?
     private var cachedRecordingProviderKey: String?
     private var readyProviderKey: String?
+    private let localProviderFactory: ((RecordingSpeechConfiguration) throws -> TranscriptionProvider)?
 
     /// Prevent concurrent provider.prepare() calls (download/load) from overlapping.
     /// Subsequent callers await the in-flight task.
@@ -528,7 +529,26 @@ final class ASRService: ObservableObject {
         {
             return cachedRecordingProvider
         }
-        let configuration = selection.configuration
+        let provider = try? self.makeLocalProvider(for: selection.configuration)
+        self.cachedRecordingProvider = provider
+        self.cachedRecordingProviderKey = provider == nil ? nil : selection.providerKey
+        return provider
+    }
+
+    private func makeLocalProvider(
+        for configuration: RecordingSpeechConfiguration
+    ) throws -> TranscriptionProvider {
+        guard !configuration.model.isCloudSpeechModel else {
+            throw NSError(
+                domain: "ASRService.LocalOnly",
+                code: -2100,
+                userInfo: [NSLocalizedDescriptionKey: "Cloud speech models are not allowed in local-only workflows."]
+            )
+        }
+        if let localProviderFactory {
+            return try localProviderFactory(configuration)
+        }
+
         let provider: TranscriptionProvider?
         switch (configuration.model, configuration.languageBinding) {
         case let (.appleSpeechAnalyzer, .appleSpeech(localeIdentifier)):
@@ -573,9 +593,44 @@ final class ASRService: ObservableObject {
         default:
             provider = nil
         }
-        self.cachedRecordingProvider = provider
-        self.cachedRecordingProviderKey = provider == nil ? nil : selection.providerKey
+        guard let provider else {
+            throw NSError(
+                domain: "ASRService.LocalOnly",
+                code: -2101,
+                userInfo: [NSLocalizedDescriptionKey: "The local speech configuration is unavailable."]
+            )
+        }
         return provider
+    }
+
+    func preparedLocalFallbackProvider() async throws -> TranscriptionProvider {
+        let configuration = RecordingSpeechConfigurationResolver.currentLocalFallbackConfiguration()
+        let provider = try self.makeLocalProvider(for: configuration)
+        if !provider.isReady {
+            try await provider.prepare(progressHandler: nil)
+        }
+        guard provider.isReady else {
+            throw NSError(
+                domain: "ASRService.LocalOnly",
+                code: -2102,
+                userInfo: [NSLocalizedDescriptionKey: "The local speech provider is not ready."]
+            )
+        }
+        return provider
+    }
+
+    static func recordingConfiguration(
+        explicitConfiguration: RecordingSpeechConfiguration?,
+        forDictionaryTraining: Bool,
+        settings: SettingsStore
+    ) -> RecordingSpeechConfiguration {
+        if let explicitConfiguration {
+            return explicitConfiguration
+        }
+        if forDictionaryTraining {
+            return RecordingSpeechConfigurationResolver.currentLocalFallbackConfiguration(settings: settings)
+        }
+        return RecordingSpeechConfigurationResolver.currentDictationFallbackConfiguration(settings: settings)
     }
 
     private func clearRecordingSession(matching sessionID: RecordingSessionID) {
@@ -599,7 +654,7 @@ final class ASRService: ObservableObject {
             return selection.providerKey == providerKey && self.activeRecordingProviderKey == providerKey
         }
         guard self.activeRecordingSelection == nil else { return false }
-        let configuration = RecordingSpeechConfigurationResolver.currentGlobalFallbackConfiguration()
+        let configuration = RecordingSpeechConfigurationResolver.currentDictationFallbackConfiguration()
         return RecordingSpeechSessionSelection(
             sessionID: RecordingSessionID(),
             configuration: configuration
@@ -685,12 +740,6 @@ final class ASRService: ObservableObject {
     /// Returns the user-friendly name of the currently selected speech model
     var activeProviderName: String {
         self.effectiveSpeechModel.displayName
-    }
-
-    /// Exposes the transcription provider for file transcription (MeetingTranscriptionService)
-    /// This allows file transcription to work with any provider (Parakeet, Whisper, etc.)
-    var fileTranscriptionProvider: TranscriptionProvider {
-        self.transcriptionProvider
     }
 
     private func currentTranscriptionAnalyticsDimensions() -> (provider: String, model: String) {
@@ -785,6 +834,12 @@ final class ASRService: ObservableObject {
     /// Used for downloading models without switching the active model.
     private func getProvider(for model: SettingsStore.SpeechModel) throws -> TranscriptionProvider {
         switch model {
+        case .sonioxV5:
+            throw NSError(
+                domain: "ASRService",
+                code: -2004,
+                userInfo: [NSLocalizedDescriptionKey: "Cloud speech models do not have local model artifacts."]
+            )
         case .appleSpeechAnalyzer:
             if #available(macOS 26.0, *) {
                 return AppleSpeechAnalyzerProvider()
@@ -1444,7 +1499,10 @@ final class ASRService: ObservableObject {
         )
     }()
 
-    init() {
+    init(
+        localProviderFactory: ((RecordingSpeechConfiguration) throws -> TranscriptionProvider)? = nil
+    ) {
+        self.localProviderFactory = localProviderFactory
         // CRITICAL FIX: Do NOT call any framework-triggering APIs here!
         // This includes:
         // - AVCaptureDevice.authorizationStatus (triggers AVFCapture/CoreAudio)
@@ -1981,8 +2039,11 @@ final class ASRService: ObservableObject {
             return .failed
         }
         let resolvedSessionID = sessionID ?? RecordingSessionID()
-        let resolvedConfiguration = speechConfiguration
-            ?? RecordingSpeechConfigurationResolver.currentGlobalFallbackConfiguration()
+        let resolvedConfiguration = Self.recordingConfiguration(
+            explicitConfiguration: speechConfiguration,
+            forDictionaryTraining: forDictionaryTraining,
+            settings: SettingsStore.shared
+        )
         guard let selection = RecordingSpeechSessionSelection(
             sessionID: resolvedSessionID,
             configuration: resolvedConfiguration
@@ -2790,19 +2851,9 @@ final class ASRService: ObservableObject {
             samples.append(contentsOf: repeatElement(0.0, count: minSamples - samples.count))
         }
 
-        try await self.ensureAsrReady()
+        let provider = try await self.preparedLocalFallbackProvider()
         guard self.activeRecordingSelection == nil else { throw CancellationError() }
-        guard self.transcriptionProvider.isReady else {
-            throw NSError(
-                domain: "ASRService",
-                code: -2,
-                userInfo: [NSLocalizedDescriptionKey: "Transcription provider is not ready."]
-            )
-        }
-
-        let result = try await transcriptionExecutor.run { [provider = self.transcriptionProvider] in
-            try await provider.transcribeFinal(samples)
-        }
+        let result = try await self.transcribeSamplesForAPI(samples, provider: provider)
 
         if !self.hasCompletedFirstTranscription {
             self.hasCompletedFirstTranscription = true
@@ -2815,6 +2866,15 @@ final class ASRService: ObservableObject {
         )
         self.recordWordBoostHitIfAny(transcribedText: cleanedText)
         return ASRTranscriptionResult(text: cleanedText, confidence: result.confidence)
+    }
+
+    private func transcribeSamplesForAPI(
+        _ samples: [Float],
+        provider: TranscriptionProvider
+    ) async throws -> ASRTranscriptionResult {
+        try await self.transcriptionExecutor.run { [provider] in
+            try await provider.transcribeFinal(samples)
+        }
     }
 
     func transcribeFileForAPI(_ fileURL: URL) async throws -> (result: ASRTranscriptionResult, sampleCount: Int) {
@@ -2835,21 +2895,16 @@ final class ASRService: ObservableObject {
 
         let estimatedSamples = try LocalAPIAudioDecoder.validateDurationWithinLimit(for: fileURL)
 
-        try await self.ensureAsrReady()
+        let provider = try await self.preparedLocalFallbackProvider()
         guard self.activeRecordingSelection == nil else { throw CancellationError() }
-        let provider = self.transcriptionProvider
-        guard provider.isReady else {
-            throw NSError(
-                domain: "ASRService",
-                code: -2,
-                userInfo: [NSLocalizedDescriptionKey: "Transcription provider is not ready."]
-            )
-        }
 
         guard provider.prefersNativeFileTranscription else {
             let samples = try LocalAPIAudioDecoder.samples(from: fileURL)
-            let result = try await self.transcribeSamplesForAPI(samples)
-            return (result, samples.count)
+            let result = try await self.transcribeSamplesForAPI(samples, provider: provider)
+            let cleanedText = ASRService.applySpokenPunctuationFormatting(
+                ASRService.applyCustomDictionary(ASRService.removeFillerWords(result.text))
+            )
+            return (ASRTranscriptionResult(text: cleanedText, confidence: result.confidence), samples.count)
         }
 
         let result = try await transcriptionExecutor.run { [provider] in
@@ -4272,7 +4327,7 @@ final class ASRService: ObservableObject {
             providerKey = selection.providerKey
             contextSessionID = selection.sessionID
         } else {
-            let configuration = RecordingSpeechConfigurationResolver.currentGlobalFallbackConfiguration()
+            let configuration = RecordingSpeechConfigurationResolver.currentDictationFallbackConfiguration()
             guard let globalSelection = RecordingSpeechSessionSelection(
                 sessionID: RecordingSessionID(),
                 configuration: configuration
