@@ -355,6 +355,36 @@ final class SonioxCredentialSettingsTests: XCTestCase {
         XCTAssertTrue(aggregateCommitted)
     }
 
+    func testAggregateKeychainStateWinsOverStaleLegacyProviderKey() {
+        let values = KeychainService.authoritativeProviderKeys(
+            aggregateExists: true,
+            aggregate: ["asr:soniox": "new-value"],
+            legacy: ["asr:soniox": "stale-value"]
+        )
+
+        XCTAssertEqual(values, ["asr:soniox": "new-value"])
+    }
+
+    func testEmptyAggregateKeychainStateBlocksLegacyProviderKeyResurrection() {
+        let values = KeychainService.authoritativeProviderKeys(
+            aggregateExists: true,
+            aggregate: [:],
+            legacy: ["asr:soniox": "stale-value"]
+        )
+
+        XCTAssertTrue(values.isEmpty)
+    }
+
+    func testMissingAggregateKeychainStateImportsLegacyProviderKey() {
+        let values = KeychainService.authoritativeProviderKeys(
+            aggregateExists: false,
+            aggregate: [:],
+            legacy: ["asr:soniox": "legacy-value"]
+        )
+
+        XCTAssertEqual(values, ["asr:soniox": "legacy-value"])
+    }
+
     func testSonioxSettingsDefaultToCurrentInputSourceOnlyAndGlobal() {
         self.withRestoredDefaults {
             XCTAssertEqual(SettingsStore.shared.sonioxLanguageMode, .currentInputSourceOnly)

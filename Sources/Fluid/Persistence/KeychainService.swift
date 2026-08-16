@@ -62,6 +62,10 @@ final class KeychainService {
         try self.loadStoredKeys()
     }
 
+    func fetchAllKeysWithPresence() throws -> (exists: Bool, values: [String: String]) {
+        try self.loadStoredKeysWithPresence()
+    }
+
     func storeAllKeys(_ values: [String: String]) throws {
         try self.saveStoredKeys(values)
     }
@@ -94,6 +98,14 @@ final class KeychainService {
         var result = existing.filter { $0.key.hasPrefix(reservedPrefix) }
         result.merge(replacements.filter { $0.key.hasPrefix(reservedPrefix) == false }) { _, new in new }
         return result
+    }
+
+    nonisolated static func authoritativeProviderKeys(
+        aggregateExists: Bool,
+        aggregate: [String: String],
+        legacy: [String: String]
+    ) -> [String: String] {
+        aggregateExists ? aggregate : legacy
     }
 
     func legacyProviderEntries() throws -> [String: String] {
@@ -164,6 +176,10 @@ final class KeychainService {
     // MARK: - Private helpers
 
     private func loadStoredKeys() throws -> [String: String] {
+        try self.loadStoredKeysWithPresence().values
+    }
+
+    private func loadStoredKeysWithPresence() throws -> (exists: Bool, values: [String: String]) {
         var query = self.aggregatedQuery()
         query[kSecReturnData as String] = kCFBooleanTrue
         query[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -177,15 +193,16 @@ final class KeychainService {
                 throw KeychainServiceError.invalidData
             }
             if data.isEmpty {
-                return [:]
+                return (exists: true, values: [:])
             }
             do {
-                return try JSONDecoder().decode([String: String].self, from: data)
+                let values = try JSONDecoder().decode([String: String].self, from: data)
+                return (exists: true, values: values)
             } catch {
                 throw KeychainServiceError.invalidData
             }
         case errSecItemNotFound:
-            return [:]
+            return (exists: false, values: [:])
         default:
             throw KeychainServiceError.unhandled(status)
         }

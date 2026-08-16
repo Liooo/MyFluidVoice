@@ -3613,13 +3613,21 @@ final class SettingsStore: ObservableObject {
     private func migrateProviderAPIKeysIfNeeded() {
         self.defaults.removeObject(forKey: Keys.providerAPIKeyIdentifiers)
 
-        var merged = (try? self.keychain.fetchAllKeys()) ?? [:]
+        let aggregate: (exists: Bool, values: [String: String])
+        do {
+            aggregate = try self.keychain.fetchAllKeysWithPresence()
+        } catch {
+            self.logProviderAPIKeyPersistenceFailure(error)
+            return
+        }
+
+        var legacy: [String: String] = [:]
         var didMutate = false
 
         if let legacyDefaults = defaults.dictionary(forKey: Keys.providerAPIKeys) as? [String: String],
            legacyDefaults.isEmpty == false
         {
-            merged.merge(self.sanitizeAPIKeys(legacyDefaults)) { _, new in new }
+            legacy.merge(self.sanitizeAPIKeys(legacyDefaults)) { _, new in new }
             didMutate = true
         }
         self.defaults.removeObject(forKey: Keys.providerAPIKeys)
@@ -3627,14 +3635,18 @@ final class SettingsStore: ObservableObject {
         if let legacyKeychain = try? keychain.legacyProviderEntries(),
            legacyKeychain.isEmpty == false
         {
-            merged.merge(self.sanitizeAPIKeys(legacyKeychain)) { _, new in new }
+            legacy.merge(self.sanitizeAPIKeys(legacyKeychain)) { _, new in new }
             didMutate = true
-            try? self.keychain.removeLegacyEntries(providerIDs: Array(legacyKeychain.keys))
         }
 
         if didMutate {
+            let merged = KeychainService.authoritativeProviderKeys(
+                aggregateExists: aggregate.exists,
+                aggregate: aggregate.values,
+                legacy: legacy
+            )
             do {
-                _ = try self.saveProviderAPIKeys(merged)
+                try self.keychain.storeAllKeys(merged)
             } catch {
                 self.logProviderAPIKeyPersistenceFailure(error)
             }
