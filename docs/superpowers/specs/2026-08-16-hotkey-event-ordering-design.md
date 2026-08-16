@@ -1,50 +1,64 @@
-# Hotkey Event Ordering Design
+# Modifier-Only Hotkey State Design
 
 ## Problem
 
-Modifier-only shortcuts are recorded correctly but do not start dictation. Live diagnostics showed
-that macOS delivers the configured `fn + Left Shift` sequence to `GlobalHotkeyManager`, while every
-`ModifierOnlyShortcutFlagsDecision` remains `.ignore`.
+Modifier-only shortcuts are recorded correctly but do not start dictation. This affects both a
+single modifier chord such as `fn + Left Shift` and a gesture such as `Double Shift`; ordinary
+keyboard shortcuts such as `Shift + Command + M` work.
 
-The global event tap is installed at `.headInsertEventTap`. At that point the
-`CGEventSource.keyState(.combinedSessionState, key:)` value used by
-`PressedModifierKeyCodesDecision` can still describe the state before the current
-`flagsChanged` transition. The recorder runs later in AppKit and sees the updated state, which is why
-it can save a shortcut that the runtime never recognizes.
+Runtime modifier tracking currently refuses to add a newly observed modifier unless
+`CGEventSource.keyState(.combinedSessionState, key:)` is already true. That query can lag the
+current `flagsChanged` event. The resulting pressed-key set stays empty, so both the single-chord
+and double-tap state machines ignore the event.
+
+The behavior-only reference in `../just-dictate` does not query physical key state. Its
+`HotkeyManager.handleFlagsChanged` treats the flags carried by the current event as the source of
+truth for modifier-family transitions. FluidVoice also used this approach before the modifier
+tracking helper was extracted in commit `7c9cbf2`.
 
 ## Goal
 
-Make modifier-only shortcuts, including `fn + Left Shift` and double-modifier gestures, use the
-updated physical modifier state at runtime without rewriting the existing side-specific state
-machine.
+Make `fn + Left Shift`, `Double Shift`, and other modifier-only shortcuts start dictation reliably,
+while preserving FluidVoice's side-specific key identity and duplicate-event protections.
 
 ## Chosen Design
 
-Keep the tap at `.cgSessionEventTap` and change only its placement from `.headInsertEventTap` to
-`.tailAppendEventTap`. A small internal `HotkeyEventTapConfiguration` value will name this ordering
-invariant and make it directly testable.
+Keep the global event tap at its established `.headInsertEventTap` placement. In
+`PressedModifierKeyCodesDecision.synchronize`, use the current event's modifier flags to add a
+newly observed physical key code and to remove a released modifier family. Consult the physical
+key-state argument only for the genuinely ambiguous case where both left and right keys of the
+same modifier family are already tracked.
 
-The existing event mask, active tap behavior, event consumption, permission flow, health checks,
-and modifier decision types remain unchanged.
+This is a hybrid of the proven `just-dictate` behavior and FluidVoice's richer model:
+
+- Aggregate event flags determine ordinary press and release transitions.
+- The `flagsChanged` event key code preserves left/right identity.
+- Physical key state disambiguates release only when a same-family sibling remains pressed.
+- Existing single-modifier and double-tap decision machines remain unchanged.
 
 ## Alternatives Considered
 
-- Reconstruct press/release transitions from aggregate modifier flags at the head of the session.
-  This makes duplicate events and simultaneous left/right modifiers ambiguous and would duplicate
-  logic already covered by `PressedModifierKeyCodesDecision`.
-- Add a second passive tap solely to track physical state. This introduces synchronization and
-  lifecycle complexity without adding user-visible capability.
+- Use only aggregate flags, exactly as `just-dictate` does. This is simple, but it collapses left
+  and right modifiers and would regress FluidVoice's side-specific shortcut support.
+- Move the event tap to `.tailAppendEventTap`. A signed live build showed that this did not make
+  `fn + Shift` or `Double Shift` work, and it changes event ordering for every keyboard and mouse
+  shortcut without addressing the incorrect state transition rule.
+- Add a second passive event tap to track modifier state. This adds synchronization and lifecycle
+  complexity when the current event already contains the required transition data.
 
 ## Verification
 
-- Add a focused test that fixes the event-tap placement at `.tailAppendEventTap`.
-- Run all `HotkeyShortcutTests`.
-- Run strict SwiftLint and an unsigned build.
-- Build and launch the signed Debug app, then verify the currently configured `fn + Left Shift`
-  shortcut reaches the dictation start path in the live log.
+- Add a regression test proving a first modifier press is tracked from event flags even when the
+  physical-state query still reports false.
+- Add runtime-sequence tests that feed lagging physical state through the real synchronizer and
+  prove `fn + Left Shift` and `Double Shift` are recognized.
+- Run all `HotkeyShortcutTests`, strict SwiftLint, and the full integration suite.
+- Build and launch the signed Debug app, then verify both shortcuts reach `Dictate mode hotkey
+  triggered` in the live log.
 
 ## Non-goals
 
-- Changing the saved shortcut, activation mode, or Accessibility permissions.
-- Redesigning modifier-only or double-tap gesture semantics.
-- Changing keyboard event consumption outside the existing session tap.
+- Copying `just-dictate` source or its simpler hotkey architecture.
+- Changing shortcut persistence, activation modes, Accessibility permissions, or event
+  consumption semantics.
+- Changing the 300 ms double-tap window or relaxing same-side double-tap behavior.
