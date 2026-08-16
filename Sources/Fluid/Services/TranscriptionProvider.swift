@@ -106,7 +106,7 @@ final nonisolated class ModelPreparationProgressRelay: @unchecked Sendable {
 
 /// Unified result type for ASR transcription across all providers
 /// Named ASRTranscriptionResult to avoid conflict with MeetingTranscriptionService.TranscriptionResult
-struct ASRTranscriptionResult {
+nonisolated struct ASRTranscriptionResult: Sendable {
     let text: String
     let confidence: Float
     let pronunciationEnrollment: PronunciationEnrollmentCapture?
@@ -175,6 +175,12 @@ protocol TranscriptionProvider {
 
     /// Whether cancellation should discard an incomplete app-managed model cache.
     var shouldClearCacheAfterCancellation: Bool { get }
+
+    /// Minimum captured audio length supplied to the provider finalizer.
+    var minimumFinalAudioSampleCount: Int { get }
+
+    /// Whether callers may include transcript text in diagnostic logs.
+    var allowsTranscriptLogging: Bool { get }
 }
 
 /// Default implementation for optional methods
@@ -186,6 +192,14 @@ extension TranscriptionProvider {
     func clearCache() async throws {}
     func resetAfterCancellation() async {}
     var shouldClearCacheAfterCancellation: Bool {
+        true
+    }
+
+    var minimumFinalAudioSampleCount: Int {
+        0
+    }
+
+    var allowsTranscriptLogging: Bool {
         true
     }
 

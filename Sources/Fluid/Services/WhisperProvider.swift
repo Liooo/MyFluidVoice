@@ -4,6 +4,7 @@ import TranscribeCpp
 /// TranscriptionProvider implementation using transcribe.cpp for Whisper GGUF models.
 final class WhisperProvider: TranscriptionProvider {
     let name = "Whisper (Universal)"
+    let minimumFinalAudioSampleCount = 16_000
 
     var isAvailable: Bool {
         guard case .success = Self.backendInitialization else { return false }
