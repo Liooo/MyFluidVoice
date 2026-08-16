@@ -2351,7 +2351,7 @@ extension DictationE2ETests {
         XCTAssertFalse(coordinator.claimOutputDelivery(for: session.id))
     }
 
-    func testStreamingTerminalErrorStopsCaptureBeforeDismissingAndClearsMatchingSelection() throws {
+    func testFailureHandlerCallbackOrdersCancellationBeforeDismissal() throws {
         let coordinator = DictationSessionCoordinator()
         let configuration = try XCTUnwrap(RecordingSpeechConfiguration(
             inputSourceID: nil,

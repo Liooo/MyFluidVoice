@@ -23,14 +23,64 @@ private final nonisolated class TranscriptionCompletionSignal: @unchecked Sendab
     }
 }
 
+private final nonisolated class TranscriptionStartGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var isOpen = false
+
+    func wait() async {
+        await withTaskCancellationHandler {
+            guard Task.isCancelled == false else {
+                self.cancel()
+                return
+            }
+            await withCheckedContinuation { continuation in
+                let shouldResume = self.lock.withLock { () -> Bool in
+                    guard self.isOpen == false else { return true }
+                    self.continuation = continuation
+                    return false
+                }
+                if shouldResume {
+                    continuation.resume()
+                }
+            }
+        } onCancel: {
+            self.cancel()
+        }
+    }
+
+    func open() {
+        self.cancel()
+    }
+
+    func cancel() {
+        let continuation = self.lock.withLock { () -> CheckedContinuation<Void, Never>? in
+            self.isOpen = true
+            defer { self.continuation = nil }
+            return self.continuation
+        }
+        continuation?.resume()
+    }
+}
+
 private final nonisolated class TranscriptionCancellationRegistry: @unchecked Sendable {
     private let lock = NSLock()
     private var handlers: [UUID: (ownerID: UUID?, cancel: () -> Void)] = [:]
+    private var cancelledOwnerIDs: Set<UUID> = []
 
-    func register(operationID: UUID, ownerID: UUID?, cancel: @escaping () -> Void) {
-        self.lock.withLock {
+    @discardableResult
+    func register(operationID: UUID, ownerID: UUID?, cancel: @escaping () -> Void) -> Bool {
+        let wasCancelled = self.lock.withLock { () -> Bool in
+            if let ownerID, self.cancelledOwnerIDs.contains(ownerID) {
+                return true
+            }
             self.handlers[operationID] = (ownerID: ownerID, cancel: cancel)
+            return false
         }
+        if wasCancelled {
+            cancel()
+        }
+        return !wasCancelled
     }
 
     func remove(operationID: UUID) {
@@ -39,9 +89,14 @@ private final nonisolated class TranscriptionCancellationRegistry: @unchecked Se
         }
     }
 
+    func isCancelled(ownerID: UUID) -> Bool {
+        self.lock.withLock { self.cancelledOwnerIDs.contains(ownerID) }
+    }
+
     func cancel(ownerID: UUID) {
         let ownedHandlers = self.lock.withLock {
-            self.handlers.values.filter { $0.ownerID == ownerID }.map { $0.cancel }
+            self.cancelledOwnerIDs.insert(ownerID)
+            return self.handlers.values.filter { $0.ownerID == ownerID }.map { $0.cancel }
         }
         ownedHandlers.forEach { $0() }
     }
@@ -66,15 +121,20 @@ actor TranscriptionExecutor {
 
     func run<T>(ownerID: UUID? = nil, _ operation: @escaping () async throws -> T) async throws -> T {
         try Task.checkCancellation()
-        if let ownerID, self.cancelledOwnerIDs.contains(ownerID) {
+        if let ownerID,
+           self.cancelledOwnerIDs.contains(ownerID) || self.cancellationRegistry.isCancelled(ownerID: ownerID)
+        {
             throw CancellationError()
         }
 
         let previous = self.lastCompletion
         let operationID = UUID()
         let completionSignal = TranscriptionCompletionSignal()
+        let startGate = TranscriptionStartGate()
         let task = Task<T, Error> {
             defer { completionSignal.finish() }
+            await startGate.wait()
+            try Task.checkCancellation()
             while let previous, !previous.isFinished {
                 try Task.checkCancellation()
                 try await Task.sleep(nanoseconds: 1_000_000)
@@ -83,17 +143,26 @@ actor TranscriptionExecutor {
             return try await operation()
         }
         let completion = Task { _ = try? await task.value }
-        self.operations[operationID] = Operation(
-            ownerID: ownerID,
-            cancel: { task.cancel() },
-            completion: completion
-        )
-        self.cancellationRegistry.register(
+        let cancel = {
+            startGate.cancel()
+            task.cancel()
+        }
+        guard self.cancellationRegistry.register(
             operationID: operationID,
             ownerID: ownerID,
-            cancel: { task.cancel() }
+            cancel: cancel
+        ) else {
+            cancel()
+            _ = await task.result
+            throw CancellationError()
+        }
+        self.operations[operationID] = Operation(
+            ownerID: ownerID,
+            cancel: cancel,
+            completion: completion
         )
         self.lastCompletion = completionSignal
+        startGate.open()
         defer {
             self.operations.removeValue(forKey: operationID)
             self.cancellationRegistry.remove(operationID: operationID)
@@ -1030,6 +1099,16 @@ final class ASRService: ObservableObject {
                 try await provider.transcribeFinal([])
             }
         }
+    }
+
+    func startTestingStreamingTranscription(sessionID: RecordingSessionID) {
+        self.startStreamingTranscription(sessionID: sessionID)
+    }
+
+    func cancelTestingStreamingCompletionMonitor() -> Task<Void, Never>? {
+        let monitorTask = self.streamingCompletionMonitorTask
+        monitorTask?.cancel()
+        return monitorTask
     }
 
     @discardableResult
@@ -5747,6 +5826,7 @@ final class ASRService: ObservableObject {
                   self.streamingCompletionMonitorOwner == owner
             else { return }
             let outcome = await worker.value
+            guard Task.isCancelled == false else { return }
             guard self.streamingCompletionMonitorOwner == owner,
                   self.isStreamingOwnerCurrent(
                       owner,

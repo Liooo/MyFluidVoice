@@ -964,6 +964,99 @@ final class SonioxProviderTests: XCTestCase {
         XCTAssertEqual(copy, SonioxErrorMapper.userFacingCopy(for: .temporaryService))
     }
 
+    func testRequestCancellationRejectsLateOwnerRunBeforeActorDrain() async {
+        let executor = TranscriptionExecutor()
+        let ownerID = UUID()
+        let operationExecutions = Task7Counter()
+
+        executor.requestCancellation(ownerID: ownerID)
+
+        do {
+            let _: String = try await executor.run(ownerID: ownerID) {
+                operationExecutions.increment()
+                return "stale"
+            }
+            XCTFail("Expected a synchronously cancelled owner to reject late work")
+        } catch is CancellationError {
+            // Expected.
+        } catch {
+            XCTFail("Expected CancellationError, received \(error)")
+        }
+
+        XCTAssertEqual(operationExecutions.value, 0)
+    }
+
+    func testCancelledStreamingCompletionMonitorIgnoresTerminalResult() async {
+        let provider = Task7StreamingFailureProvider(blocksStreaming: true)
+        let service = ASRService()
+        let sessionID = RecordingSessionID()
+        var failureCount = 0
+        service.setRecordingFailureHandler { _ in failureCount += 1 }
+        _ = service.installTestingRecordingSession(
+            sessionID: sessionID,
+            configuration: self.sonioxConfiguration(),
+            provider: provider,
+            isRunning: true,
+            capturedSamples: [Float](repeating: 0.25, count: 1600)
+        )
+
+        service.startTestingStreamingTranscription(sessionID: sessionID)
+        await self.waitUntil { provider.streamingOperationEntered }
+        let monitorTask = service.cancelTestingStreamingCompletionMonitor()
+        provider.releaseStreaming()
+        _ = await monitorTask?.result
+
+        XCTAssertEqual(failureCount, 0)
+        XCTAssertTrue(service.hasActiveRecordingSession)
+        XCTAssertEqual(provider.resetCount, 0)
+
+        let didDiscard = await service.stopWithoutTranscription(sessionID: sessionID)
+        XCTAssertTrue(didDiscard)
+    }
+
+    func testStreamingTerminalErrorStopsCaptureBeforeDismissingAndClearsMatchingSelection() async {
+        let events = Task7EventLog()
+        let provider = Task7StreamingFailureProvider(blocksStreaming: false)
+        let sessionID = RecordingSessionID()
+        let failureExpectation = expectation(description: "owned streaming failure delivered")
+        var failureCount = 0
+        let service = ASRService(
+            lifecycleHooks: ASRServiceLifecycleHooks(
+                cancelAudioRouteRecoveryAndWait: { events.append("route") },
+                stopActiveAudioCapture: { _, _ in events.append("capture") },
+                retireAudioEngineAndWait: { _ in events.append("retire") }
+            )
+        )
+        service.setRecordingFailureHandler { failure in
+            failureCount += 1
+            XCTAssertEqual(failure.sessionID, sessionID)
+            XCTAssertEqual(provider.resetCount, 1)
+            XCTAssertFalse(service.hasActiveRecordingSession)
+            XCTAssertFalse(service.isRunning)
+            XCTAssertEqual(service.partialTranscription, "")
+            XCTAssertNil(service.consumeLastCompletedAudioSnapshot(for: sessionID))
+            XCTAssertEqual(service.finalText, "")
+            events.append("failure")
+            failureExpectation.fulfill()
+        }
+        _ = service.installTestingRecordingSession(
+            sessionID: sessionID,
+            configuration: self.sonioxConfiguration(),
+            provider: provider,
+            isRunning: true,
+            capturedSamples: [Float](repeating: 0.25, count: 1600)
+        )
+
+        service.startTestingStreamingTranscription(sessionID: sessionID)
+        await self.waitUntil { provider.streamingOperationEntered }
+        await fulfillment(of: [failureExpectation])
+
+        XCTAssertEqual(failureCount, 1)
+        XCTAssertEqual(events.values, ["route", "capture", "retire", "failure"])
+        XCTAssertFalse(service.hasActiveRecordingSession)
+        XCTAssertNil(service.consumeLastCompletedAudioSnapshot(for: sessionID))
+    }
+
     func testStopDoesNotMutateReplacementSessionAfterCaptureTeardownAwaits() async {
         let captureGate = Task7AsyncGate()
         let hooks = ASRServiceLifecycleHooks(
@@ -1200,6 +1293,18 @@ final class SonioxProviderTests: XCTestCase {
             languageBinding: .appleSpeech(localeIdentifier: "en-US")
         ) else {
             preconditionFailure("The test recording configuration must remain valid")
+        }
+        return configuration
+    }
+
+    private func sonioxConfiguration() -> RecordingSpeechConfiguration {
+        guard let configuration = RecordingSpeechConfiguration(
+            inputSourceID: nil,
+            localeIdentifier: "en-US",
+            model: .sonioxV5,
+            languageBinding: .soniox(.init(languageCode: "en", isStrict: true, region: .global))
+        ) else {
+            preconditionFailure("The test Soniox configuration must remain valid")
         }
         return configuration
     }
@@ -1646,6 +1751,19 @@ private final nonisolated class Task7Counter: @unchecked Sendable {
     }
 }
 
+private final nonisolated class Task7EventLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var events: [String] = []
+
+    var values: [String] {
+        self.lock.withLock { self.events }
+    }
+
+    func append(_ event: String) {
+        self.lock.withLock { self.events.append(event) }
+    }
+}
+
 private final nonisolated class Task7CancellationLatch: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<Void, Error>?
@@ -1747,5 +1865,62 @@ private final nonisolated class Task7LifecycleProvider: TranscriptionProvider, @
 
     func resetAfterCancellation() async {
         self.resetCounter.increment()
+    }
+}
+
+private final nonisolated class Task7StreamingFailureProvider: TranscriptionProvider, @unchecked Sendable {
+    let name = "task-7-streaming-failure"
+    let isAvailable = true
+    let isReady = true
+    private let blocksStreaming: Bool
+    private let streamingGate = Task7AsyncGate()
+    private let streamingCounter = Task7Counter()
+    private let resetCounter = Task7Counter()
+    private let failure = SonioxError(
+        category: .temporaryService,
+        diagnosticType: "test_terminal_failure",
+        requestID: "request_42"
+    )
+
+    init(blocksStreaming: Bool) {
+        self.blocksStreaming = blocksStreaming
+    }
+
+    var streamingOperationEntered: Bool {
+        self.streamingCounter.value > 0
+    }
+
+    var resetCount: Int {
+        self.resetCounter.value
+    }
+
+    func prepare(progressHandler: ((ModelPreparationProgress) -> Void)?) async throws {
+        _ = progressHandler
+    }
+
+    func transcribe(_ samples: [Float]) async throws -> ASRTranscriptionResult {
+        try await self.transcribeFinal(samples)
+    }
+
+    func transcribeStreaming(_ samples: [Float]) async throws -> ASRTranscriptionResult {
+        _ = samples
+        self.streamingCounter.increment()
+        if self.blocksStreaming {
+            await self.streamingGate.wait()
+        }
+        throw self.failure
+    }
+
+    func transcribeFinal(_ samples: [Float]) async throws -> ASRTranscriptionResult {
+        _ = samples
+        return ASRTranscriptionResult(text: "should-not-be-published")
+    }
+
+    func resetAfterCancellation() async {
+        self.resetCounter.increment()
+    }
+
+    func releaseStreaming() {
+        self.streamingGate.open()
     }
 }
