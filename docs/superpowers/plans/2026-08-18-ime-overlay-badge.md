@@ -26,8 +26,8 @@
 - Test: `Tests/FluidDictationIntegrationTests/SonioxScopeRoutingTests.swift` (existing registered test file; add a focused pure test section)
 
 **Interfaces:**
-- Produces `KeyboardInputSourceBadge: @unchecked Sendable` with `nativeIcon: NSImage?`, `fallbackText: String?`, and `isEmpty`.
-- Produces `KeyboardInputSourceService.badge(for:) -> KeyboardInputSourceBadge?`.
+- Produces `KeyboardInputSourceBadge: @unchecked Sendable` with `sourceID: String`, `localeIdentifier: String`, `nativeIcon: NSImage?`, `fallbackText: String?`, and `isEmpty`.
+- Produces `KeyboardInputSourceService.badge(for:nativeIcon:) -> KeyboardInputSourceBadge?` for pure/injected tests and `currentInputSourceBadge() -> KeyboardInputSourceBadge?` for production capture.
 - Produces pure helpers `KeyboardInputSourceBadgeFormatter.flag(for:)` and `languageCode(for:)` for deterministic tests.
 
 - [ ] **Step 1: Write failing formatter tests**
@@ -46,7 +46,7 @@ XCTAssertEqual(KeyboardInputSourceBadgeFormatter.languageCode(for: "en-GB"), "EN
 XCTAssertNil(KeyboardInputSourceBadgeFormatter.languageCode(for: ""))
 ```
 
-Also assert that a snapshot with no native icon still yields the expected fallback without changing its ID, name, or language list.
+Also assert that a snapshot with no native icon still yields the expected fallback without changing its ID, name, or language list, and that an injected native icon takes precedence over the fallback text.
 
 - [ ] **Step 2: Run the focused test and verify RED**
 
@@ -67,6 +67,8 @@ Add AppKit import and the following behavior to `KeyboardInputSourceService.swif
 
 ```swift
 nonisolated struct KeyboardInputSourceBadge: @unchecked Sendable {
+    let sourceID: String
+    let localeIdentifier: String
     let nativeIcon: NSImage?
     let fallbackText: String?
 
@@ -90,7 +92,7 @@ nonisolated enum KeyboardInputSourceBadgeFormatter {
 }
 ```
 
-`badge(for:)` must resolve the locale using `KeyboardInputSourceLocaleResolver.localeIdentifier(for:)`, read `kTISPropertyIconRef` from the current matching TIS source by ID, convert it with `NSImage(iconRef:label:)` when non-nil, and otherwise return the formatter's flag or language code. Return `nil` when the source is unavailable and no fallback locale can be derived. Keep native icon conversion isolated in a private helper so deprecated Carbon/AppKit bridging is limited to one line and can fail safely.
+`currentInputSourceBadge()` must read the current TIS source and snapshot, then call `badge(for:nativeIcon:)`. The injected `badge(for:nativeIcon:)` must resolve the locale using `KeyboardInputSourceLocaleResolver.localeIdentifier(for:)`, preserve the source ID/locale, and choose the injected icon first, then the formatter's flag or language code. The production helper reads `kTISPropertyIconRef` from the current matching TIS source by ID and converts it with `NSImage(iconRef:label:)` when non-nil. Return `nil` only when the source is unavailable and no fallback locale can be derived. Keep native icon conversion isolated in a private helper so deprecated Carbon/AppKit bridging is limited to one line and can fail safely.
 
 - [ ] **Step 4: Run tests and verify GREEN**
 
