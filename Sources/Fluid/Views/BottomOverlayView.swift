@@ -2162,6 +2162,29 @@ struct BottomOverlayView: View {
         .opacity((appIcon != nil || showModelLoading || !self.layout.showsModeLabel) ? 1 : 0)
     }
 
+    @ViewBuilder
+    private func inputSourceBadgeView(_ badge: KeyboardInputSourceBadge) -> some View {
+        if let icon = badge.nativeIcon {
+            Image(nsImage: icon)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(
+                    width: self.layout.iconSize * 0.84,
+                    height: self.layout.iconSize * 0.84
+                )
+                .clipShape(RoundedRectangle(cornerRadius: self.layout.iconSize * 0.21))
+                .frame(width: self.layout.iconSize, height: self.layout.iconSize)
+        } else if let fallbackText = badge.fallbackText {
+            Text(fallbackText)
+                .font(.system(size: max(self.layout.iconSize * 0.58, 10), weight: .semibold))
+                .frame(width: self.layout.iconSize, height: self.layout.iconSize)
+                .background(
+                    .thinMaterial,
+                    in: RoundedRectangle(cornerRadius: self.layout.iconSize / 4)
+                )
+        }
+    }
+
     private var processingLabel: String {
         switch self.contentState.mode {
         case .dictation: return "Refining..."
@@ -3022,33 +3045,24 @@ struct BottomOverlayView: View {
                 }
 
                 // Waveform + Mode label row
-                HStack(spacing: self.layout.hPadding / 1.5) {
+                HStack(spacing: 0) {
                     let inputSourceBadge = self.contentState.recordingInputSourceBadge
-                    HStack(spacing: 3) {
+                    let hasInputSourceBadge = inputSourceBadge?.isEmpty == false
+
+                    HStack(spacing: 0) {
                         self.targetAppIconView
 
                         if let inputSourceBadge, !inputSourceBadge.isEmpty {
-                            if let icon = inputSourceBadge.nativeIcon {
-                                Image(nsImage: icon)
-                                    .resizable()
-                                    .aspectRatio(contentMode: .fit)
-                                    .frame(width: self.layout.iconSize, height: self.layout.iconSize)
-                                    .clipShape(RoundedRectangle(cornerRadius: self.layout.iconSize / 4))
-                            } else if let fallbackText = inputSourceBadge.fallbackText {
-                                Text(fallbackText)
-                                    .font(.system(size: max(self.layout.iconSize * 0.58, 10), weight: .semibold))
-                                    .frame(width: self.layout.iconSize, height: self.layout.iconSize)
-                                    .background(
-                                        .thinMaterial,
-                                        in: RoundedRectangle(cornerRadius: self.layout.iconSize / 4)
-                                    )
-                            }
+                            self.inputSourceBadgeView(inputSourceBadge)
+                                .padding(.leading, self.layout.hPadding / 1.5)
+                                .padding(.trailing, self.layout.hPadding / 3)
                         }
                     }
                     .opacity(self.shouldShowTargetAppIconGroup ? 1 : 0)
 
                     // Waveform visualization
                     BottomWaveformView(color: self.modeColor, layout: self.layout)
+                        .padding(.leading, hasInputSourceBadge ? 0 : self.layout.hPadding / 1.5)
                         .frame(width: self.layout.waveformWidth, height: self.layout.waveformHeight)
 
                     // Mode label + model load hint
@@ -3070,6 +3084,7 @@ struct BottomOverlayView: View {
                                     .lineLimit(1)
                             }
                         }
+                        .padding(.leading, self.layout.hPadding / 1.5)
                     }
                 }
             }
