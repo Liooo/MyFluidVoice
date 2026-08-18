@@ -290,6 +290,10 @@ private actor SonioxStreamingSession {
         try self.beginOperation(lease)
         defer { self.endOperation(lease) }
         do {
+            await DebugLogger.shared.debug(
+                "Soniox finalization begin samples=\(cumulativeSamples.count) sentSamples=\(self.sentSampleCount)",
+                source: "SonioxProvider"
+            )
             try Task.checkCancellation()
             try self.throwTerminalError()
             guard cumulativeSamples.count >= self.sentSampleCount else {
@@ -302,13 +306,17 @@ private actor SonioxStreamingSession {
                 try await self.ensureConnected()
             }
             try await self.sendTrailingSilence()
+            // Treat the end-of-audio phase as in-flight before sending the
+            // finalize control. A fast server can deliver `finished` between
+            // those two sends; that response is valid for this stop request.
+            self.emptyFramePhase = .sending
             try await self.send(Self.finalizeFrame)
             try Task.checkCancellation()
+            await DebugLogger.shared.debug("Soniox finalization control sent; sending end-of-audio", source: "SonioxProvider")
             self.armTimeout()
-            try await self.waitForFin()
-            self.emptyFramePhase = .sending
             try await self.send(.binary(Data()))
             self.emptyFramePhase = .sent
+            await DebugLogger.shared.debug("Soniox finalization end-of-audio sent; waiting for finished", source: "SonioxProvider")
             if self.snapshot.finished {
                 try self.acceptFinished()
             }
@@ -319,6 +327,10 @@ private actor SonioxStreamingSession {
             let result = ASRTranscriptionResult(
                 text: self.snapshot.finalText,
                 confidence: self.snapshot.confidence
+            )
+            await DebugLogger.shared.debug(
+                "Soniox finalization finished textChars=\(result.text.trimmingCharacters(in: .whitespacesAndNewlines).count)",
+                source: "SonioxProvider"
             )
             await self.finishNormally()
             return result
@@ -458,9 +470,6 @@ private actor SonioxStreamingSession {
 
         self.snapshot = try self.reducer.reduce(message)
         if self.snapshot.finished {
-            guard self.snapshot.sawFin else {
-                throw SonioxStreamingError.finishedBeforeFin
-            }
             guard self.emptyFramePhase != .notStarted else {
                 throw SonioxStreamingError.finishedBeforeEmptyFrame
             }
@@ -471,8 +480,13 @@ private actor SonioxStreamingSession {
         if self.snapshot.finished {
             if self.emptyFramePhase == .sent {
                 try self.acceptFinished()
+                return false
             }
-            return false
+            // The server may deliver the finished response while the empty
+            // end-of-audio send is still suspended. Keep the receiver alive;
+            // finalize() claims completion immediately after that send
+            // resumes, and finishNormally() then closes this receive loop.
+            return true
         }
         return true
     }
@@ -502,6 +516,12 @@ private actor SonioxStreamingSession {
               self.terminalError == nil,
               self.finalizationArbiter.claimTimeout()
         else { return }
+        let phase: String
+        phase = self.emptyFramePhase == .sent ? "waiting_for_finished" : "sending_empty_frame"
+        await DebugLogger.shared.error(
+            "Soniox finalization timeout phase=\(phase)",
+            source: "SonioxProvider"
+        )
         let error = SonioxError(
             category: .finalizationTimeout,
             diagnosticType: "finalization_timeout",

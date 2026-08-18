@@ -461,6 +461,23 @@ final class SonioxProviderTests: XCTestCase {
         XCTAssertEqual(transport.pendingReceiveCount, 0)
     }
 
+    func testFinalizationSendsEndOfAudioWithoutWaitingForFin() async throws {
+        let transport = ControllableSonioxTransport()
+        let provider = self.makeProvider(factory: SonioxTestTransportFactory([transport]))
+        try await provider.prepare(progressHandler: nil)
+
+        let finalTask = Task { try await provider.transcribeFinal([]) }
+        await self.waitUntil { transport.sentFrames.count >= 7 }
+
+        XCTAssertEqual(transport.sentFrames[5], .text("{\"type\":\"finalize\"}"))
+        XCTAssertEqual(transport.sentFrames[6], .binary(Data()))
+        transport.enqueue(.text(self.serverMessage(tokens: [("answer", true)], finished: true)))
+
+        let result = try await finalTask.value
+        XCTAssertEqual(result.text, "answer")
+        XCTAssertEqual(transport.closeDispositions, [.normal])
+    }
+
     func testTimeoutStartsOnlyAfterFinalizeSendCompletes() async throws {
         let transport = ControllableSonioxTransport(suspendedSendIndices: [5])
         let sleeper = ManualSonioxSleeper()
@@ -523,7 +540,7 @@ final class SonioxProviderTests: XCTestCase {
         XCTAssertEqual(transport.sentFrames.count, 1)
     }
 
-    func testFinishedBeforeEmptyFrameFailsFinalization() async throws {
+    func testFinishedResponseBeforeEndOfAudioSendCompletesFinalization() async throws {
         let transport = ControllableSonioxTransport()
         let provider = self.makeProvider(factory: SonioxTestTransportFactory([transport]))
         try await provider.prepare(progressHandler: nil)
@@ -531,10 +548,11 @@ final class SonioxProviderTests: XCTestCase {
         await self.waitUntil { transport.sentFrames.count >= 6 }
 
         transport.enqueue(.text(self.serverMessage(tokens: [("premature", true), ("<fin>", true)], finished: true)))
-        await self.assertTaskThrows(finalTask)
+        let result = try await finalTask.value
 
-        XCTAssertEqual(transport.sentFrames.count, 6)
-        XCTAssertEqual(transport.closeDispositions, [.cancelled])
+        XCTAssertEqual(result.text, "premature")
+        XCTAssertEqual(transport.sentFrames.count, 7)
+        XCTAssertEqual(transport.closeDispositions, [.normal])
     }
 
     func testFinishedWhileEmptyFrameSendIsSuspendedWaitsForSuccessfulSend() async throws {
