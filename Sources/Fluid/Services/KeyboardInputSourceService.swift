@@ -1,3 +1,4 @@
+import AppKit
 import Carbon
 import Foundation
 
@@ -7,12 +8,66 @@ nonisolated struct KeyboardInputSourceSnapshot: Identifiable, Equatable, Hashabl
     let languages: [String]
 }
 
+nonisolated struct KeyboardInputSourceBadge: @unchecked Sendable {
+    let sourceID: String
+    let localeIdentifier: String
+    let nativeIcon: NSImage?
+    let fallbackText: String?
+
+    var isEmpty: Bool { self.nativeIcon == nil && self.fallbackText == nil }
+}
+
+nonisolated enum KeyboardInputSourceBadgeFormatter {
+    static func flag(for localeIdentifier: String) -> String? {
+        guard let region = Locale(identifier: localeIdentifier).region?.identifier,
+              region.count == 2,
+              region.unicodeScalars.allSatisfy({ $0.value >= 65 && $0.value <= 90 })
+        else { return nil }
+
+        let scalars = region.unicodeScalars.compactMap { UnicodeScalar($0.value + 0x1F1A5) }
+        return String(String.UnicodeScalarView(scalars))
+    }
+
+    static func languageCode(for localeIdentifier: String) -> String? {
+        let language = Locale(identifier: localeIdentifier).language.languageCode?.identifier
+        guard let language, language.count >= 2 else { return nil }
+        return language.uppercased()
+    }
+}
+
 enum KeyboardInputSourceService {
     static func currentInputSource() -> KeyboardInputSourceSnapshot? {
         guard let source = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue() else {
             return nil
         }
         return self.snapshot(from: source)
+    }
+
+    static func currentInputSourceBadge() -> KeyboardInputSourceBadge? {
+        guard let source = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue(),
+              let snapshot = self.snapshot(from: source)
+        else { return nil }
+
+        return self.badge(for: snapshot, nativeIcon: self.nativeIcon(from: source))
+    }
+
+    static func badge(
+        for inputSource: KeyboardInputSourceSnapshot,
+        nativeIcon: NSImage?
+    ) -> KeyboardInputSourceBadge? {
+        let localeIdentifier = KeyboardInputSourceLocaleResolver.localeIdentifier(for: inputSource)
+        let fallbackText = nativeIcon == nil
+            ? KeyboardInputSourceBadgeFormatter.flag(for: localeIdentifier)
+                ?? KeyboardInputSourceBadgeFormatter.languageCode(for: localeIdentifier)
+            : nil
+        guard nativeIcon != nil || fallbackText != nil else { return nil }
+
+        return KeyboardInputSourceBadge(
+            sourceID: inputSource.id,
+            localeIdentifier: localeIdentifier,
+            nativeIcon: nativeIcon,
+            fallbackText: fallbackText
+        )
     }
 
     static func installedInputSources() -> [KeyboardInputSourceSnapshot] {
@@ -55,6 +110,12 @@ enum KeyboardInputSourceService {
             localizedName: localizedName,
             languages: self.stringArrayProperty(kTISPropertyInputSourceLanguages, from: source)
         )
+    }
+
+    private static func nativeIcon(from source: TISInputSource) -> NSImage? {
+        guard let pointer = TISGetInputSourceProperty(source, kTISPropertyIconImageURL) else { return nil }
+        let url = Unmanaged<CFURL>.fromOpaque(pointer).takeUnretainedValue() as URL
+        return NSImage(contentsOf: url)
     }
 
     private static func stringProperty(_ key: CFString, from source: TISInputSource) -> String? {
