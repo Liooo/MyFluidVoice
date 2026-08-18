@@ -22,6 +22,11 @@ class NotchContentState: ObservableObject {
     @Published var mode: OverlayMode = .dictation
     @Published var promptPickerMode: SettingsStore.PromptMode = .dictate
     @Published var isProcessing: Bool = false // AI processing state
+    var overlayBackgroundColor: Color {
+        self.isProcessing
+            ? Color(red: 0.13, green: 0.14, blue: 0.16)
+            : .black
+    }
     @Published var isAIProcessingFailureVisible: Bool = false
     @Published private(set) var aiProcessingFailureMessage: String = "AI Enhancement failed"
     @Published private(set) var canRetryAIProcessingFailure: Bool = true
@@ -989,7 +994,7 @@ struct NotchExpandedView: View {
         .padding(.horizontal, 6)
         .padding(.top, 0)
         .padding(.bottom, 4)
-        .background(Color.black)
+        .background(self.contentState.overlayBackgroundColor)
     }
 }
 

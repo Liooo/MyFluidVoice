@@ -3048,7 +3048,7 @@ struct BottomOverlayView: View {
                     // Solid pitch black background, with a soft drop shadow so the pill lifts
                     // off whatever is behind it (pill size only; outer padding reserves room).
                     RoundedRectangle(cornerRadius: self.layout.cornerRadius)
-                        .fill(Color.black)
+                        .fill(self.contentState.overlayBackgroundColor)
                         .shadow(
                             color: Color.black.opacity(self.isPillSize ? 0.32 : 0),
                             radius: self.isPillSize ? PillShadowMetrics.radius : 0,
@@ -3137,6 +3137,7 @@ struct BottomOverlayView: View {
         .offset(y: self.overlayAnimatedOffsetY)
         .opacity(self.overlayAnimatedOpacity)
         .animation(.timingCurve(0.22, 0.0, 0.2, 1.0, duration: 0.02), value: self.contentState.isBottomOverlayDismissing)
+        .animation(.easeInOut(duration: 0.25), value: self.contentState.isProcessing)
         .onChange(of: self.settings.overlaySize) { _, _ in
             self.dynamicPreviewResizeBucket = self.previewResizeBucket(for: self.currentPreviewSizingText)
             self.frozenDynamicPreviewHeight = nil
