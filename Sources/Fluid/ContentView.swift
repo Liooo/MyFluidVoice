@@ -2043,6 +2043,7 @@ struct ContentView: View {
         let activeDictationSlot = self.currentDictationShortcutSlot(for: modeAtStop)
         let promptOverride = self.promptModeOverrideText
         let promptTest = DictationPromptTestCoordinator.shared
+        let stopOverlayLifecycleID = self.overlayLifecycleID
         DebugLogger.shared.info(
             "Routing decision snapshot | activeMode=\(modeAtStop.rawValue) | rewrite=\(wasRewriteMode) | command=\(wasCommandMode) | overlay=\(NotchContentState.shared.mode.rawValue)",
             source: "ContentView"
@@ -2079,7 +2080,7 @@ struct ContentView: View {
 
         guard transcribedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
             DebugLogger.shared.debug("Transcription returned empty text", source: "ContentView")
-            await self.menuBarManager.finishProcessingAndHideOverlay()
+            await self.finishProcessingAndHideOverlayIfCurrent(stopOverlayLifecycleID)
             return
         }
 
@@ -2091,7 +2092,7 @@ struct ContentView: View {
 
             guard DictationAIPostProcessingGate.isProviderConfigured() else {
                 promptTest.lastError = "AI post-processing is not configured. Configure a provider/model (and API key for non-local endpoints) to test prompts."
-                self.menuBarManager.setProcessing(false)
+                await self.finishProcessingAndHideOverlayIfCurrent(stopOverlayLifecycleID)
                 return
             }
 
@@ -2376,23 +2377,27 @@ struct ContentView: View {
 
         if shouldTypeExternally {
             let typingTarget = self.resolveTypingTargetPID()
-            // Dispatch insertion as soon as the destination app is ready; the
-            // overlay hides asynchronously after output so it cannot delay paste.
+            // Keep the overlay visible until the asynchronous insertion has completed.
             if typingTarget.shouldRestoreOriginalFocus {
                 await self.restoreFocusToRecordingTarget()
             }
             self.appBench(
                 "text_ready_to_type_request elapsedMs=\(Int(((ProcessInfo.processInfo.systemUptime - finalTextReadyAt) * 1000).rounded()))"
             )
-            self.asr.typeOutputPlanToActiveField(
-                finalOutputPlan,
-                preferredTargetPID: typingTarget.pid,
-                textReadyAt: finalTextReadyAt,
-                tracksDictionaryCorrections: true
-            )
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                self.asr.typeOutputPlanToActiveField(
+                    finalOutputPlan,
+                    preferredTargetPID: typingTarget.pid,
+                    textReadyAt: finalTextReadyAt,
+                    tracksDictionaryCorrections: true,
+                    completion: {
+                        continuation.resume()
+                    }
+                )
+            }
             didTypeExternally = true
             if !shouldShowAIProcessingFailure {
-                self.hideOverlayAfterOutput()
+                self.hideOverlayAfterOutput(expectedLifecycleID: stopOverlayLifecycleID)
             }
         }
 
@@ -2433,12 +2438,12 @@ struct ContentView: View {
         }
 
         if !didTypeExternally, !shouldShowAIProcessingFailure {
-            self.hideOverlayAfterOutput()
+            self.hideOverlayAfterOutput(expectedLifecycleID: stopOverlayLifecycleID)
         }
     }
 
-    private func hideOverlayAfterOutput() {
-        self.hideOverlayAsync(reason: "after_output")
+    private func hideOverlayAfterOutput(expectedLifecycleID: UInt64? = nil) {
+        self.hideOverlayAsync(reason: "after_output", expectedLifecycleID: expectedLifecycleID)
     }
 
     private func showPrivateAIEditModeUnavailableIfNeeded() -> Bool {
@@ -2483,8 +2488,18 @@ struct ContentView: View {
         NotchContentState.shared.clearAIProcessingFailure()
     }
 
-    private func hideOverlayAsync(reason: String) {
-        let expectedOverlayLifecycleID = self.overlayLifecycleID
+    private func finishProcessingAndHideOverlayIfCurrent(_ expectedOverlayLifecycleID: UInt64) async {
+        guard self.overlayLifecycleID == expectedOverlayLifecycleID else {
+            self.appBench(
+                "overlay_hide_skipped reason=stale_processing_completion expectedLifecycle=\(expectedOverlayLifecycleID) currentLifecycle=\(self.overlayLifecycleID)"
+            )
+            return
+        }
+        await self.menuBarManager.finishProcessingAndHideOverlay()
+    }
+
+    private func hideOverlayAsync(reason: String, expectedLifecycleID: UInt64? = nil) {
+        let expectedOverlayLifecycleID = expectedLifecycleID ?? self.overlayLifecycleID
         self.appBench("overlay_hide_request reason=\(reason) lifecycle=\(expectedOverlayLifecycleID)")
         Task { @MainActor in
             guard self.overlayLifecycleID == expectedOverlayLifecycleID else {
@@ -3077,6 +3092,10 @@ struct ContentView: View {
             "ContentView: startRecording() for model=\(model.displayName), supportsStreaming=\(model.supportsStreaming)",
             source: "ContentView"
         )
+        guard !NotchContentState.shared.isProcessing else {
+            DebugLogger.shared.debug("ContentView: start ignored while stop processing is active", source: "ContentView")
+            return
+        }
         guard !self.asr.isRunningOrStarting else {
             DebugLogger.shared.debug("ContentView: start ignored because capture is already active", source: "ContentView")
             return
@@ -3341,6 +3360,10 @@ struct ContentView: View {
                 self.beginDictationRecording(for: selection, mode: .promptMode)
             },
             commandModeCallback: {
+                guard !NotchContentState.shared.isProcessing else {
+                    DebugLogger.shared.debug("Command mode ignored while stop processing is active", source: "ContentView")
+                    return
+                }
                 DebugLogger.shared.info("Command mode triggered", source: "ContentView")
                 self.captureRecordingContext()
 
@@ -3372,6 +3395,10 @@ struct ContentView: View {
                 }
             },
             rewriteModeCallback: {
+                guard !NotchContentState.shared.isProcessing else {
+                    DebugLogger.shared.debug("Rewrite mode ignored while stop processing is active", source: "ContentView")
+                    return
+                }
                 guard !self.showPrivateAIEditModeUnavailableIfNeeded() else { return }
 
                 self.captureRecordingContext()
@@ -3725,6 +3752,10 @@ extension ContentView {
     }
 
     private func beginDictationRecording(for slot: SettingsStore.DictationShortcutSlot, mode: ActiveRecordingMode) {
+        guard !NotchContentState.shared.isProcessing else {
+            DebugLogger.shared.debug("Dictation start ignored while stop processing is active", source: "ContentView")
+            return
+        }
         DebugLogger.shared.debug("Begin dictation recording for slot \(slot.rawValue)", source: "ContentView")
         self.appBench("begin_recording slot=\(slot.rawValue) mode=\(mode.rawValue)")
         if self.isOnboardingVoicePlaygroundStepActive {

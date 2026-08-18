@@ -4527,7 +4527,8 @@ final class ASRService: ObservableObject {
         _ plan: DictationLiteralOutputPlan,
         preferredTargetPID: pid_t?,
         textReadyAt: TimeInterval? = nil,
-        tracksDictionaryCorrections: Bool = false
+        tracksDictionaryCorrections: Bool = false,
+        completion: (@Sendable () -> Void)? = nil
     ) {
         let requestedAt = ProcessInfo.processInfo.systemUptime
         let textReadyAge = textReadyAt.map { Int(((requestedAt - $0) * 1000).rounded()) }
@@ -4541,7 +4542,8 @@ final class ASRService: ObservableObject {
             plan,
             preferredTargetPID: preferredTargetPID,
             textReadyAt: textReadyAt,
-            tracksDictionaryCorrections: tracksDictionaryCorrections
+            tracksDictionaryCorrections: tracksDictionaryCorrections,
+            completion: completion
         )
         let dispatchedAt = ProcessInfo.processInfo.systemUptime
         let textReadyToDispatchMs = textReadyAt.map {
