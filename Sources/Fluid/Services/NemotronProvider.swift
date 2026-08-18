@@ -28,13 +28,23 @@ final class NemotronProvider: TranscriptionProvider {
             }
         }
 
-        var repositoryName: String { self.folderHint }
+        var repositoryName: String {
+            self.folderHint
+        }
     }
 
-    var name: String { self.mode.displayName }
-    var isAvailable: Bool { true }
+    var name: String {
+        self.mode.displayName
+    }
+
+    var isAvailable: Bool {
+        true
+    }
+
     private(set) var isReady: Bool = false
-    var prefersNativeFileTranscription: Bool { true }
+    var prefersNativeFileTranscription: Bool {
+        true
+    }
 
     private let repositoryOwner = "BarathwajAnandan"
     private let repositoryRevision = "main"
@@ -49,6 +59,7 @@ final class NemotronProvider: TranscriptionProvider {
     ]
 
     private let mode: Mode
+    private let languageOverride: SettingsStore.NemotronLanguage?
     private var manager: NemotronStreamingAsrManager?
     private var streamedSampleCount: Int = 0
     private var activeLanguageCode: String?
@@ -62,11 +73,20 @@ final class NemotronProvider: TranscriptionProvider {
         UserDefaults.standard.bool(forKey: "ASRComponentProfilingEnabled")
     }
 
-    private var folderHint: String { self.mode.folderHint }
-    private var repositoryName: String { self.mode.repositoryName }
+    private var folderHint: String {
+        self.mode.folderHint
+    }
 
-    init(mode: Mode = .offline) {
+    private var repositoryName: String {
+        self.mode.repositoryName
+    }
+
+    init(
+        mode: Mode = .offline,
+        languageOverride: SettingsStore.NemotronLanguage? = nil
+    ) {
         self.mode = mode
+        self.languageOverride = languageOverride
     }
 
     private var cacheDirectory: URL? {
@@ -183,7 +203,7 @@ final class NemotronProvider: TranscriptionProvider {
         self.manager = manager
         self.isReady = true
         DebugLogger.shared.info(
-            "Nemotron: provider ready [mode=\(self.mode.displayName), lang=\(SettingsStore.shared.selectedNemotronLanguage.rawValue), maxSamples=\(self.maxTranscriptionSamples)]",
+            "Nemotron: provider ready [mode=\(self.mode.displayName), lang=\(self.selectedLanguage.rawValue), maxSamples=\(self.maxTranscriptionSamples)]",
             source: "Nemotron"
         )
     }
@@ -342,6 +362,14 @@ final class NemotronProvider: TranscriptionProvider {
         self.activeLanguageCode = nil
     }
 
+    func resetAfterCancellation() async {
+        if let manager = self.manager {
+            await self.stopComponentProfilingIfNeeded(on: manager)
+            await manager.reset()
+        }
+        self.streamedSampleCount = 0
+    }
+
     private func transcribeBatched(_ samples: [Float]) async throws -> ASRTranscriptionResult {
         guard samples.isEmpty == false else { return ASRTranscriptionResult(text: "", confidence: 0) }
 
@@ -468,10 +496,14 @@ final class NemotronProvider: TranscriptionProvider {
     }
 
     private func applySelectedLanguage(to manager: NemotronStreamingAsrManager) async throws {
-        let languageCode = SettingsStore.shared.selectedNemotronLanguage.rawValue
+        let languageCode = self.selectedLanguage.rawValue
         guard self.activeLanguageCode != languageCode else { return }
         try await manager.setTargetLanguage(languageCode)
         self.activeLanguageCode = languageCode
+    }
+
+    private var selectedLanguage: SettingsStore.NemotronLanguage {
+        self.languageOverride ?? SettingsStore.shared.selectedNemotronLanguage
     }
 
     private func consumeDelta(from samples: [Float], manager: NemotronStreamingAsrManager) async -> [Float] {
@@ -610,14 +642,25 @@ final class NemotronProvider: TranscriptionProvider {
         }
     }
 
-    var name: String { self.mode.displayName }
-    var isAvailable: Bool { false }
+    var name: String {
+        self.mode.displayName
+    }
+
+    var isAvailable: Bool {
+        false
+    }
+
     private(set) var isReady: Bool = false
-    var prefersNativeFileTranscription: Bool { false }
+    var prefersNativeFileTranscription: Bool {
+        false
+    }
 
     private let mode: Mode
 
-    init(mode: Mode = .offline) {
+    init(
+        mode: Mode = .offline,
+        languageOverride: SettingsStore.NemotronLanguage? = nil
+    ) {
         self.mode = mode
     }
 
@@ -629,7 +672,9 @@ final class NemotronProvider: TranscriptionProvider {
         throw Self.makeError("Nemotron requires Apple Silicon.")
     }
 
-    func modelsExistOnDisk() -> Bool { false }
+    func modelsExistOnDisk() -> Bool {
+        false
+    }
 
     private static func makeError(_ description: String) -> NSError {
         NSError(domain: "NemotronProvider", code: -1, userInfo: [NSLocalizedDescriptionKey: description])

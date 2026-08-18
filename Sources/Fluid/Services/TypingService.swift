@@ -3,11 +3,52 @@ import ApplicationServices
 import Carbon.HIToolbox
 import Foundation
 
+nonisolated struct TypingTargetFocusDecision: Equatable {
+    let pid: pid_t?
+    let shouldRestoreOriginalFocus: Bool
+
+    static func resolve(
+        originalPID: pid_t?,
+        currentFocusedPID: pid_t?,
+        currentFocusIsExternalApplication: Bool
+    ) -> Self {
+        guard let currentFocusedPID, currentFocusIsExternalApplication else {
+            return .init(pid: originalPID, shouldRestoreOriginalFocus: true)
+        }
+
+        return .init(
+            pid: currentFocusedPID,
+            shouldRestoreOriginalFocus: currentFocusedPID == originalPID
+        )
+    }
+}
+
+nonisolated enum TypingInsertionOutcome: Equatable {
+    case inserted
+    case rejected
+    case cancelled
+}
+
+private final nonisolated class TypingInsertionCancellation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+
+    func cancel() {
+        self.lock.withLock { self.cancelled = true }
+    }
+
+    var isCancelled: Bool {
+        self.lock.withLock { self.cancelled }
+    }
+}
+
 final class TypingService {
-    // Logging toggle (off by default). Enable by setting env FLUID_TYPING_LOGS=1
-    // or UserDefaults bool for key "enableTypingLogs".
+    /// Logging toggle (off by default). Enable by setting env FLUID_TYPING_LOGS=1
+    /// or UserDefaults bool for key "enableTypingLogs".
     private static var isLoggingEnabled: Bool {
-        if let env = ProcessInfo.processInfo.environment["FLUID_TYPING_LOGS"], env == "1" { return true }
+        if let env = ProcessInfo.processInfo.environment["FLUID_TYPING_LOGS"], env == "1" {
+            return true
+        }
         return UserDefaults.standard.bool(forKey: "enableTypingLogs")
     }
 
@@ -170,6 +211,23 @@ final class TypingService {
         return pid
     }
 
+    /// Best-effort current focus query that deliberately does not replace the snapshot captured
+    /// when recording began. Output routing uses this to inspect user focus changes while retaining
+    /// the original writable element for fallback and focus restoration.
+    static func currentSystemFocusedPID() -> pid_t? {
+        guard AXIsProcessTrusted() else { return nil }
+
+        let systemWideElement = AXUIElementCreateSystemWide()
+        guard let element = self.copyAXElementAttribute(
+            from: systemWideElement,
+            attribute: kAXFocusedUIElementAttribute as CFString
+        ) else { return nil }
+
+        var pid: pid_t = 0
+        AXUIElementGetPid(element, &pid)
+        return pid > 0 ? pid : nil
+    }
+
     /// Best-effort: returns the text immediately before the caret in the currently focused
     /// text field. Used by Continuous Dictation Mode to decide capitalization when chaining
     /// transcribed segments. Returns "" when the focused field/context is unavailable.
@@ -223,6 +281,35 @@ final class TypingService {
         }
 
         return Self.isCurrentlyFocusedElement(element, expectedPID: pid)
+    }
+
+    /// Returns whether the current or captured target is a writable text input.
+    /// This prevents dictation output from being synthesized into an arbitrary
+    /// focused control or window when no editor owns keyboard focus.
+    static func hasWritableFocusedInput(preferredTargetPID: pid_t?) -> Bool {
+        guard AXIsProcessTrusted(), !IsSecureEventInputEnabled() else { return false }
+
+        if let preferredTargetPID,
+           let snapshot = self.loadFocusSnapshot(),
+           snapshot.pid == preferredTargetPID,
+           let element = snapshot.element
+        {
+            return self.focusedInputAssessment(for: element).isWritable
+        }
+
+        let systemWideElement = AXUIElementCreateSystemWide()
+        guard let element = self.copyAXElementAttribute(
+            from: systemWideElement,
+            attribute: kAXFocusedUIElementAttribute as CFString
+        ) else { return false }
+
+        if let preferredTargetPID {
+            var focusedPID: pid_t = 0
+            AXUIElementGetPid(element, &focusedPID)
+            guard focusedPID == preferredTargetPID else { return false }
+        }
+
+        return self.focusedInputAssessment(for: element).isWritable
     }
 
     private func isGhosttyApplication(pid: pid_t) -> Bool {
@@ -384,6 +471,67 @@ final class TypingService {
         }
     }
 
+    func typeOutputPlanAndWait(
+        _ plan: DictationLiteralOutputPlan,
+        preferredTargetPID: pid_t?,
+        textReadyAt: TimeInterval?,
+        tracksDictionaryCorrections: Bool = false,
+        commitBeforeInsertion: @escaping @Sendable () -> Bool
+    ) async -> TypingInsertionOutcome {
+        let requestedAt = ProcessInfo.processInfo.systemUptime
+        let text = plan.plainText
+        let mode = self.textInsertionMode
+        let settleDelayMs: Int = {
+            if mode == .reliablePaste {
+                return preferredTargetPID == nil ? 80 : 0
+            }
+            return preferredTargetPID == nil ? 200 : 0
+        }()
+
+        guard !text.isEmpty, !self.isCurrentlyTyping, AXIsProcessTrusted() else {
+            return .rejected
+        }
+
+        self.isCurrentlyTyping = true
+        let cancellation = TypingInsertionCancellation()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    if settleDelayMs > 0 {
+                        usleep(useconds_t(settleDelayMs * 1000))
+                    }
+
+                    let outcome: TypingInsertionOutcome
+                    if cancellation.isCancelled || !commitBeforeInsertion() {
+                        outcome = .cancelled
+                    } else {
+                        _ = self.insertTextInstantly(text, preferredTargetPID: preferredTargetPID)
+                        outcome = .inserted
+                    }
+
+                    DispatchQueue.main.async {
+                        self.isCurrentlyTyping = false
+                        if outcome == .inserted, tracksDictionaryCorrections {
+                            AutomaticDictionaryCorrectionTracker.shared.beginObservingInsertion(
+                                text,
+                                targetPID: preferredTargetPID
+                            )
+                        }
+                        let completedAt = ProcessInfo.processInfo.systemUptime
+                        self.bench(
+                            "complete_waited totalMs=\(Self.elapsedMs(from: requestedAt, to: completedAt)) " +
+                                "outcome=\(String(describing: outcome)) textReadyToCompleteMs=" +
+                                "\(textReadyAt.map { String(Self.elapsedMs(from: $0, to: completedAt)) } ?? "nil")"
+                        )
+                        continuation.resume(returning: outcome)
+                    }
+                }
+            }
+        } onCancel: {
+            cancellation.cancel()
+        }
+    }
+
     private func bench(_ message: String) {
         DebugLogger.shared.benchmark("TYPING_BENCH", message: message, source: "TypingBenchmark")
     }
@@ -398,7 +546,8 @@ final class TypingService {
 
     // MARK: - Internal insertion pipeline
 
-    private func insertTextInstantly(_ text: String, preferredTargetPID: pid_t?) {
+    @discardableResult
+    private func insertTextInstantly(_ text: String, preferredTargetPID: pid_t?) -> Bool {
         self.log("[TypingService] insertTextInstantly called with \(text.count) characters")
         self.log("[TypingService] Attempting to type text: \"\(text.prefix(50))\(text.count > 50 ? "..." : "")\"")
 
@@ -408,7 +557,7 @@ final class TypingService {
             self.log("[TypingService] Ghostty target detected in standard mode (PID \(ghosttyTargetPID)); forcing Reliable Paste path")
             if self.tryReliablePasteInsertion(text, preferredTargetPID: ghosttyTargetPID) {
                 self.log("[TypingService] SUCCESS: Ghostty Reliable Paste path completed")
-                return
+                return true
             }
             self.log("[TypingService] Ghostty Reliable Paste path fell through to direct-typing fallbacks")
         }
@@ -417,14 +566,14 @@ final class TypingService {
             self.log("[TypingService] Reliable Paste mode enabled")
             if self.tryReliablePasteInsertion(text, preferredTargetPID: preferredTargetPID) {
                 self.log("[TypingService] SUCCESS: Reliable Paste mode completed")
-                return
+                return true
             }
             self.log("[TypingService] Reliable Paste mode fell through to direct-typing fallbacks")
         } else if let preferredTargetPID, preferredTargetPID > 0 {
             self.log("[TypingService] Experimental Direct Typing mode: trying preferred PID unicode insertion first")
             if self.insertTextBulkInstant(text, targetPID: preferredTargetPID) {
                 self.log("[TypingService] SUCCESS: Preferred PID CGEvent insertion completed")
-                return
+                return true
             }
             self.log("[TypingService] Preferred PID CGEvent insertion failed, continuing fallback pipeline")
         }
@@ -458,7 +607,7 @@ final class TypingService {
             self.log("[TypingService] Trying CGEvent insertion targeting focused PID \(focusedPID)")
             if self.insertTextBulkInstant(text, targetPID: focusedPID) {
                 self.log("[TypingService] SUCCESS: CGEvent focused-PID insertion completed")
-                return
+                return true
             }
         }
 
@@ -466,7 +615,7 @@ final class TypingService {
         self.log("[TypingService] Trying Accessibility focused-element insertion")
         if self.insertTextViaAccessibility(text) {
             self.log("[TypingService] SUCCESS: Accessibility insertion completed")
-            return
+            return true
         }
 
         // HID Fallback if PID targeting failed
@@ -474,7 +623,7 @@ final class TypingService {
             self.log("[TypingService] No focused PID available, trying HID CGEvent insertion")
             if self.insertTextBulkHIDInstant(text) {
                 self.log("[TypingService] SUCCESS: CGEvent HID insertion completed")
-                return
+                return true
             }
         }
 
@@ -482,7 +631,7 @@ final class TypingService {
         self.log("[TypingService] CGEvent failed, trying clipboard fallback")
         if self.insertTextViaClipboard(text) {
             self.log("[TypingService] SUCCESS: Clipboard insertion completed")
-            return
+            return true
         }
 
         // Last resort: Character-by-character
@@ -495,6 +644,7 @@ final class TypingService {
             usleep(1000)
         }
         self.log("[TypingService] Character-by-character typing completed")
+        return true
     }
 
     private func tryReliablePasteInsertion(_ text: String, preferredTargetPID: pid_t?) -> Bool {
@@ -548,6 +698,33 @@ final class TypingService {
         return value as? String
     }
 
+    private static func boolAXAttribute(from element: AXUIElement, attribute: CFString) -> Bool? {
+        var value: CFTypeRef?
+        let result = AXUIElementCopyAttributeValue(element, attribute, &value)
+        guard result == .success else { return nil }
+        return value as? Bool
+    }
+
+    private static func isAXAttributeSettable(_ attribute: CFString, on element: AXUIElement) -> Bool {
+        var isSettable = DarwinBoolean(false)
+        guard AXUIElementIsAttributeSettable(element, attribute, &isSettable) == .success else {
+            return false
+        }
+        return isSettable.boolValue
+    }
+
+    private static func focusedInputAssessment(for element: AXUIElement) -> FocusedInputAssessment {
+        FocusedInputAssessment(
+            role: self.stringAXAttribute(from: element, attribute: kAXRoleAttribute as CFString),
+            subrole: self.stringAXAttribute(from: element, attribute: kAXSubroleAttribute as CFString),
+            isEnabled: self.boolAXAttribute(from: element, attribute: kAXEnabledAttribute as CFString) ?? true,
+            isEditable: self.boolAXAttribute(from: element, attribute: "AXEditable" as CFString),
+            isValueSettable: self.isAXAttributeSettable(kAXValueAttribute as CFString, on: element),
+            isSelectedTextSettable: self.isAXAttributeSettable(kAXSelectedTextAttribute as CFString, on: element),
+            isSecureInputEnabled: IsSecureEventInputEnabled()
+        )
+    }
+
     private static func currentFocusDebugDescription() -> String {
         let systemWideElement = AXUIElementCreateSystemWide()
         var focusedElementRef: CFTypeRef?
@@ -590,7 +767,9 @@ final class TypingService {
         guard CFGetTypeID(focusedElementRef) == AXUIElementGetTypeID() else { return false }
 
         let currentElement = unsafeBitCast(focusedElementRef, to: AXUIElement.self)
-        if CFEqual(currentElement, expectedElement) { return true }
+        if CFEqual(currentElement, expectedElement) {
+            return true
+        }
 
         var currentPID: pid_t = 0
         AXUIElementGetPid(currentElement, &currentPID)
@@ -946,7 +1125,9 @@ final class TypingService {
     }
 
     private func findTextElementRecursively(_ element: AXUIElement, depth: Int, maxDepth: Int) -> AXUIElement? {
-        if depth > maxDepth { return nil }
+        if depth > maxDepth {
+            return nil
+        }
 
         // Check if this element is a text input element
         if let role = getElementAttribute(element, kAXRoleAttribute as CFString) {
@@ -1282,7 +1463,7 @@ final class TypingService {
         return true
     }
 
-    // Why is it working now? And why is it not working now?
+    /// Why is it working now? And why is it not working now?
     private func setTextViaValue(_ element: AXUIElement, _ text: String) -> Bool {
         let cfText = text as CFString
         let result = AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, cfText)

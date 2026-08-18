@@ -151,6 +151,16 @@ extension VoiceEngineSettingsView {
 
                         Divider().padding(.vertical, 4)
 
+                        if selectedModel.isCloudSpeechModel || self.viewModel.showSonioxSetup {
+                            self.sonioxCredentialSettingsSection
+
+                            Divider().padding(.vertical, 4)
+                        }
+
+                        self.inputSourceModelAssignmentsSection
+
+                        Divider().padding(.vertical, 4)
+
                         // Filler Words Section
                         self.fillerWordsSection
                     }
@@ -159,6 +169,283 @@ extension VoiceEngineSettingsView {
             .padding(14)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private var sonioxCredentialSettingsSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "key.fill")
+                    .foregroundStyle(self.theme.palette.accent)
+                Text("Soniox v5 Realtime")
+                    .font(self.theme.typography.sectionTitle)
+                    .foregroundStyle(self.voiceEngineTitleText)
+                Spacer()
+                Text(self.viewModel.sonioxCredentialState.displayName)
+                    .font(self.theme.typography.bodySmallStrong)
+                    .foregroundStyle(
+                        self.viewModel.sonioxCredentialState == .apiKeyRequired
+                            ? .orange
+                            : Color.fluidGreen
+                    )
+            }
+
+            Text("Enter your own Soniox API key. The key is stored only in the macOS Keychain and is never shown or included in backups.")
+                .font(self.theme.typography.bodySmall)
+                .foregroundStyle(self.voiceEngineSecondaryText)
+
+            SecureField("Soniox API key", text: self.$viewModel.sonioxAPIKeyDraft)
+                .textFieldStyle(.roundedBorder)
+                .disabled(self.viewModel.sonioxCredentialMutationBlocked)
+
+            HStack(spacing: 8) {
+                Button("Save & Verify") {
+                    self.viewModel.saveAndVerifySonioxCredential()
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .disabled(
+                    self.viewModel.sonioxCredentialMutationBlocked
+                        || self.viewModel.sonioxAPIKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                )
+
+                Button("Remove Key") {
+                    self.viewModel.removeSonioxCredential()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(!self.viewModel.canRemoveSonioxCredential)
+
+                if self.viewModel.isVerifyingSonioxCredential {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Verifying…")
+                        .font(self.theme.typography.bodySmall)
+                        .foregroundStyle(self.voiceEngineSecondaryText)
+                }
+            }
+
+            Picker("Language", selection: self.$settings.sonioxLanguageMode) {
+                ForEach(SettingsStore.SonioxLanguageMode.allCases) { mode in
+                    Text(mode.displayName).tag(mode)
+                }
+            }
+            .pickerStyle(.menu)
+            .disabled(self.viewModel.sonioxCredentialMutationBlocked)
+
+            Picker(
+                "Region",
+                selection: Binding(
+                    get: { self.settings.sonioxRegion },
+                    set: { self.viewModel.setSonioxRegion($0) }
+                )
+            ) {
+                ForEach(SettingsStore.SonioxRegion.allCases) { region in
+                    Text(region.displayName).tag(region)
+                }
+            }
+            .pickerStyle(.menu)
+            .disabled(self.viewModel.sonioxCredentialMutationBlocked)
+
+            if let error = self.viewModel.sonioxCredentialError {
+                Label(error, systemImage: "exclamationmark.triangle")
+                    .font(self.theme.typography.bodySmall)
+                    .foregroundStyle(.orange)
+            }
+
+            Text("Soniox receives microphone audio while you dictate. Soniox usage and billing apply to your account.")
+                .font(self.theme.typography.bodySmall)
+                .foregroundStyle(self.voiceEngineSecondaryText)
+
+            HStack(spacing: 12) {
+                Link("Soniox Console", destination: URL(string: "https://console.soniox.com")!)
+                Link("Privacy", destination: URL(string: "https://soniox.com/privacy")!)
+                Link("Data residency", destination: URL(string: "https://soniox.com/docs/data-residency")!)
+            }
+            .font(self.theme.typography.bodySmall)
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(self.theme.palette.cardBackground.opacity(0.9))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(self.theme.palette.cardBorder.opacity(0.3), lineWidth: 1)
+                )
+        )
+    }
+
+    private var inputSourceModelAssignmentsSection: some View {
+        let inputSources = KeyboardInputSourceService.installedInputSources()
+
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "keyboard")
+                    .foregroundStyle(self.theme.palette.accent)
+                Text("Models by Keyboard Input Source")
+                    .font(self.theme.typography.sectionTitle)
+                    .foregroundStyle(self.voiceEngineTitleText)
+                Spacer()
+            }
+
+            Text("Choose a speech model for each enabled keyboard input source. Changes apply to the next recording.")
+                .font(self.theme.typography.bodySmall)
+                .foregroundStyle(self.voiceEngineSecondaryText)
+
+            if inputSources.isEmpty {
+                Label("No selectable keyboard input sources found.", systemImage: "keyboard.badge.ellipsis")
+                    .font(self.theme.typography.body)
+                    .foregroundStyle(self.voiceEngineSecondaryText)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+            } else {
+                VStack(spacing: 8) {
+                    ForEach(inputSources) { inputSource in
+                        self.inputSourceModelAssignmentRow(inputSource)
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(self.theme.palette.cardBackground.opacity(0.9))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(self.theme.palette.cardBorder.opacity(0.3), lineWidth: 1)
+                )
+        )
+    }
+
+    private func inputSourceModelAssignmentRow(
+        _ inputSource: KeyboardInputSourceSnapshot
+    ) -> some View {
+        let localeIdentifier = KeyboardInputSourceLocaleResolver.localeIdentifier(for: inputSource)
+        let compatibleModels = RecordingSpeechConfigurationResolver.compatibleModels(for: inputSource)
+        let savedModel = self.settings.speechModelAssignment(forInputSourceID: inputSource.id)
+        let selectedModel = savedModel.flatMap { model in
+            compatibleModels.contains(model) ? model : nil
+        }
+        let readinessModel = selectedModel ?? self.settings.selectedSpeechModel
+        let usesGlobalFallback = selectedModel == nil
+
+        return HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(inputSource.localizedName)
+                    .font(self.theme.typography.bodyStrong)
+                    .foregroundStyle(self.voiceEngineTitleText)
+                    .lineLimit(1)
+                Text("Detected speech locale: \(localeIdentifier)")
+                    .font(self.theme.typography.bodySmall)
+                    .foregroundStyle(self.voiceEngineSecondaryText)
+                if let savedModel, selectedModel == nil {
+                    Text("Saved \(savedModel.displayName) is unavailable here; using the global default.")
+                        .font(self.theme.typography.bodySmall)
+                        .foregroundStyle(.orange)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            VStack(alignment: .trailing, spacing: 4) {
+                Menu {
+                    Button {
+                        self.settings.setSpeechModelAssignment(nil, forInputSourceID: inputSource.id)
+                    } label: {
+                        HStack {
+                            Text("Use Global Default")
+                            if savedModel == nil {
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+
+                    Divider()
+
+                    ForEach(compatibleModels) { model in
+                        Button {
+                            self.viewModel.assignSpeechModel(model, forInputSourceID: inputSource.id)
+                        } label: {
+                            HStack {
+                                Text(model.displayName)
+                                if model.isCloudSpeechModel {
+                                    Text(
+                                        self.viewModel.sonioxCredentialState == .apiKeyRequired
+                                            ? "Configure in Voice Engine"
+                                            : self.viewModel.sonioxCredentialState.displayName
+                                    )
+                                } else if !model.isInstalled {
+                                    Text("Not downloaded")
+                                }
+                                if savedModel == model {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        Text(selectedModel?.displayName ?? "Global: \(self.settings.selectedSpeechModel.displayName)")
+                            .lineLimit(1)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 9, weight: .semibold))
+                    }
+                    .font(self.theme.typography.bodySmallStrong)
+                    .foregroundStyle(self.voiceEngineTitleText)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(self.theme.palette.contentBackground.opacity(0.7))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(self.theme.palette.cardBorder.opacity(0.5), lineWidth: 1)
+                            )
+                    )
+                }
+                .menuStyle(.borderlessButton)
+                .frame(maxWidth: 260, alignment: .trailing)
+
+                Text(Self.inputSourceModelReadinessLabel(
+                    model: readinessModel,
+                    usesGlobalFallback: usesGlobalFallback,
+                    isInstalled: readinessModel.isInstalled,
+                    sonioxCredentialState: readinessModel.isCloudSpeechModel
+                        ? self.viewModel.sonioxCredentialState
+                        : nil
+                ))
+                .font(self.theme.typography.bodySmall)
+                .foregroundStyle(
+                    readinessModel.isCloudSpeechModel
+                        ? ((self.viewModel.sonioxCredentialState == .configured || self.viewModel.sonioxCredentialState == .ready)
+                            ? Color.fluidGreen
+                            : .orange)
+                        : readinessModel == .appleSpeechAnalyzer
+                        ? self.voiceEngineSecondaryText
+                        : (readinessModel.isInstalled ? Color.fluidGreen : .orange)
+                )
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 9)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(self.theme.palette.contentBackground.opacity(0.45))
+        )
+    }
+
+    static func inputSourceModelReadinessLabel(
+        model: SettingsStore.SpeechModel,
+        usesGlobalFallback: Bool,
+        isInstalled: Bool,
+        sonioxCredentialState: SonioxCredentialState? = nil
+    ) -> String {
+        let source = usesGlobalFallback ? "Global default" : "Assigned"
+        if model.isCloudSpeechModel {
+            return "\(source) • \(sonioxCredentialState?.displayName ?? SonioxCredentialState.apiKeyRequired.displayName)"
+        }
+        let readiness = model == .appleSpeechAnalyzer
+            ? "System availability checked at recording start"
+            : (isInstalled ? "Ready" : "Download required")
+        return "\(source) • \(readiness)"
     }
 
     /// Stats panel showing speed/accuracy bars that animate when model changes
@@ -181,8 +468,8 @@ extension VoiceEngineSettingsView {
                                     .fontWeight(.semibold)
                                     .padding(.horizontal, 6)
                                     .padding(.vertical, 2)
-                                    .background(Capsule().fill(badge == "FluidVoice Pick" ? .cyan.opacity(0.2) : .orange.opacity(0.2)))
-                                    .foregroundStyle(badge == "FluidVoice Pick" ? .cyan : .orange)
+                                    .background(Capsule().fill(badge == "MyFluidVoice Pick" ? .cyan.opacity(0.2) : .orange.opacity(0.2)))
+                                    .foregroundStyle(badge == "MyFluidVoice Pick" ? .cyan : .orange)
                             }
 
                             Spacer()
@@ -308,7 +595,9 @@ extension VoiceEngineSettingsView {
     func speechModelCard(for model: SettingsStore.SpeechModel) -> some View {
         let isSelected = self.viewModel.previewSpeechModel == model
         let isConfiguredActive = self.viewModel.isActiveSpeechModel(model)
-        let isActive = isConfiguredActive && model.isInstalled && self.viewModel.asr.isAsrReady
+        let isActive = model.isCloudSpeechModel
+            ? isConfiguredActive && self.viewModel.sonioxCredentialState == .ready
+            : isConfiguredActive && model.isInstalled && self.viewModel.asr.isAsrReady
 
         return HStack(alignment: .top, spacing: 10) {
             Circle()
@@ -358,8 +647,10 @@ extension VoiceEngineSettingsView {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            // Action area: Show progress if THIS model is being downloaded
-            if self.viewModel.downloadingModel == model {
+            // Cloud models never enter the local download/cache/delete state machine.
+            if model.isCloudSpeechModel {
+                self.sonioxCardAction(isActive: isActive)
+            } else if self.viewModel.downloadingModel == model {
                 // This specific model is currently being downloaded
                 HStack(spacing: 8) {
                     VStack(alignment: .trailing, spacing: 4) {
@@ -547,6 +838,42 @@ extension VoiceEngineSettingsView {
     }
 
     @ViewBuilder
+    private func sonioxCardAction(isActive: Bool) -> some View {
+        switch self.viewModel.sonioxCredentialState {
+        case .apiKeyRequired:
+            Button("Configure") {
+                self.viewModel.requestSonioxSetup()
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+            .tint(.blue)
+            .disabled(self.viewModel.sonioxCredentialMutationBlocked)
+        case .verifying:
+            HStack(spacing: 6) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Verifying…")
+                    .font(self.theme.typography.bodySmall)
+                    .foregroundStyle(self.voiceEngineSecondaryText)
+            }
+        case .configured, .ready:
+            if isActive {
+                Label("Active", systemImage: "checkmark.circle.fill")
+                    .font(self.theme.typography.bodySmallStrong)
+                    .foregroundStyle(Color.fluidGreen)
+            } else {
+                Button("Activate") {
+                    self.viewModel.activateSpeechModel(.sonioxV5)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .tint(Color.fluidGreen)
+                .disabled(self.viewModel.areSpeechModelActionsBlocked)
+            }
+        }
+    }
+
+    @ViewBuilder
     private func speechModelLanguagePicker(for model: SettingsStore.SpeechModel) -> some View {
         if model == .cohereTranscribeSixBit {
             Menu {
@@ -650,8 +977,23 @@ extension VoiceEngineSettingsView {
     }
 
     var modelStatusView: some View {
-        HStack(spacing: 12) {
-            if (self.viewModel.asr.isDownloadingModel || self.viewModel.asr.isLoadingModel) && !self.viewModel.asr.isAsrReady {
+        let model = self.settings.selectedSpeechModel
+
+        return HStack(spacing: 12) {
+            if model.isCloudSpeechModel {
+                Image(systemName: self.viewModel.sonioxCredentialState == .apiKeyRequired ? "key" : "checkmark.circle.fill")
+                    .foregroundStyle(self.viewModel.sonioxCredentialState == .apiKeyRequired ? .orange : Color.fluidGreen)
+                Text(self.viewModel.sonioxCredentialState.displayName)
+                    .font(self.theme.typography.bodySmall)
+                    .foregroundStyle(self.voiceEngineSecondaryText)
+                if self.viewModel.sonioxCredentialState == .apiKeyRequired {
+                    Button("Configure") {
+                        self.viewModel.requestSonioxSetup()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                }
+            } else if (self.viewModel.asr.isDownloadingModel || self.viewModel.asr.isLoadingModel) && !self.viewModel.asr.isAsrReady {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small).fixedSize()
                     Text(self.viewModel.asr.isLoadingModel ? "Loading model…" : "Downloading model…")

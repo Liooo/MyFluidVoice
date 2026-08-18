@@ -17,7 +17,7 @@ final class CommandModeService: ObservableObject {
     private let maxTurns = 20
     private var didRequireConfirmationThisRun: Bool = false
 
-    // Flag to enable notch output display
+    /// Flag to enable notch output display
     var enableNotchOutput: Bool = true
 
     // Streaming UI update throttling - adaptive rate based on content length
@@ -297,15 +297,23 @@ final class CommandModeService: ObservableObject {
             }
 
             // Skip tool outputs in notch (they're verbose)
-            if msg.role == .tool { continue }
+            if msg.role == .tool {
+                continue
+            }
 
             NotchContentState.shared.addCommandMessage(role: role, content: msg.content)
         }
     }
 
     /// Process user voice/text command
-    func processUserCommand(_ text: String, notifyInvalidRequest: Bool = false) async {
-        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+    func processUserCommand(
+        _ text: String,
+        notifyInvalidRequest: Bool = false,
+        isAuthorized: @escaping @MainActor () -> Bool = { true }
+    ) async {
+        guard isAuthorized(),
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return }
 
         self.isProcessing = true
         self.currentTurnCount = 0
@@ -321,7 +329,10 @@ final class CommandModeService: ObservableObject {
             NotchContentState.shared.setCommandProcessing(true)
         }
 
-        await self.processNextTurn(notifyInvalidRequest: notifyInvalidRequest)
+        await self.processNextTurn(
+            notifyInvalidRequest: notifyInvalidRequest,
+            isAuthorized: isAuthorized
+        )
     }
 
     /// Process follow-up command from notch input
@@ -369,7 +380,14 @@ final class CommandModeService: ObservableObject {
 
     // MARK: - Agent Loop
 
-    private func processNextTurn(notifyInvalidRequest: Bool = false) async {
+    private func processNextTurn(
+        notifyInvalidRequest: Bool = false,
+        isAuthorized: @escaping @MainActor () -> Bool = { true }
+    ) async {
+        guard isAuthorized(), !Task.isCancelled else {
+            self.finishCancelledRun()
+            return
+        }
         if self.currentTurnCount >= self.maxTurns {
             let errorMsg = "Reached maximum steps limit. Please review the progress and continue if needed."
             self.conversationHistory.append(Message(
@@ -403,7 +421,11 @@ final class CommandModeService: ObservableObject {
         }
 
         do {
-            let response = try await callLLM()
+            let response = try await self.callLLM(isAuthorized: isAuthorized)
+            guard isAuthorized(), !Task.isCancelled else {
+                self.finishCancelledRun()
+                return
+            }
 
             if let tc = response.toolCall {
                 // Determine step type based on command purpose
@@ -452,7 +474,13 @@ final class CommandModeService: ObservableObject {
                 }
 
                 // Auto-execute
-                await self.executeCommand(tc.command, workingDirectory: tc.workingDirectory, callId: tc.id, purpose: tc.purpose)
+                await self.executeCommand(
+                    tc.command,
+                    workingDirectory: tc.workingDirectory,
+                    callId: tc.id,
+                    purpose: tc.purpose,
+                    isAuthorized: isAuthorized
+                )
 
             } else {
                 // Just a text response - check if it's a final summary
@@ -485,6 +513,10 @@ final class CommandModeService: ObservableObject {
             }
 
         } catch {
+            guard isAuthorized(), !Task.isCancelled, !(error is CancellationError) else {
+                self.finishCancelledRun()
+                return
+            }
             let errorMsg: String
             if case LLMError.invalidRequest = error {
                 errorMsg = error.localizedDescription
@@ -514,6 +546,19 @@ final class CommandModeService: ObservableObject {
                 NotchContentState.shared.setCommandProcessing(false)
                 self.showExpandedNotchIfNeeded()
             }
+        }
+    }
+
+    private func finishCancelledRun() {
+        self.isProcessing = false
+        self.currentStep = nil
+        self.streamingText = ""
+        self.streamingThinkingText = ""
+        self.streamingBuffer = []
+        self.thinkingBuffer = []
+        if self.shouldSyncCommandNotchState {
+            NotchContentState.shared.updateCommandStreamingText("")
+            NotchContentState.shared.setCommandProcessing(false)
         }
     }
 
@@ -633,13 +678,27 @@ final class CommandModeService: ObservableObject {
         return false
     }
 
-    private func executeCommand(_ command: String, workingDirectory: String?, callId: String, purpose: String? = nil) async {
+    private func executeCommand(
+        _ command: String,
+        workingDirectory: String?,
+        callId: String,
+        purpose: String? = nil,
+        isAuthorized: @escaping @MainActor () -> Bool = { true }
+    ) async {
+        guard isAuthorized(), !Task.isCancelled else {
+            self.finishCancelledRun()
+            return
+        }
         self.currentStep = .executing(command)
 
         let result = await terminalService.execute(
             command: command,
             workingDirectory: workingDirectory
         )
+        guard isAuthorized(), !Task.isCancelled else {
+            self.finishCancelledRun()
+            return
+        }
 
         // Create enhanced result with context
         let enhancedResult = EnhancedCommandResult(
@@ -660,7 +719,7 @@ final class CommandModeService: ObservableObject {
         ))
 
         // Continue the loop - let the AI see the result and decide what to do next
-        await self.processNextTurn()
+        await self.processNextTurn(isAuthorized: isAuthorized)
     }
 
     // MARK: - Enhanced Result
@@ -713,7 +772,9 @@ final class CommandModeService: ObservableObject {
         }
     }
 
-    private func callLLM() async throws -> LLMResponse {
+    private func callLLM(
+        isAuthorized: @escaping @MainActor () -> Bool = { true }
+    ) async throws -> LLMResponse {
         let settings = SettingsStore.shared
         if let issue = settings.commandModeReadinessIssue {
             throw LLMError.invalidRequest(issue)
@@ -913,6 +974,7 @@ final class CommandModeService: ObservableObject {
             config.onThinkingChunk = { [weak self] (chunk: String) in
                 guard let self = self else { return }
                 Task { @MainActor in
+                    guard isAuthorized(), !Task.isCancelled else { return }
                     self.thinkingBuffer.append(chunk)
 
                     // 60fps UI update throttle for thinking
@@ -928,6 +990,7 @@ final class CommandModeService: ObservableObject {
             config.onContentChunk = { [weak self] (chunk: String) in
                 guard let self = self else { return }
                 Task { @MainActor in
+                    guard isAuthorized(), !Task.isCancelled else { return }
                     self.streamingBuffer.append(chunk)
 
                     // 60fps UI update throttle
@@ -949,6 +1012,7 @@ final class CommandModeService: ObservableObject {
         DebugLogger.shared.info("Using LLMClient for Command Mode (streaming=\(enableStreaming), messages=\(messages.count), history=\(self.conversationHistory.count))", source: "CommandModeService")
 
         let response = try await LLMClient.shared.call(config)
+        guard isAuthorized(), !Task.isCancelled else { throw CancellationError() }
 
         // Final UI update - ensure all content is displayed
         let fullContent = self.streamingBuffer.joined()
@@ -960,7 +1024,8 @@ final class CommandModeService: ObservableObject {
         }
 
         // Small delay to let the final content render, then clear
-        try? await Task.sleep(nanoseconds: 50_000_000) // 50ms
+        try await Task.sleep(nanoseconds: 50_000_000) // 50ms
+        guard isAuthorized(), !Task.isCancelled else { throw CancellationError() }
 
         // Capture final thinking before clearing (for message storage)
         let finalThinking = response.thinking ?? (self.thinkingBuffer.isEmpty ? nil : self.thinkingBuffer.joined())

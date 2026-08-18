@@ -1,6 +1,5 @@
 import AppKit
 import Combine
-import PromiseKit
 import SwiftUI
 
 enum MenuBarNavigationDestination: String {
@@ -19,9 +18,9 @@ final class MenuBarManager: NSObject, ObservableObject, NSMenuDelegate {
     // Cached menu items to avoid rebuilding entire menu
     private var statusMenuItem: NSMenuItem?
     private var copyLastTranscriptMenuItem: NSMenuItem?
-    private var rollbackMenuItem: NSMenuItem?
     private var microphoneMenuItem: NSMenuItem?
     private var microphoneSubmenu: NSMenu?
+    private var rollbackMenuItem: NSMenuItem?
 
     // References to app state
     private weak var asrService: ASRService?
@@ -507,7 +506,7 @@ final class MenuBarManager: NSObject, ObservableObject, NSMenuDelegate {
         menu.addItem(.separator())
 
         // Open Main Window
-        let openItem = NSMenuItem(title: "Open Fluid Voice", action: #selector(openMainWindow), keyEquivalent: "")
+        let openItem = NSMenuItem(title: "Open MyFluidVoice", action: #selector(openMainWindow), keyEquivalent: "")
         openItem.target = self
         menu.addItem(openItem)
 
@@ -548,7 +547,7 @@ final class MenuBarManager: NSObject, ObservableObject, NSMenuDelegate {
 
         // Quit
         let quitItem = NSMenuItem(
-            title: "Quit Fluid Voice",
+            title: "Quit MyFluidVoice",
             action: #selector(NSApplication.terminate(_:)),
             keyEquivalent: "q"
         )
@@ -578,8 +577,6 @@ final class MenuBarManager: NSObject, ObservableObject, NSMenuDelegate {
         self.copyLastTranscriptMenuItem?.isEnabled = self.canCopyLastTranscript
         self.microphoneMenuItem?.isEnabled = true
 
-        // Update rollback availability text
-        self.rollbackMenuItem?.isEnabled = SimpleUpdater.shared.hasRollbackBackup()
     }
 
     func menuWillOpen(_ menu: NSMenu) {
@@ -845,7 +842,7 @@ final class MenuBarManager: NSObject, ObservableObject, NSMenuDelegate {
         guard window.styleMask.contains(.titled) else { return false }
         guard window.canBecomeKey else { return false }
         guard window.isMiniaturized == false else { return false }
-        return window.title == "FluidVoice" || window.title.contains("FluidVoice")
+        return window.title == "MyFluidVoice" || window.title.contains("MyFluidVoice")
     }
 
     @objc private func openPreferences() {
@@ -907,7 +904,7 @@ final class MenuBarManager: NSObject, ObservableObject, NSMenuDelegate {
             backing: .buffered,
             defer: false
         )
-        window.title = "FluidVoice"
+        window.title = "MyFluidVoice"
         window.animationBehavior = .none
         window.minSize = self.mainWindowMinimumSize
         window.isReleasedWhenClosed = false

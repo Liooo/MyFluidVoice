@@ -36,7 +36,7 @@ jobs:
           ARTIFACT=$(
             gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/artifacts" \
               --jq '.artifacts
-                | map(select((.expired == false) and (.name | startswith("FluidVoice-PR-"))))
+                | map(select((.expired == false) and (.name | startswith("MyFluidVoice-PR-"))))
                 | sort_by(.created_at)
                 | last
                 | [.id, .name]
@@ -44,7 +44,7 @@ jobs:
           )
           IFS=$'\t' read -r ARTIFACT_ID ARTIFACT_NAME <<< "$ARTIFACT"
 
-          EXPECTED_PREFIX="FluidVoice-PR-$EVENT_PR_NUMBER-"
+          EXPECTED_PREFIX="MyFluidVoice-PR-$EVENT_PR_NUMBER-"
           if [[ ! "$ARTIFACT_ID" =~ ^[0-9]+$ ]]; then
             echo "No valid archive artifact was found for PR #$EVENT_PR_NUMBER." >&2
             exit 1
@@ -56,9 +56,17 @@ jobs:
             exit 1
           fi
 
-          CURRENT_HEAD_SHA=$(
-            gh api "repos/$GITHUB_REPOSITORY/pulls/$EVENT_PR_NUMBER" --jq '.head.sha'
+          PR_METADATA=$(
+            gh api "repos/$GITHUB_REPOSITORY/pulls/$EVENT_PR_NUMBER" \
+              --jq '[.head.sha, .head.repo.full_name, .base.sha] | @tsv'
           )
+          IFS=$'\t' read -r CURRENT_HEAD_SHA HEAD_REPOSITORY BASE_SHA <<< "$PR_METADATA"
+          if [[ ! "$CURRENT_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || \
+             [[ ! "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]] || \
+             [[ ! "$HEAD_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+            echo "GitHub did not return valid PR source metadata." >&2
+            exit 1
+          fi
           if [[ "${CURRENT_HEAD_SHA:0:12}" != "$ARTIFACT_SHORT_SHA" ]]; then
             echo "Skipping a superseded artifact for PR #$EVENT_PR_NUMBER."
             exit 0
@@ -66,19 +74,30 @@ jobs:
 
           ARTIFACT_URL="https://github.com/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/artifacts/$ARTIFACT_ID"
           RUN_URL="https://github.com/$GITHUB_REPOSITORY/actions/runs/$RUN_ID"
-          APP_NAME="FluidVoice #$EVENT_PR_NUMBER"
+          PR_URL="https://github.com/$GITHUB_REPOSITORY/pull/$EVENT_PR_NUMBER"
+          HEAD_SOURCE_URL="https://github.com/$HEAD_REPOSITORY/commit/$CURRENT_HEAD_SHA"
+          BASE_SOURCE_URL="https://github.com/$GITHUB_REPOSITORY/commit/$BASE_SHA"
+          SOURCE_ARCHIVE_NAME="MyFluidVoice-PR-$EVENT_PR_NUMBER-source-$ARTIFACT_SHORT_SHA.zip"
+          APP_NAME="MyFluidVoice #$EVENT_PR_NUMBER"
+          # Keep the existing hidden marker so earlier comments are updated
+          # in place after the visible fork rebrand.
           MARKER='<!-- fluidvoice-pr-archive -->'
           BODY=$(cat <<EOF
           $MARKER
-          ### FluidVoice PR build ready
+          ### MyFluidVoice PR build ready
 
           [Download **$ARTIFACT_NAME**]($ARTIFACT_URL)
 
-          The artifact contains the ad-hoc-signed app ZIP, Xcode archive, build manifest, and installation instructions. It expires 5 days after the build.
+          > [!WARNING]
+          > This app executes code from the pull request with Microphone and Accessibility permissions. Review and trust the PR before running it.
+
+          The artifact contains the ad-hoc-signed app ZIP, Xcode archive, build manifest, installation instructions, the complete GPLv3 \`LICENSE\`, and the exact Corresponding Source archive \`$SOURCE_ARCHIVE_NAME\`. It expires 5 days after the build.
+
+          Source metadata: [pull request]($PR_URL) · [PR head \`$CURRENT_HEAD_SHA\`]($HEAD_SOURCE_URL) · [target base \`$BASE_SHA\`]($BASE_SOURCE_URL)
 
           #### Install the app
 
-          1. Extract the downloaded artifact, then extract **FluidVoice-PR-$EVENT_PR_NUMBER.app.zip**.
+          1. Extract the downloaded artifact, then extract **MyFluidVoice-PR-$EVENT_PR_NUMBER.app.zip**.
           2. Move **$APP_NAME.app** into the **/Applications** folder.
           3. Open Terminal and remove the download quarantine marker:
 
@@ -87,7 +106,7 @@ jobs:
           4. In Applications, Control-click **$APP_NAME.app** and choose **Open**.
           5. If macOS still blocks it, open **System Settings → Privacy & Security**, click **Open Anyway**, and confirm.
 
-          This build has its own app identity, so its permissions are separate from the release version of FluidVoice.
+          This build has its own app identity, so its permissions are separate from the release version of MyFluidVoice.
 
           [View workflow run]($RUN_URL)
           EOF

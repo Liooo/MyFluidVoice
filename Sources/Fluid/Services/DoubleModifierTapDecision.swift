@@ -25,6 +25,9 @@ nonisolated struct DoubleModifierTapDecision: Equatable {
     }
 
     nonisolated struct State: Equatable {
+        // The enclosing decision implementation needs these details, but exposing them to the
+        // whole module would make the transition representation part of the internal API.
+        // swiftlint:disable strict_fileprivate
         fileprivate nonisolated enum Phase: Equatable {
             case idle
             case firstPress(Owner, firstPressTimestamp: TimeInterval)
@@ -46,6 +49,7 @@ nonisolated struct DoubleModifierTapDecision: Equatable {
         fileprivate init(phase: Phase) {
             self.phase = phase
         }
+        // swiftlint:enable strict_fileprivate
     }
 
     let state: State
@@ -182,13 +186,18 @@ nonisolated struct DoubleModifierTapDecision: Equatable {
                 return .init(state: State(phase: phase), outcome: .ignore)
             }
             guard let changedFlag = HotkeyShortcut.modifierFlag(forKeyCode: keyCode),
-                  changedFlag == shortcut.modifierTriggerFlag,
-                  shortcut.acceptsModifierKeyCode(keyCode)
+                  changedFlag == shortcut.modifierTriggerFlag
             else {
                 let nextPhase: State.Phase = pressedModifierKeyCodes.isEmpty
                     ? .idle
                     : .canceledUntilModifiersReleased(owner)
                 return .init(state: State(phase: nextPhase), outcome: .ignore)
+            }
+            guard shortcut.acceptsModifierKeyCode(keyCode) else {
+                let nextPhase: State.Phase = pressedModifierKeyCodes.isEmpty
+                    ? .idle
+                    : .canceledUntilModifiersReleased(owner)
+                return .init(state: State(phase: nextPhase), outcome: .handled)
             }
             guard pressedModifierKeyCodes.contains(keyCode) else {
                 return .init(

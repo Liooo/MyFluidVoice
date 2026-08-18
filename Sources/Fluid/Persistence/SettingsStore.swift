@@ -30,10 +30,10 @@ final class SettingsStore: ObservableObject {
     private(set) var launchAtStartupEnabled = false
     private(set) var launchAtStartupErrorMessage: String?
     private(set) var launchAtStartupStatusMessage =
-        "FluidVoice reflects the actual macOS login item state. Unsigned or development builds may fail to enable this."
+        "MyFluidVoice reflects the actual macOS login item state. Unsigned or development builds may fail to enable this."
 
     private init() {
-        self.migrateTranscriptionStartSoundIfNeeded()
+        self.migrateTranscriptionEndSoundIfNeeded()
         self.ensureDebugLoggingDefaults()
         self.migrateProviderAPIKeysIfNeeded()
         self.scrubSavedProviderAPIKeys()
@@ -1476,7 +1476,9 @@ final class SettingsStore: ObservableObject {
     }
 
     var providerAPIKeys: [String: String] {
-        get { (try? self.keychain.fetchAllKeys()) ?? [:] }
+        get {
+            KeychainService.unreservedKeys((try? self.keychain.fetchAllKeys()) ?? [:])
+        }
         set {
             objectWillChange.send()
             do {
@@ -1490,8 +1492,8 @@ final class SettingsStore: ObservableObject {
     @discardableResult
     func saveProviderAPIKeys(_ values: [String: String]) throws -> [String: String] {
         let trimmed = self.sanitizeAPIKeys(values)
-        try self.keychain.storeAllKeys(trimmed)
-        return try self.keychain.fetchAllKeys()
+        try self.keychain.storeUnreservedKeys(trimmed)
+        return try KeychainService.unreservedKeys(self.keychain.fetchAllKeys())
     }
 
     /// Securely retrieve API key for a provider, handling custom prefix logic
@@ -1859,6 +1861,116 @@ final class SettingsStore: ObservableObject {
     var copyTranscriptionToClipboard: Bool {
         get { self.defaults.bool(forKey: Keys.copyTranscriptionToClipboard) }
         set { self.defaults.set(newValue, forKey: Keys.copyTranscriptionToClipboard) }
+    }
+
+    var copyWhenNoWritableInputFocused: Bool {
+        get { self.defaults.object(forKey: Keys.copyWhenNoWritableInputFocused) as? Bool ?? true }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue, forKey: Keys.copyWhenNoWritableInputFocused)
+        }
+    }
+
+    var escapeExitAction: DictationExitAction {
+        get {
+            self.defaults.string(forKey: Keys.escapeExitAction)
+                .flatMap(DictationExitAction.init(rawValue:)) ?? .paste
+        }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue.rawValue, forKey: Keys.escapeExitAction)
+        }
+    }
+
+    var outsideClickExitAction: DictationExitAction {
+        get {
+            self.defaults.string(forKey: Keys.outsideClickExitAction)
+                .flatMap(DictationExitAction.init(rawValue:)) ?? .paste
+        }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue.rawValue, forKey: Keys.outsideClickExitAction)
+        }
+    }
+
+    var speechModelAssignmentsByInputSourceID: [String: SpeechModel] {
+        get {
+            self.rawSpeechModelAssignmentsByInputSourceID.reduce(into: [:]) { result, entry in
+                guard let model = SpeechModel(rawValue: entry.value) else { return }
+                result[entry.key] = model
+            }
+        }
+        set {
+            objectWillChange.send()
+            self.storeSpeechModelAssignments(newValue.mapValues(\.rawValue))
+        }
+    }
+
+    var sonioxLanguageMode: SonioxLanguageMode {
+        get {
+            self.defaults.string(forKey: Keys.sonioxLanguageMode)
+                .flatMap(SonioxLanguageMode.init(rawValue:)) ?? .currentInputSourceOnly
+        }
+        set {
+            guard newValue != self.sonioxLanguageMode else { return }
+            objectWillChange.send()
+            self.defaults.set(newValue.rawValue, forKey: Keys.sonioxLanguageMode)
+        }
+    }
+
+    var sonioxRegion: SonioxRegion {
+        get {
+            self.defaults.string(forKey: Keys.sonioxRegion)
+                .flatMap(SonioxRegion.init(rawValue:)) ?? .global
+        }
+        set {
+            guard newValue != self.sonioxRegion else { return }
+            objectWillChange.send()
+            self.defaults.set(newValue.rawValue, forKey: Keys.sonioxRegion)
+            self.sonioxVerificationReceipt = nil
+        }
+    }
+
+    var sonioxVerificationReceipt: SonioxVerificationReceipt? {
+        get {
+            guard let data = self.defaults.data(forKey: Keys.sonioxVerificationReceipt) else { return nil }
+            return try? JSONDecoder().decode(SonioxVerificationReceipt.self, from: data)
+        }
+        set {
+            objectWillChange.send()
+            if let newValue, let data = try? JSONEncoder().encode(newValue) {
+                self.defaults.set(data, forKey: Keys.sonioxVerificationReceipt)
+            } else {
+                self.defaults.removeObject(forKey: Keys.sonioxVerificationReceipt)
+            }
+        }
+    }
+
+    func speechModelAssignment(forInputSourceID inputSourceID: String) -> SpeechModel? {
+        self.speechModelAssignmentsByInputSourceID[inputSourceID]
+    }
+
+    func setSpeechModelAssignment(_ model: SpeechModel?, forInputSourceID inputSourceID: String) {
+        var assignments = self.rawSpeechModelAssignmentsByInputSourceID
+        assignments[inputSourceID] = model?.rawValue
+        objectWillChange.send()
+        self.storeSpeechModelAssignments(assignments)
+    }
+
+    private var rawSpeechModelAssignmentsByInputSourceID: [String: String] {
+        guard let data = self.defaults.data(forKey: Keys.speechModelAssignmentsByInputSourceID),
+              let assignments = try? JSONDecoder().decode([String: String].self, from: data)
+        else { return [:] }
+        return assignments
+    }
+
+    private func storeSpeechModelAssignments(_ assignments: [String: String]) {
+        guard !assignments.isEmpty else {
+            self.defaults.removeObject(forKey: Keys.speechModelAssignmentsByInputSourceID)
+            return
+        }
+        guard let data = try? JSONEncoder().encode(assignments) else { return }
+        self.defaults.set(data, forKey: Keys.speechModelAssignmentsByInputSourceID)
     }
 
     var preferredInputDeviceUID: String? {
@@ -2301,10 +2413,30 @@ final class SettingsStore: ObservableObject {
             }
         }
 
-        var stopSoundFileName: String? {
+    }
+
+    enum TranscriptionEndSound: String, CaseIterable, Identifiable, Codable {
+        case none
+        case fluidSfx0 = "fluid_end_0"
+        case fluidSfx1 = "fluid_end_1"
+
+        var id: String {
+            self.rawValue
+        }
+
+        var displayName: String {
             switch self {
+            case .none: return "None"
+            case .fluidSfx0: return "Fluid End 0"
+            case .fluidSfx1: return "Fluid End 1"
+            }
+        }
+
+        var soundFileName: String? {
+            switch self {
+            case .none: return nil
             case .fluidSfx0: return "FV_end_0"
-            case .none, .fluidSfx1, .fluidSfx2, .fluidSfx3, .fluidSfx4: return nil
+            case .fluidSfx1: return "FV_end"
             }
         }
     }
@@ -2379,7 +2511,6 @@ final class SettingsStore: ObservableObject {
 
     var transcriptionStartSound: TranscriptionStartSound {
         get {
-            self.migrateTranscriptionStartSoundIfNeeded()
             guard let raw = self.defaults.string(forKey: Keys.transcriptionStartSound),
                   let option = TranscriptionStartSound(rawValue: raw)
             else {
@@ -2390,6 +2521,22 @@ final class SettingsStore: ObservableObject {
         set {
             objectWillChange.send()
             self.defaults.set(newValue.rawValue, forKey: Keys.transcriptionStartSound)
+        }
+    }
+
+    var transcriptionEndSound: TranscriptionEndSound {
+        get {
+            self.migrateTranscriptionEndSoundIfNeeded()
+            guard let raw = self.defaults.string(forKey: Keys.transcriptionEndSound),
+                  let option = TranscriptionEndSound(rawValue: raw)
+            else {
+                return .fluidSfx0
+            }
+            return option
+        }
+        set {
+            objectWillChange.send()
+            self.defaults.set(newValue.rawValue, forKey: Keys.transcriptionEndSound)
         }
     }
 
@@ -3198,9 +3345,13 @@ final class SettingsStore: ObservableObject {
             privateAIBackendPreference: self.privateAIBackendPreference,
             privateAIContextTokenLimit: self.privateAIContextTokenLimit,
             selectedSpeechModel: self.selectedSpeechModel,
+            localFallbackSpeechModelID: self.localFallbackSpeechModel.rawValue,
             selectedCohereLanguage: self.selectedCohereLanguage,
             selectedNemotronLanguage: self.selectedNemotronLanguage,
             selectedAppleSpeechLocaleIdentifier: self.selectedAppleSpeechLocaleIdentifier,
+            sonioxLanguageModeID: self.sonioxLanguageMode.rawValue,
+            sonioxRegionID: self.sonioxRegion.rawValue,
+            speechModelAssignmentsByInputSourceID: self.speechModelAssignmentsByInputSourceID,
             hotkeyShortcut: self.hotkeyShortcut,
             primaryDictationShortcuts: self.primaryDictationShortcuts,
             promptModeHotkeyShortcut: self.promptModeHotkeyShortcut,
@@ -3225,7 +3376,9 @@ final class SettingsStore: ObservableObject {
             hideFromDockAndAppSwitcher: self.hideFromDockAndAppSwitcher,
             showMainWindowAtLoginLaunch: self.showMainWindowAtLoginLaunch,
             accentColorOption: self.accentColorOption,
+            enableTranscriptionSounds: self.enableTranscriptionSounds,
             transcriptionStartSound: self.transcriptionStartSound,
+            transcriptionEndSound: self.transcriptionEndSound,
             transcriptionSoundVolume: self.transcriptionSoundVolume,
             transcriptionSoundIndependentVolume: self.transcriptionSoundIndependentVolume,
             autoUpdateCheckEnabled: self.autoUpdateCheckEnabled,
@@ -3238,6 +3391,9 @@ final class SettingsStore: ObservableObject {
             skipSilentRecordingsEnabled: self.skipSilentRecordingsEnabled,
             enableAIStreaming: self.enableAIStreaming,
             copyTranscriptionToClipboard: self.copyTranscriptionToClipboard,
+            copyWhenNoWritableInputFocused: self.copyWhenNoWritableInputFocused,
+            escapeExitAction: self.escapeExitAction,
+            outsideClickExitAction: self.outsideClickExitAction,
             textInsertionMode: self.textInsertionMode,
             preferredInputDeviceUID: self.preferredInputDeviceUID,
             microphonePriority: self.microphonePriority,
@@ -3312,13 +3468,29 @@ final class SettingsStore: ObservableObject {
         if let privateAIContextTokenLimit = payload.privateAIContextTokenLimit {
             self.privateAIContextTokenLimit = privateAIContextTokenLimit
         }
-        self.selectedSpeechModel = payload.selectedSpeechModel
+        self.selectedSpeechModel = Self.normalizedSelectedSpeechModel(payload.selectedSpeechModel)
+        let restoredFallback = if let fallbackID = payload.localFallbackSpeechModelID {
+            SpeechModel(rawValue: fallbackID)
+        } else {
+            payload.selectedSpeechModel
+        }
+        self.defaults.set(
+            Self.normalizedLocalFallbackSpeechModel(restoredFallback).rawValue,
+            forKey: Keys.localFallbackSpeechModel
+        )
         self.selectedCohereLanguage = payload.selectedCohereLanguage
         if let selectedNemotronLanguage = payload.selectedNemotronLanguage {
             self.selectedNemotronLanguage = selectedNemotronLanguage
         }
         if let selectedAppleSpeechLocaleIdentifier = payload.selectedAppleSpeechLocaleIdentifier {
             self.selectedAppleSpeechLocaleIdentifier = selectedAppleSpeechLocaleIdentifier
+        }
+        self.sonioxLanguageMode = payload.sonioxLanguageModeID
+            .flatMap(SonioxLanguageMode.init(rawValue:)) ?? .currentInputSourceOnly
+        self.sonioxRegion = payload.sonioxRegionID
+            .flatMap(SonioxRegion.init(rawValue:)) ?? .global
+        if let speechModelAssignmentsByInputSourceID = payload.speechModelAssignmentsByInputSourceID {
+            self.speechModelAssignmentsByInputSourceID = speechModelAssignmentsByInputSourceID
         }
         self.primaryDictationShortcuts = payload.primaryDictationShortcuts ?? [payload.hotkeyShortcut]
         self.promptModeHotkeyShortcut = payload.promptModeHotkeyShortcut
@@ -3347,7 +3519,13 @@ final class SettingsStore: ObservableObject {
         self.hideFromDockAndAppSwitcher = payload.hideFromDockAndAppSwitcher
         self.showMainWindowAtLoginLaunch = payload.showMainWindowAtLoginLaunch ?? true
         self.accentColorOption = payload.accentColorOption
+        if let enableTranscriptionSounds = payload.enableTranscriptionSounds {
+            self.enableTranscriptionSounds = enableTranscriptionSounds
+        }
         self.transcriptionStartSound = payload.transcriptionStartSound
+        if let transcriptionEndSound = payload.transcriptionEndSound {
+            self.transcriptionEndSound = transcriptionEndSound
+        }
         self.transcriptionSoundVolume = payload.transcriptionSoundVolume
         self.transcriptionSoundIndependentVolume = payload.transcriptionSoundIndependentVolume
         self.autoUpdateCheckEnabled = payload.autoUpdateCheckEnabled
@@ -3361,6 +3539,15 @@ final class SettingsStore: ObservableObject {
         }
         self.enableAIStreaming = payload.enableAIStreaming
         self.copyTranscriptionToClipboard = payload.copyTranscriptionToClipboard
+        if let copyWhenNoWritableInputFocused = payload.copyWhenNoWritableInputFocused {
+            self.copyWhenNoWritableInputFocused = copyWhenNoWritableInputFocused
+        }
+        if let escapeExitAction = payload.escapeExitAction {
+            self.escapeExitAction = escapeExitAction
+        }
+        if let outsideClickExitAction = payload.outsideClickExitAction {
+            self.outsideClickExitAction = outsideClickExitAction
+        }
         self.textInsertionMode = payload.textInsertionMode
         self.preferredInputDeviceUID = payload.preferredInputDeviceUID
         self.suppressedMicrophoneUIDs = Set(payload.suppressedMicrophoneUIDs ?? [])
@@ -3459,24 +3646,32 @@ final class SettingsStore: ObservableObject {
         )
     }
 
-    private func migrateTranscriptionStartSoundIfNeeded() {
-        guard let legacyEnabled = self.defaults.object(forKey: Keys.enableTranscriptionSounds) as? Bool else { return }
-        if legacyEnabled == false {
-            self.defaults.set(TranscriptionStartSound.none.rawValue, forKey: Keys.transcriptionStartSound)
-        }
-        self.defaults.removeObject(forKey: Keys.enableTranscriptionSounds)
+    private func migrateTranscriptionEndSoundIfNeeded() {
+        guard self.defaults.object(forKey: Keys.transcriptionEndSound) == nil else { return }
+        let legacyStartSound = self.defaults.string(forKey: Keys.transcriptionStartSound)
+            .flatMap(TranscriptionStartSound.init(rawValue:)) ?? .fluidSfx0
+        let endSound: TranscriptionEndSound = legacyStartSound == .fluidSfx0 ? .fluidSfx0 : .none
+        self.defaults.set(endSound.rawValue, forKey: Keys.transcriptionEndSound)
     }
 
     private func migrateProviderAPIKeysIfNeeded() {
         self.defaults.removeObject(forKey: Keys.providerAPIKeyIdentifiers)
 
-        var merged = (try? self.keychain.fetchAllKeys()) ?? [:]
+        let aggregate: (exists: Bool, values: [String: String])
+        do {
+            aggregate = try self.keychain.fetchAllKeysWithPresence()
+        } catch {
+            self.logProviderAPIKeyPersistenceFailure(error)
+            return
+        }
+
+        var legacy: [String: String] = [:]
         var didMutate = false
 
         if let legacyDefaults = defaults.dictionary(forKey: Keys.providerAPIKeys) as? [String: String],
            legacyDefaults.isEmpty == false
         {
-            merged.merge(self.sanitizeAPIKeys(legacyDefaults)) { _, new in new }
+            legacy.merge(self.sanitizeAPIKeys(legacyDefaults)) { _, new in new }
             didMutate = true
         }
         self.defaults.removeObject(forKey: Keys.providerAPIKeys)
@@ -3484,14 +3679,18 @@ final class SettingsStore: ObservableObject {
         if let legacyKeychain = try? keychain.legacyProviderEntries(),
            legacyKeychain.isEmpty == false
         {
-            merged.merge(self.sanitizeAPIKeys(legacyKeychain)) { _, new in new }
+            legacy.merge(self.sanitizeAPIKeys(legacyKeychain)) { _, new in new }
             didMutate = true
-            try? self.keychain.removeLegacyEntries(providerIDs: Array(legacyKeychain.keys))
         }
 
         if didMutate {
+            let merged = KeychainService.authoritativeProviderKeys(
+                aggregateExists: aggregate.exists,
+                aggregate: aggregate.values,
+                legacy: legacy
+            )
             do {
-                _ = try self.saveProviderAPIKeys(merged)
+                try self.keychain.storeAllKeys(merged)
             } catch {
                 self.logProviderAPIKeyPersistenceFailure(error)
             }
@@ -4358,6 +4557,9 @@ final class SettingsStore: ObservableObject {
         case nemotronStreaming = "nemotron-3.5-streaming"
         case nemotronStreaming320 = "nemotron-3.5-streaming-320"
 
+        /// Cloud streaming model authenticated with the user's own Soniox account.
+        case sonioxV5 = "soniox-v5"
+
         // MARK: - Apple Native
 
         case appleSpeech = "apple-speech"
@@ -4388,6 +4590,7 @@ final class SettingsStore: ObservableObject {
             case .nemotronOffline: return "Nemotron 3.5 Multilingual"
             case .nemotronStreaming: return "Nemotron Speech 3.5 - Ultra Fast Low Latency"
             case .nemotronStreaming320: return "Nemotron Speech 3.5 - Ultra Fast Low Latency"
+            case .sonioxV5: return "Soniox v5 Realtime"
             case .appleSpeech: return "Apple ASR Legacy"
             case .appleSpeechAnalyzer: return "Apple Speech - macOS 26+"
             case .whisperTiny: return "Whisper Tiny"
@@ -4408,6 +4611,7 @@ final class SettingsStore: ObservableObject {
             case .qwen3Asr: return "30 Languages"
             case .cohereTranscribeSixBit: return "14 Languages (Select Manually)"
             case .nemotronOffline, .nemotronStreaming, .nemotronStreaming320: return "Around 40 Languages"
+            case .sonioxV5: return "60+ Languages (Automatic or IME Hint)"
             case .appleSpeech: return "System Languages"
             case .appleSpeechAnalyzer: return "EN, ES, FR, DE, IT, JA, KO, PT, ZH"
             case .whisperTiny, .whisperBase, .whisperSmall, .whisperMedium, .whisperLargeTurbo, .whisperLarge:
@@ -4425,6 +4629,7 @@ final class SettingsStore: ObservableObject {
             case .nemotronOffline: return "~530.8 MiB"
             case .nemotronStreaming: return "~668.2 MiB"
             case .nemotronStreaming320: return "~668.2 MiB"
+            case .sonioxV5: return "Cloud (usage billed by Soniox)"
             case .appleSpeech: return "Built-in"
             case .appleSpeechAnalyzer: return "Built-in"
             case .whisperTiny: return "~43.9 MiB"
@@ -4445,6 +4650,7 @@ final class SettingsStore: ObservableObject {
             case .cohereTranscribeSixBit: return 1_650_748_785
             case .nemotronOffline: return 556_552_620
             case .nemotronStreaming, .nemotronStreaming320: return 700_685_415
+            case .sonioxV5: return 0
             case .whisperTiny: return 45_981_088
             case .whisperBase: return 84_962_880
             case .whisperSmall: return 269_751_136
@@ -4462,9 +4668,30 @@ final class SettingsStore: ObservableObject {
             }
         }
 
+        var isCloudSpeechModel: Bool {
+            self == .sonioxV5
+        }
+
+        var requiresCredential: Bool {
+            self == .sonioxV5
+        }
+
+        var requiresModelDownload: Bool {
+            switch self {
+            case .appleSpeech, .appleSpeechAnalyzer, .sonioxV5:
+                return false
+            default:
+                return true
+            }
+        }
+
+        var backendModelIdentifier: String {
+            self == .sonioxV5 ? SonioxProvider.modelID : self.rawValue
+        }
+
         var isWhisperModel: Bool {
             switch self {
-            case .parakeetTDT, .parakeetTDTv2, .parakeetRealtime, .qwen3Asr, .cohereTranscribeSixBit, .nemotronOffline, .nemotronStreaming, .nemotronStreaming320, .appleSpeech, .appleSpeechAnalyzer: return false
+            case .parakeetTDT, .parakeetTDTv2, .parakeetRealtime, .qwen3Asr, .cohereTranscribeSixBit, .nemotronOffline, .nemotronStreaming, .nemotronStreaming320, .appleSpeech, .appleSpeechAnalyzer, .sonioxV5: return false
             default: return true
             }
         }
@@ -4534,13 +4761,52 @@ final class SettingsStore: ObservableObject {
             }
         }
 
-        /// Returns models available for the current Mac's architecture and OS
+        /// Inputs used when determining which speech models can be shown.
+        ///
+        /// Keeping the capability inputs explicit makes model exposure deterministic in tests and
+        /// prevents cloud models from accidentally inheriting local architecture or cache rules.
+        struct AvailabilityContext: Equatable, Sendable {
+            let isAppleSilicon: Bool
+            let supportsMacOS15: Bool
+            let supportsMacOS26: Bool
+
+            static var current: Self {
+                let supportsMacOS15: Bool
+                if #available(macOS 15.0, *) {
+                    supportsMacOS15 = true
+                } else {
+                    supportsMacOS15 = false
+                }
+                let supportsMacOS26: Bool
+                if #available(macOS 26.0, *) {
+                    supportsMacOS26 = true
+                } else {
+                    supportsMacOS26 = false
+                }
+                return Self(
+                    isAppleSilicon: CPUArchitecture.isAppleSilicon,
+                    supportsMacOS15: supportsMacOS15,
+                    supportsMacOS26: supportsMacOS26
+                )
+            }
+
+            var availableModels: [SpeechModel] {
+                SpeechModel.availableModels(for: self)
+            }
+        }
+
+        /// Returns models available for the current Mac's architecture and OS.
         static var availableModels: [SpeechModel] {
+            Self.availableModels(for: .current)
+        }
+
+        /// Returns models available for explicitly supplied host capabilities.
+        static func availableModels(for context: AvailabilityContext) -> [SpeechModel] {
             allCases.filter { model in
-                if model == .whisperLargeTurbo, !CPUArchitecture.isAppleSilicon {
+                if model == .whisperLargeTurbo, !context.isAppleSilicon {
                     return false
                 }
-                if model == .whisperLarge, !CPUArchitecture.isAppleSilicon {
+                if model == .whisperLarge, !context.isAppleSilicon {
                     return false
                 }
                 if model == .qwen3Asr, !Self.qwenPreviewEnabled {
@@ -4550,20 +4816,16 @@ final class SettingsStore: ObservableObject {
                     return false
                 }
                 // Filter by Apple Silicon requirement
-                if model.requiresAppleSilicon, !CPUArchitecture.isAppleSilicon {
+                if model.requiresAppleSilicon, !context.isAppleSilicon {
                     return false
                 }
                 // Filter by macOS 15 requirement
-                if model.requiresMacOS15, #unavailable(macOS 15.0) {
+                if model.requiresMacOS15, !context.supportsMacOS15 {
                     return false
                 }
                 // Filter by macOS 26 requirement
                 if model.requiresMacOS26 {
-                    if #available(macOS 26.0, *) {
-                        return true
-                    } else {
-                        return false
-                    }
+                    return context.supportsMacOS26
                 }
                 return true
             }
@@ -4587,6 +4849,7 @@ final class SettingsStore: ObservableObject {
             case .nemotronOffline: return "Nemotron 3.5 Multilingual"
             case .nemotronStreaming: return "Nemotron Speech 3.5 - Ultra Fast Low Latency"
             case .nemotronStreaming320: return "Nemotron Speech 3.5 - Ultra Fast Low Latency"
+            case .sonioxV5: return "Soniox v5 Realtime"
             case .appleSpeech: return "Apple ASR Legacy"
             case .appleSpeechAnalyzer: return "Apple Speech - macOS 26+"
             case .whisperTiny: return "Fast & Light"
@@ -4620,6 +4883,8 @@ final class SettingsStore: ObservableObject {
                 return "NVIDIA Nemotron 3.5 streaming-capable transcription. Supports 40 language-locales with auto or manual language selection."
             case .nemotronStreaming320:
                 return "NVIDIA Nemotron 3.5 streaming-capable transcription. Supports 40 language-locales with auto or manual language selection."
+            case .sonioxV5:
+                return "Cloud streaming transcription with automatic language detection or an input-language hint."
             case .appleSpeech:
                 return "Built-in macOS speech recognition. No model download required."
             case .appleSpeechAnalyzer:
@@ -4650,6 +4915,8 @@ final class SettingsStore: ObservableObject {
                 return 8.0
             case .nemotronOffline, .nemotronStreaming, .nemotronStreaming320:
                 return 8.0
+            case .sonioxV5:
+                return 0
             case .appleSpeech, .appleSpeechAnalyzer:
                 return 2.0 // Built-in, minimal overhead
             case .whisperTiny:
@@ -4693,6 +4960,7 @@ final class SettingsStore: ObservableObject {
             case .cohereTranscribeSixBit: return 3
             case .nemotronOffline: return 3
             case .nemotronStreaming, .nemotronStreaming320: return 4
+            case .sonioxV5: return 5
             case .appleSpeech: return 4
             case .appleSpeechAnalyzer: return 4
             case .whisperTiny: return 4
@@ -4714,6 +4982,7 @@ final class SettingsStore: ObservableObject {
             case .cohereTranscribeSixBit: return 5
             case .nemotronOffline: return 5
             case .nemotronStreaming, .nemotronStreaming320: return 4
+            case .sonioxV5: return 5
             case .appleSpeech: return 4
             case .appleSpeechAnalyzer: return 4
             case .whisperTiny: return 2
@@ -4735,6 +5004,7 @@ final class SettingsStore: ObservableObject {
             case .cohereTranscribeSixBit: return 0.85
             case .nemotronOffline: return 0.85
             case .nemotronStreaming, .nemotronStreaming320: return 1.0
+            case .sonioxV5: return 0.95
             case .appleSpeech: return 0.60
             case .appleSpeechAnalyzer: return 0.85
             case .whisperTiny: return 0.90
@@ -4756,6 +5026,7 @@ final class SettingsStore: ObservableObject {
             case .cohereTranscribeSixBit: return 0.98
             case .nemotronOffline: return 0.90
             case .nemotronStreaming, .nemotronStreaming320: return 0.85
+            case .sonioxV5: return 0.98
             case .appleSpeech: return 0.60
             case .appleSpeechAnalyzer: return 0.80
             case .whisperTiny: return 0.40
@@ -4767,16 +5038,17 @@ final class SettingsStore: ObservableObject {
             }
         }
 
-        /// Optional badge text for the card (e.g., "FluidVoice Pick")
+        /// Optional badge text for the card (e.g., "MyFluidVoice Pick")
         var badgeText: String? {
             switch self {
-            case .parakeetTDT: return "FluidVoice Pick"
-            case .parakeetTDTv2: return "FluidVoice Pick"
+            case .parakeetTDT: return "MyFluidVoice Pick"
+            case .parakeetTDTv2: return "MyFluidVoice Pick"
             case .parakeetRealtime: return "Beta"
             case .qwen3Asr: return "Beta"
             case .cohereTranscribeSixBit: return "New"
             case .nemotronOffline, .nemotronStreaming, .nemotronStreaming320: return "New + Beta"
             case .appleSpeechAnalyzer: return "New"
+            case .sonioxV5: return "Cloud"
             default: return nil
             }
         }
@@ -4819,6 +5091,8 @@ final class SettingsStore: ObservableObject {
         /// Models without native incremental decoding should use a slower interval.
         var streamingPreviewIntervalSeconds: Double {
             switch self {
+            case .sonioxV5:
+                return 0.1
             case .parakeetRealtime:
                 return 0.2
             case .nemotronStreaming, .nemotronStreaming320:
@@ -4834,6 +5108,8 @@ final class SettingsStore: ObservableObject {
         /// Cohere performs better with a slightly larger prefix than the default 1 second.
         var minimumStreamingPreviewSeconds: Double {
             switch self {
+            case .sonioxV5:
+                return 0.1
             case .parakeetRealtime:
                 return 0.2
             case .nemotronStreaming, .nemotronStreaming320:
@@ -4852,6 +5128,7 @@ final class SettingsStore: ObservableObject {
             case openai = "OpenAI"
             case qwen = "Qwen"
             case cohere = "Cohere"
+            case soniox = "Soniox"
         }
 
         /// Which provider this model belongs to
@@ -4865,6 +5142,8 @@ final class SettingsStore: ObservableObject {
                 return .qwen
             case .cohereTranscribeSixBit:
                 return .cohere
+            case .sonioxV5:
+                return .soniox
             case .whisperTiny, .whisperBase, .whisperSmall, .whisperMedium, .whisperLargeTurbo, .whisperLarge:
                 return .openai
             }
@@ -4878,7 +5157,7 @@ final class SettingsStore: ObservableObject {
         /// Whether this model is built-in or already downloaded on disk
         var isInstalled: Bool {
             switch self {
-            case .appleSpeech, .appleSpeechAnalyzer:
+            case .appleSpeech, .appleSpeechAnalyzer, .sonioxV5:
                 return true
             case .parakeetTDT:
                 #if canImport(FluidAudio)
@@ -4992,6 +5271,8 @@ final class SettingsStore: ObservableObject {
                 return "Qwen"
             case .cohereTranscribeSixBit:
                 return "Cohere"
+            case .sonioxV5:
+                return "Soniox"
             case .appleSpeech, .appleSpeechAnalyzer:
                 return "Apple"
             case .whisperTiny, .whisperBase, .whisperSmall, .whisperMedium, .whisperLargeTurbo, .whisperLarge:
@@ -5016,6 +5297,8 @@ final class SettingsStore: ObservableObject {
                 return "#E67E22"
             case .cohereTranscribeSixBit:
                 return "#FA6B3C"
+            case .sonioxV5:
+                return "#5B5BD6"
             case .appleSpeech, .appleSpeechAnalyzer:
                 return "#A2AAAD" // Apple Gray
             case .whisperTiny, .whisperBase, .whisperSmall, .whisperMedium, .whisperLargeTurbo, .whisperLarge:
@@ -5129,6 +5412,7 @@ private extension SettingsStore {
         static let themePreference = "ThemePreference"
         static let enableTranscriptionSounds = "EnableTranscriptionSounds"
         static let transcriptionStartSound = "TranscriptionStartSound"
+        static let transcriptionEndSound = "TranscriptionEndSound"
         static let transcriptionSoundVolume = "TranscriptionSoundVolume"
         static let transcriptionSoundIndependentVolume = "TranscriptionSoundIndependentVolume"
         static let pressAndHoldMode = "PressAndHoldMode"
@@ -5137,6 +5421,13 @@ private extension SettingsStore {
         static let skipSilentRecordingsEnabled = "SkipSilentRecordingsEnabled"
         static let enableAIStreaming = "EnableAIStreaming"
         static let copyTranscriptionToClipboard = "CopyTranscriptionToClipboard"
+        static let copyWhenNoWritableInputFocused = "CopyWhenNoWritableInputFocused"
+        static let speechModelAssignmentsByInputSourceID = "SpeechModelAssignmentsByInputSourceID"
+        static let sonioxLanguageMode = "SonioxLanguageMode"
+        static let sonioxRegion = "SonioxRegion"
+        static let sonioxVerificationReceipt = "SonioxVerificationReceipt"
+        static let escapeExitAction = "EscapeExitAction"
+        static let outsideClickExitAction = "OutsideClickExitAction"
         static let textInsertionMode = "TextInsertionMode"
         static let autoUpdateCheckEnabled = "AutoUpdateCheckEnabled"
         static let betaReleasesEnabled = "BetaReleasesEnabled"
@@ -5222,6 +5513,7 @@ private extension SettingsStore {
 
         /// Unified Speech Model (replaces above two)
         static let selectedSpeechModel = "SelectedSpeechModel"
+        static let localFallbackSpeechModel = "LocalFallbackSpeechModel"
         static let selectedCohereLanguage = "SelectedCohereLanguage"
         static let selectedNemotronLanguage = "SelectedNemotronLanguage"
         static let selectedAppleSpeechLocaleIdentifier = "SelectedAppleSpeechLocaleIdentifier"
@@ -5391,6 +5683,108 @@ extension SettingsStore.SpeechModel {
     }
 }
 
+/// Non-secret state used by Voice Engine to describe the Soniox credential boundary.
+nonisolated enum SonioxCredentialState: String, CaseIterable, Equatable, Identifiable, Sendable {
+    case apiKeyRequired
+    case verifying
+    case configured
+    case ready
+
+    var id: String {
+        self.rawValue
+    }
+
+    var displayName: String {
+        switch self {
+        case .apiKeyRequired: "API Key Required"
+        case .verifying: "Verifying"
+        case .configured: "Configured"
+        case .ready: "Ready"
+        }
+    }
+}
+
+nonisolated struct SonioxCredentialStateResolver: Sendable {
+    static func resolve(
+        cachedCredentialFingerprint: String?,
+        verificationReceipt: SonioxVerificationReceipt?,
+        selectedRegion: SettingsStore.SonioxRegion,
+        isVerifying: Bool,
+        activeRecordingModel: SettingsStore.SpeechModel?
+    ) -> SonioxCredentialState {
+        if isVerifying {
+            return .verifying
+        }
+
+        guard let cachedCredentialFingerprint,
+              cachedCredentialFingerprint.isEmpty == false,
+              let verificationReceipt,
+              verificationReceipt.region == selectedRegion,
+              verificationReceipt.credentialFingerprint == cachedCredentialFingerprint
+        else {
+            return .apiKeyRequired
+        }
+
+        return activeRecordingModel == .sonioxV5 ? .ready : .configured
+    }
+}
+
+nonisolated enum SpeechModelCardAction: Hashable, Sendable {
+    case configure
+    case activate
+    case active
+    case download
+    case cached
+    case delete
+}
+
+nonisolated struct SpeechModelCardActionResolver: Sendable {
+    static func primaryAction(
+        for model: SettingsStore.SpeechModel,
+        credentialState: SonioxCredentialState,
+        isSelected: Bool,
+        isActive: Bool
+    ) -> SpeechModelCardAction {
+        if model.isCloudSpeechModel {
+            switch credentialState {
+            case .apiKeyRequired, .verifying:
+                return .configure
+            case .configured:
+                return .activate
+            case .ready:
+                return isActive ? .active : .activate
+            }
+        }
+        if isActive {
+            return .active
+        }
+        return isSelected && model.isInstalled ? .activate : .download
+    }
+
+    static func allActions(
+        for model: SettingsStore.SpeechModel,
+        credentialState: SonioxCredentialState,
+        isSelected: Bool,
+        isActive: Bool
+    ) -> Set<SpeechModelCardAction> {
+        let primary = self.primaryAction(
+            for: model,
+            credentialState: credentialState,
+            isSelected: isSelected,
+            isActive: isActive
+        )
+        if model.isCloudSpeechModel {
+            return [primary]
+        }
+        var result: Set<SpeechModelCardAction> = [primary]
+        if isSelected, model.isInstalled {
+            result.insert(.delete)
+            result.insert(.cached)
+        }
+        return result
+    }
+}
+
 extension SettingsStore {
     enum CohereLanguage: String, CaseIterable, Identifiable, Codable {
         case arabic = "ar"
@@ -5446,6 +5840,11 @@ extension SettingsStore {
             if let rawValue = defaults.string(forKey: Keys.selectedSpeechModel),
                let model = SpeechModel(rawValue: rawValue)
             {
+                let normalizedModel = Self.normalizedSelectedSpeechModel(model)
+                if normalizedModel != model {
+                    self.defaults.set(normalizedModel.rawValue, forKey: Keys.selectedSpeechModel)
+                    return normalizedModel
+                }
                 // If Qwen was previously selected, transparently fall back while preview is disabled.
                 if model == .qwen3Asr, !SpeechModel.qwenPreviewEnabled {
                     return SpeechModel.defaultModel
@@ -5477,6 +5876,57 @@ extension SettingsStore {
             objectWillChange.send()
             let model = newValue == .nemotronStreaming320 ? SpeechModel.nemotronStreaming : newValue
             self.defaults.set(model.rawValue, forKey: Keys.selectedSpeechModel)
+            if !model.isCloudSpeechModel, SpeechModel.availableModels.contains(model) {
+                self.defaults.set(model.rawValue, forKey: Keys.localFallbackSpeechModel)
+            }
+        }
+    }
+
+    static func normalizedSelectedSpeechModel(
+        _ candidate: SpeechModel,
+        availableModels: [SpeechModel] = SpeechModel.availableModels,
+        defaultModel: SpeechModel = SpeechModel.defaultModel
+    ) -> SpeechModel {
+        guard !candidate.isCloudSpeechModel || availableModels.contains(candidate) else {
+            return defaultModel
+        }
+        return candidate
+    }
+
+    static func normalizedLocalFallbackSpeechModel(
+        _ candidate: SpeechModel?,
+        availableModels: [SpeechModel] = SpeechModel.availableModels,
+        defaultModel: SpeechModel = SpeechModel.defaultModel
+    ) -> SpeechModel {
+        guard let candidate,
+              !candidate.isCloudSpeechModel,
+              availableModels.contains(candidate)
+        else {
+            return defaultModel
+        }
+        return candidate
+    }
+
+    var localFallbackSpeechModel: SpeechModel {
+        get {
+            let storedValue = self.defaults.object(forKey: Keys.localFallbackSpeechModel)
+            let storedRawValue = storedValue as? String
+            let candidate: SpeechModel?
+            if storedValue == nil {
+                candidate = self.selectedSpeechModel
+            } else {
+                candidate = storedRawValue.flatMap(SpeechModel.init(rawValue:))
+            }
+            let normalized = Self.normalizedLocalFallbackSpeechModel(candidate)
+            if storedRawValue != normalized.rawValue {
+                self.defaults.set(normalized.rawValue, forKey: Keys.localFallbackSpeechModel)
+            }
+            return normalized
+        }
+        set {
+            objectWillChange.send()
+            let normalized = Self.normalizedLocalFallbackSpeechModel(newValue)
+            self.defaults.set(normalized.rawValue, forKey: Keys.localFallbackSpeechModel)
         }
     }
 

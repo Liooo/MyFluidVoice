@@ -1,15 +1,6 @@
 {
-  "originHash" : "c0b937cf1a9f455cc47d65c349124c6a9e9f173f41a1aa7809c1c0d65cbf4229",
+  "originHash" : "af736b0c0f47d25b3368a0fa18f84c14859c8602bd99982862b2022c75259400",
   "pins" : [
-    {
-      "identity" : "appupdater",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/mxcl/AppUpdater.git",
-      "state" : {
-        "revision" : "1b60169700489f16cfbe2feb6b1e32ca5c9464b8",
-        "version" : "1.1.1"
-      }
-    },
     {
       "identity" : "dynamicnotchkit",
       "kind" : "remoteSourceControl",
@@ -38,39 +29,11 @@
       }
     },
     {
-      "identity" : "foundation",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/PromiseKit/Foundation",
-      "state" : {
-        "revision" : "985f17fa69ee0e5b7eb3ff9be87ffc4e05fc0927",
-        "version" : "3.4.0"
-      }
-    },
-    {
       "identity" : "mediaremote-adapter",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/ejbills/mediaremote-adapter",
       "state" : {
-        "branch" : "master",
-        "revision" : "78aae86c03adab11a7b352211cc82381737cf854"
-      }
-    },
-    {
-      "identity" : "path.swift",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/mxcl/Path.swift",
-      "state" : {
-        "revision" : "8e355c28e9393c42e58b18c54cace2c42c98a616",
-        "version" : "1.4.1"
-      }
-    },
-    {
-      "identity" : "promisekit",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/mxcl/PromiseKit.git",
-      "state" : {
-        "revision" : "8a98e31a47854d3180882c8068cc4d9381bf382d",
-        "version" : "6.22.1"
+        "revision" : "3529aa25023082a2ceadebcd2c9c4a9430ee96b9"
       }
     },
     {
@@ -134,15 +97,6 @@
       "state" : {
         "revision" : "a16df2905f9c715344374fd2d8dd97c2712a6d96",
         "version" : "0.1.2"
-      }
-    },
-    {
-      "identity" : "version",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/mxcl/Version",
-      "state" : {
-        "revision" : "200046c93f6d5d78a6d72bfd9c0b27a95e9c0a2b",
-        "version" : "1.2.0"
       }
     },
     {

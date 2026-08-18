@@ -1,118 +1,62 @@
-# FluidVoice
+# MyFluidVoice
 
 <p align="center">
-  <a href="https://github.com/altic-dev/FluidVoice/stargazers"><img src="https://img.shields.io/github/stars/altic-dev/FluidVoice?style=social" alt="GitHub stars"/></a>
-  <a href="https://github.com/sponsors/altic-dev"><img src="https://img.shields.io/badge/Sponsor-GitHub%20Sponsors-ea4aaa?logo=githubsponsors&logoColor=white" alt="Sponsor FluidVoice"/></a>
-  <a href="https://x.com/ALTIC_DEV"><img src="https://img.shields.io/badge/X-%40ALTIC__DEV-black?logo=x&logoColor=white" alt="X @ALTIC_DEV"/></a>
+  <a href="https://github.com/Liooo/MyFluidVoice/stargazers"><img src="https://img.shields.io/github/stars/Liooo/MyFluidVoice?style=social" alt="GitHub stars"/></a>
   <br />
   <a href="https://huggingface.co/nvidia/parakeet_realtime_eou_120m-v1"><img src="https://img.shields.io/badge/Models-Nemotron%20Speech%203.5%20%7C%20Parakeet%20Flash%20%7C%20Parakeet%20v3%20%26%20v2%20%7C%20Cohere%20%7C%20Apple%20Speech%20%7C%20Whisper-blue" alt="Supported Models"/></a>
   <br /><br />
-  <a href="https://trendshift.io/repositories/16601?utm_source=repository-badge&utm_medium=badge&utm_campaign=badge-repository-16601" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/16601" alt="altic-dev%2FFluidVoice | Trendshift" width="250" height="55"/></a>
 </p>
 
-Open source voice-to-text dictation app for macOS with on-device AI enhancement.
+Open source voice-to-text dictation app for macOS with local speech recognition
+and optional AI enhancement through user-configured providers.
 
-**Install with Homebrew:** `brew install --cask fluidvoice`
-
-**Manual download:** [latest release](https://github.com/altic-dev/FluidVoice/releases/latest)
-
-> [!NOTE]
-> FluidVoice is on macOS today. **iOS and Windows are on the way** — join the waitlist to get notified when we launch: **[altic.dev/fluid/waitlist](https://www.altic.dev/fluid/waitlist)**
+Build MyFluidVoice from source while fork release infrastructure is being prepared.
 
 
 > [!IMPORTANT]
-> This project is free and open source under GPLv3. If FluidVoice is useful to you, please star the repository — it helps visibility and keeps development going.
+> This project is free and open source under GPLv3. If MyFluidVoice is useful to you, please star the repository — it helps visibility and keeps development going.
 
 ---
 
-## Support FluidVoice
+## Support MyFluidVoice
 
-If FluidVoice helps you, you can support continued development and future platform work for iOS and Windows on [GitHub Sponsors](https://github.com/sponsors/altic-dev).
-
----
-
-## What's New in 1.6.0
-
-- **Insanely fast Parakeet** — rebuilt Parakeet implementation with pretty much zero delay between speaking and seeing words on screen
-- **Fluid Intelligence** — fully local AI model for on-device dictation enhancement. No cloud, no API keys, no data leaving your Mac
-- **Better Theming** — adaptive light/dark theme with a compact toolbar switcher
-- **Refreshed Onboarding** — language-first voice engine setup, real dictation tryout, and AI enhancement setup in one clean pass
-
-> [!WARNING]
-> Based on early feedback, Fluid Intelligence may cause you to unsubscribe from other dictation apps and save money. You've been warned.
-
-## Fluid Intelligence
-
-FluidVoice is fully open source under GPLv3. **Fluid Intelligence** is a separate, privately maintained local AI runtime that powers advanced on-device dictation enhancement — smart formatting, context-aware capitalization, and post-processing — all running locally on your Mac.
-
-The app works great on its own with any supported speech model and optional cloud AI providers. Fluid Intelligence adds a fully local, private AI layer for users who want on-device enhancement without sending data anywhere.
-
-We're keeping Fluid Intelligence private for now so we can sustainably offer the core dictation experience for free. This may change in the future.
+If MyFluidVoice helps you, please star the [repository](https://github.com/Liooo/MyFluidVoice).
 
 ---
 
-## Fluid Intelligence Sneak Peek
+## Fork Highlights
 
-<table>
-  <tr>
-    <td width="50%" align="center"><b>Email Template</b></td>
-    <td width="50%" align="center"><b>Flowers</b></td>
-  </tr>
-  <tr>
-    <td width="50%"><video src="https://github.com/user-attachments/assets/36747e9d-1ea3-4d27-8d38-eaacb6d57285" width="100%"></video></td>
-    <td width="50%"><video src="https://github.com/user-attachments/assets/5f6063ab-0506-4687-b825-c7bf4ab66ed6" width="100%"></video></td>
-  </tr>
-  <tr>
-    <td width="50%" align="center"><b>Change Time & Name</b></td>
-    <td width="50%" align="center"><b>Emoji</b></td>
-  </tr>
-  <tr>
-    <td width="50%"><video src="https://github.com/user-attachments/assets/6c7a7c4c-17a8-453d-8eff-1aa1fa9f6077" width="100%"></video></td>
-    <td width="50%"><video src="https://github.com/user-attachments/assets/04e00f3d-a602-448d-9bde-50b5e8f61ac6" width="100%"></video></td>
-  </tr>
-  <tr>
-    <td width="50%" align="center"><b>Hyphens & Numbers</b></td>
-    <td width="50%"></td>
-  </tr>
-  <tr>
-    <td width="50%"><video src="https://github.com/user-attachments/assets/47175f2b-9f06-452e-b892-42488e4ba536" width="100%"></video></td>
-    <td width="50%"></td>
-  </tr>
-</table>
+- **IME-aware dictation** — assign a speech locale and model to each installed keyboard input source; the selection is frozen for each recording session
+- **Double-modifier shortcuts** — configure clean double taps such as Double Shift for toggle or push-to-talk dictation
+- **Configurable exit policies** — choose independently whether Escape and outside clicks do nothing, discard, or finish and paste during toggle dictation
+- **Recording feedback** — enable, preview, and select independent start and end sounds, including no sound
+- **Safe clipboard fallback** — optionally copy the final processed transcript only when no writable text target is focused
 
-## Demo
-
-### Command Mode — Take any action on your Mac using FluidVoice
-
-https://github.com/user-attachments/assets/ffb47afd-1621-432a-bdca-baa4b8526301
-
-### Write Mode — Write or rewrite text in any text box in any app
-
-https://github.com/user-attachments/assets/c57ef6d5-f0a1-4a3f-a121-637533442c24
+The public fork does not ship or require the private Fluid Intelligence runtime.
+Core dictation works without AI enhancement; optional enhancement, Command Mode,
+and Write Mode use a configured cloud or OpenAI-compatible provider.
 
 ---
 
 ## Features
 
-- **Fluid Intelligence** — on-device AI enhancement for smart formatting, context-aware capitalization, and post-processing, all running locally on your Mac with zero data leaving your machine
 - **Command Mode** — control your Mac by voice: launch apps, run shortcuts, trigger system actions, and automate workflows without touching the keyboard
 - **Write Mode** — write or rewrite text directly in any text field across any app. Select text and rewrite it, or dictate new content inline
 - **Live Preview** — real-time transcription overlay with notch support, so you see words appear as you speak
 - **Multiple Speech Models** — Nemotron Speech 3.5, Parakeet Flash, Parakeet TDT v3 & v2, Cohere Transcribe, Apple Speech, and Whisper. Pick the model that fits your language and latency needs
-- **AI Enhancement** — optional post-processing via OpenAI, Groq, custom providers, or local Fluid Intelligence for cleaner, more accurate transcripts
+- **AI Enhancement** — optional post-processing via OpenAI, Groq, or a custom OpenAI-compatible provider for cleaner, more accurate transcripts
 - **Audio History** — optional local recording history with budget controls and ZIP export, so you can review past dictations without cloud storage
 - **Today-Usage Stats** — daily usage tracking at a glance with a stats header card and toolbar pill
 - **Adaptive Theming** — light/dark theme that follows your system, with a compact toolbar switcher
 - **Global Hotkey** — instant voice capture from anywhere, no app switching needed
 - **Smart Typing** — direct insertion into any app via accessibility APIs for reliable, app-independent text entry
 - **Menu Bar Integration** — quick access, status, and settings from the menu bar
-- **Auto-Updates** — seamless updates with an optional beta channel for early previews
 - **Per-App Configuration** — assign different prompt sets to different apps, so your dictation adapts to whatever you're working in. Fully optional
 - **Notch-Aware Overlay** — transcription overlay that fits cleanly around the MacBook notch, or use a standard overlay if your Mac doesn't have one
-- **Local-First** — your voice and text never leave your machine unless you opt in to a cloud AI provider
+- **Local-First** — choose on-device speech models to keep audio on your Mac; Apple Speech and configured AI providers may use their respective services
 - **Fastest Parakeet on Mac** — one of the fastest native implementations of Parakeet on macOS, with near-instant transcription and minimal latency
 - **Configurable Overlay** — choose from pill-shaped to large overlay sizes to show live preview, or keep it minimal. Everything is optional
-- **Everything is Optional** — AI enhancement, Fluid Intelligence, audio history, analytics, and beta builds are all opt-in. The core dictation experience works out of the box with zero configuration beyond permissions and a hotkey
+- **Everything is Optional** — AI enhancement and audio history are opt-in. The core dictation experience works without an AI provider
 
 ---
 
@@ -153,23 +97,15 @@ Whisper supports up to 99 languages, depending on the model size you choose.
 
 ## Quick Start
 
-1. **Install** with Homebrew:
-   ```bash
-   brew install --cask fluidvoice
-   ```
-   Or download the [latest release](https://github.com/altic-dev/FluidVoice/releases/latest).
+1. **Build from source** using [Xcode or the signed build script](#building-from-source). Fork release packages are not available yet.
 
-2. **Grant permissions** — FluidVoice will ask for microphone and accessibility access. Both are required for dictation and typing into other apps.
+2. **Grant permissions** — MyFluidVoice will ask for microphone and accessibility access. Both are required for dictation and typing into other apps.
 
 3. **Set your hotkey** — pick a global hotkey in settings that triggers voice capture from anywhere.
 
 4. **Go through onboarding** — choose your voice model based on your language and latency needs. Models range from zero-download Apple Speech to high-accuracy Nemotron and Whisper.
 
-5. **(Optional) Enable Fluid Intelligence** — download the local AI model during onboarding for on-device dictation enhancement. Everything runs locally, no data leaves your Mac.
-
-6. **(Optional) Bring your own AI provider** — add an OpenAI, Groq, or custom provider API key for cloud-based enhancement. Keys are stored securely in macOS Keychain. Select "Always allow" for key access.
-
-7. **(Optional) Opt in to beta builds** — `Settings → Automatic Updates → Beta Releases` for early access to new features.
+5. **(Optional) Bring your own AI provider** — add an OpenAI, Groq, or custom OpenAI-compatible provider API key for cloud-based enhancement. Keys are stored securely in macOS Keychain. Select "Always allow" for key access.
 
 ---
 
@@ -177,9 +113,8 @@ Whisper supports up to 99 languages, depending on the model size you choose.
 
 - macOS 15.0 (Sequoia) or later
 - Apple Silicon Mac for all models
-- Intel Macs supported via Whisper models (from 1.5.1+)
+- Intel Macs supported via Whisper models
 - ~1 GB disk space for a voice model
-- ~3.5 GB disk space for the Fluid Intelligence model (optional)
 - Microphone access
 - Accessibility permissions for typing
 
@@ -188,12 +123,16 @@ Whisper supports up to 99 languages, depending on the model size you choose.
 ## Building from Source
 
 ```bash
-git clone https://github.com/altic-dev/FluidVoice.git
-cd FluidVoice
+git clone https://github.com/Liooo/MyFluidVoice.git
+cd MyFluidVoice
 open Fluid.xcodeproj
 ```
 
 Build and run in Xcode. All dependencies are managed via Swift Package Manager.
+
+The public repository does not include the private Fluid Intelligence runtime or
+its build tooling. It is not required for speech recognition, transcription,
+typing, or enhancement through a supported external provider.
 
 Run a signed Debug build using the script:
 
@@ -201,7 +140,7 @@ Run a signed Debug build using the script:
 ./build.sh
 ```
 
-The signed build is written to `DerivedData/Build/Products/Debug/FluidVoice Debug.app`.
+The signed build is written to `DerivedData/Build/Products/Debug/MyFluidVoice Debug.app`.
 Keep launching that product after each rebuild so macOS can preserve its Accessibility
 authorization.
 
@@ -224,7 +163,7 @@ Contributions are welcome! Please create an issue first to discuss major changes
 ### Development Setup
 
 1. Clone and open in Xcode as above.
-2. **Signing:** `FluidVoice → Signing & Capabilities → Automatically manage signing → pick your Team` (Personal Team is fine). If you have certificates for multiple teams, select one without changing the project by running `FLUIDVOICE_DEVELOPMENT_TEAM=YOUR_TEAM_ID ./build.sh`.
+2. **Signing:** `MyFluidVoice → Signing & Capabilities → Automatically manage signing → pick your Team` (Personal Team is fine). If you have certificates for multiple teams, select one without changing the project by running `FLUIDVOICE_DEVELOPMENT_TEAM=YOUR_TEAM_ID ./build.sh`.
 3. Build and run — SPM handles dependencies.
 4. **(Optional) Pre-commit hook** to prevent accidental team ID commits:
    ```bash
@@ -260,33 +199,47 @@ xcodebuild test -project Fluid.xcodeproj -scheme Fluid -destination 'platform=ma
 
 ## Privacy & Analytics
 
-FluidVoice is **local-first**. Your voice, audio, and transcribed text never leave your machine unless you explicitly opt in to a cloud AI provider.
+MyFluidVoice is **local-first**. On-device speech models keep audio on your Mac.
+Apple Speech may use Apple's speech service according to macOS availability and
+settings. Soniox speech recognition is opt-in, bring-your-own-key (BYOK), and can
+be selected as the global dictation model or assigned per IME. Its API key is
+stored only in the macOS Keychain.
 
-### What's Collected (Opt-In)
+When Soniox is selected, audio and transcripts travel directly from your Mac to
+the selected regional Soniox endpoint, and Soniox bills the associated account
+for usage. Japan data residency requires a Japan-region Soniox project, API key,
+and endpoint. Soniox states that realtime audio and transcripts are not retained
+or used for model training; see Soniox's current
+[Security and Privacy documentation](https://soniox.com/docs/security-and-privacy)
+for the provider's policy. These are Soniox's claims, not a MyFluidVoice guarantee.
 
-Anonymous analytics are enabled by default to track app health and feature usage. You can disable at any time from `Settings → Share Anonymous Analytics`.
+File transcription, Meeting mode, dictionary training, and the Local API use the
+displayed local fallback model and do not use Soniox. If you configure a cloud or
+OpenAI-compatible AI enhancement provider, the text and context needed for that
+requested enhancement are sent to the selected provider separately.
 
-**Collected:**
+Analytics transmission is disabled in this fork. MyFluidVoice does not send app-health or feature-usage events. Update checks are also disabled until the fork has its own release infrastructure.
 
-- App version, build, macOS version
-- Low-cardinality feature/config flags (e.g. app mode, major settings)
-- Approximate usage ranges (not exact values)
-- High-level success/error outcomes
-
-**Not Collected:**
+**Not transmitted to an analytics service by MyFluidVoice:**
 
 - Voice, raw audio, or transcribed text
 - Selected text, prompts, or AI responses
 - Terminal commands, window titles, file paths, clipboard, or typed content
 - Any personal or private information
 
+MyFluidVoice stores transcription history locally, including raw and processed
+text plus app and window context. Optional audio history stores recordings locally
+when enabled. Local diagnostic logs can contain operational context such as
+transcripts, app or window names, and file or media paths and titles. These local
+history, audio-history, and diagnostic features are separate from Soniox cloud
+processing. These local records are not sent through an analytics transport.
+History can be reviewed and cleared from the app.
+
 ---
 
 ## Community
 
-Join our Discord: https://discord.gg/VUPHaKSvYV
-
-Follow development on X: [@ALTIC_DEV](https://x.com/ALTIC_DEV)
+Use [GitHub Issues](https://github.com/Liooo/MyFluidVoice/issues) for reproducible bugs and feature proposals. Do not attach private transcripts, API keys, or sensitive debug logs.
 
 ---
 
@@ -295,3 +248,8 @@ Follow development on X: [@ALTIC_DEV](https://x.com/ALTIC_DEV)
 From 2026-02-23 onward, this project is licensed under the [GNU General Public License, Version 3.0 (GPLv3)](LICENSE).
 
 Versions published before this date were licensed under Apache License 2.0.
+
+MyFluidVoice is a modified fork of [FluidVoice](https://github.com/altic-dev/FluidVoice). Fork-specific modifications began in August 2026; the Git history preserves upstream authorship and modification history.
+
+Licenses and attribution for bundled dependencies are provided in the
+[third-party notices](Sources/Fluid/Resources/THIRD_PARTY_NOTICES.txt).

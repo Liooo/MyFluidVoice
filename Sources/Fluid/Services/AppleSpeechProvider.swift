@@ -4,10 +4,91 @@ import Speech
 
 // MARK: - Apple Speech Provider
 
+/// Owns exactly-once completion for an `SFSpeechRecognitionTask`, including cancellation that
+/// arrives before either the continuation or the task has been installed.
+final nonisolated class AppleSpeechRecognitionOperation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<ASRTranscriptionResult, Error>?
+    private var cancelRecognition: (() -> Void)?
+    private var isResolved = false
+    private var isCancelled = false
+
+    func installContinuation(_ continuation: CheckedContinuation<ASRTranscriptionResult, Error>) {
+        var shouldResumeCancellation = false
+        self.lock.lock()
+        if self.isCancelled {
+            self.isResolved = true
+            shouldResumeCancellation = true
+        } else if !self.isResolved {
+            self.continuation = continuation
+        }
+        self.lock.unlock()
+
+        if shouldResumeCancellation {
+            continuation.resume(throwing: CancellationError())
+        }
+    }
+
+    func installCancellation(_ cancellation: @escaping () -> Void) {
+        var shouldCancel = false
+        self.lock.lock()
+        if self.isCancelled {
+            shouldCancel = true
+        } else if !self.isResolved {
+            self.cancelRecognition = cancellation
+        }
+        self.lock.unlock()
+
+        if shouldCancel {
+            cancellation()
+        }
+    }
+
+    func finish(with result: ASRTranscriptionResult) {
+        let continuation: CheckedContinuation<ASRTranscriptionResult, Error>?
+        self.lock.lock()
+        guard !self.isResolved else {
+            self.lock.unlock()
+            return
+        }
+        self.isResolved = true
+        continuation = self.continuation
+        self.continuation = nil
+        self.cancelRecognition = nil
+        self.lock.unlock()
+
+        continuation?.resume(returning: result)
+    }
+
+    func cancel() {
+        let continuation: CheckedContinuation<ASRTranscriptionResult, Error>?
+        let cancelRecognition: (() -> Void)?
+        self.lock.lock()
+        self.isCancelled = true
+        cancelRecognition = self.cancelRecognition
+        self.cancelRecognition = nil
+        if self.isResolved {
+            continuation = nil
+        } else if let installedContinuation = self.continuation {
+            self.isResolved = true
+            continuation = installedContinuation
+            self.continuation = nil
+        } else {
+            continuation = nil
+        }
+        self.lock.unlock()
+
+        cancelRecognition?()
+        continuation?.resume(throwing: CancellationError())
+    }
+}
+
 /// A TranscriptionProvider that uses Apple's native SFSpeechRecognizer.
 /// This uses Apple's system speech path and lets macOS choose local or online recognition.
 final class AppleSpeechProvider: TranscriptionProvider {
-    var name: String { "Apple Speech (Legacy)" }
+    var name: String {
+        "Apple Speech (Legacy)"
+    }
 
     /// Always available on macOS 10.15+ (Catalina and later)
     var isAvailable: Bool {
@@ -22,8 +103,10 @@ final class AppleSpeechProvider: TranscriptionProvider {
     /// using the language selected in Voice Engine/onboarding.
     private var recognizer: SFSpeechRecognizer?
     private var recognizerLocaleIdentifier: String?
+    private let localeIdentifierOverride: String?
 
-    init() {
+    init(localeIdentifier: String? = nil) {
+        self.localeIdentifierOverride = localeIdentifier
         _ = self.updateRecognizerIfNeeded()
     }
 
@@ -86,36 +169,47 @@ final class AppleSpeechProvider: TranscriptionProvider {
         request.endAudio() // Signal that this buffer is the complete utterance for this request
 
         // 4. Execute Recognition
-        return try await withCheckedThrowingContinuation { continuation in
-            var hasResumed = false
+        let operation = AppleSpeechRecognitionOperation()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                operation.installContinuation(continuation)
+                let recognitionTask = recognizer.recognitionTask(with: request) { result, error in
+                    if let error {
+                        // Ignore "No speech detected" errors often returned for silent chunks.
+                        DebugLogger.shared.warning(
+                            "Apple transcribed error: \(error.localizedDescription)",
+                            source: "AppleSpeechProvider"
+                        )
+                        operation.finish(with: ASRTranscriptionResult(text: "", confidence: 0.0))
+                        return
+                    }
 
-            recognizer.recognitionTask(with: request) { result, error in
-                // Ensure we only resume once
-                guard !hasResumed else { return }
-
-                if let error = error {
-                    hasResumed = true
-                    // Ignore "No speech detected" errors often returned for silent chunks
-                    DebugLogger.shared.warning("Apple transcribed error: \(error.localizedDescription)", source: "AppleSpeechProvider")
-                    continuation.resume(returning: ASRTranscriptionResult(text: "", confidence: 0.0))
-                    return
+                    if let result, result.isFinal {
+                        let transcription = result.bestTranscription.formattedString
+                        DebugLogger.shared.debug(
+                            "AppleSpeechProvider: Got final result: '\(transcription)'",
+                            source: "AppleSpeechProvider"
+                        )
+                        operation.finish(
+                            with: ASRTranscriptionResult(text: transcription, confidence: 1.0)
+                        )
+                    }
+                    // Partial results ignored as we requested final only.
                 }
-
-                if let result = result, result.isFinal {
-                    hasResumed = true
-                    let transcription = result.bestTranscription.formattedString
-                    DebugLogger.shared.debug("AppleSpeechProvider: Got final result: '\(transcription)'", source: "AppleSpeechProvider")
-                    continuation.resume(returning: ASRTranscriptionResult(text: transcription, confidence: 1.0))
+                operation.installCancellation {
+                    recognitionTask.cancel()
                 }
-                // Partial results ignored as we requested final only
             }
+        } onCancel: {
+            operation.cancel()
         }
     }
 
     // MARK: - Helpers
 
     private func updateRecognizerIfNeeded() -> SFSpeechRecognizer? {
-        let locale = SettingsStore.shared.selectedAppleSpeechLocale
+        let locale = self.localeIdentifierOverride.map(Locale.init(identifier:))
+            ?? SettingsStore.shared.selectedAppleSpeechLocale
         let localeIdentifier = locale.identifier.replacingOccurrences(of: "_", with: "-")
         if self.recognizer == nil || self.recognizerLocaleIdentifier != localeIdentifier {
             self.recognizer = SFSpeechRecognizer(locale: locale)

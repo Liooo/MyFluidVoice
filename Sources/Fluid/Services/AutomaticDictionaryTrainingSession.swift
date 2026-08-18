@@ -3,6 +3,51 @@ import Combine
 import Foundation
 
 @MainActor
+struct DictionaryTrainingRecordingStarter {
+    typealias StartRecording = @MainActor (
+        _ configuration: RecordingSpeechConfiguration,
+        _ forDictionaryTraining: Bool,
+        _ onCaptureStarted: (@MainActor () -> Void)?
+    ) async -> AudioCaptureStartOutcome
+
+    private let startRecording: StartRecording
+
+    init(startRecording: @escaping StartRecording) {
+        self.startRecording = startRecording
+    }
+
+    init(asrService: ASRService) {
+        self.init { configuration, forDictionaryTraining, onCaptureStarted in
+            await asrService.start(
+                speechConfiguration: configuration,
+                forDictionaryTraining: forDictionaryTraining,
+                onCaptureStarted: onCaptureStarted
+            )
+        }
+    }
+
+    func startAutomaticCapture(
+        onCaptureStarted: @escaping @MainActor () -> Void
+    ) async -> AudioCaptureStartOutcome {
+        await self.start(onCaptureStarted: onCaptureStarted)
+    }
+
+    func startCustomSample() async -> AudioCaptureStartOutcome {
+        await self.start(onCaptureStarted: nil)
+    }
+
+    private func start(
+        onCaptureStarted: (@MainActor () -> Void)?
+    ) async -> AudioCaptureStartOutcome {
+        await self.startRecording(
+            RecordingSpeechConfigurationResolver.currentLocalFallbackConfiguration(),
+            true,
+            onCaptureStarted
+        )
+    }
+}
+
+@MainActor
 final class AutomaticDictionaryTrainingSession: ObservableObject {
     enum Screen: Equatable {
         case choice
@@ -197,7 +242,8 @@ final class AutomaticDictionaryTrainingSession: ObservableObject {
         self.hasError = false
         self.statusMessage = "Starting..."
 
-        await self.asr.start(forDictionaryTraining: true) { [weak self] in
+        let recordingStarter = DictionaryTrainingRecordingStarter(asrService: self.asr)
+        await recordingStarter.startAutomaticCapture { [weak self] in
             guard let self else { return }
             self.didStartAudioCapture = true
             self.capturePhase = .recording

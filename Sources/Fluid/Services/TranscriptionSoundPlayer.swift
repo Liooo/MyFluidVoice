@@ -2,12 +2,36 @@ import AVFoundation
 import CoreAudio
 import Foundation
 
+nonisolated struct IndependentVolumePlaybackState: Equatable {
+    private(set) var activePlaybackCount = 0
+    private var originalSystemVolume: Float?
+
+    mutating func beginPlayback(currentSystemVolume: Float) -> Bool {
+        guard currentSystemVolume > 0.001 else { return false }
+        if self.activePlaybackCount == 0 {
+            self.originalSystemVolume = currentSystemVolume
+        }
+        self.activePlaybackCount += 1
+        return true
+    }
+
+    mutating func finishPlayback() -> Float? {
+        guard self.activePlaybackCount > 0 else { return nil }
+        self.activePlaybackCount -= 1
+        guard self.activePlaybackCount == 0 else { return nil }
+
+        let volume = self.originalSystemVolume
+        self.originalSystemVolume = nil
+        return volume
+    }
+}
+
 final class TranscriptionSoundPlayer {
     static let shared = TranscriptionSoundPlayer()
 
     private let playbackQueue = DispatchQueue(label: "app.fluidvoice.transcription-sounds", qos: .userInteractive)
     private var players: [String: AVAudioPlayer] = [:]
-    private var savedSystemVolume: Float?
+    private var independentVolumePlaybackState = IndependentVolumePlaybackState()
 
     private init() {}
 
@@ -26,8 +50,8 @@ final class TranscriptionSoundPlayer {
     func playStopSound() {
         let settings = SettingsStore.shared
         guard settings.enableTranscriptionSounds else { return }
-        let selected = settings.transcriptionStartSound
-        guard let soundName = selected.stopSoundFileName else { return }
+        let selected = settings.transcriptionEndSound
+        guard let soundName = selected.soundFileName else { return }
         self.play(
             soundName: soundName,
             desiredVolume: settings.transcriptionSoundVolume,
@@ -46,14 +70,26 @@ final class TranscriptionSoundPlayer {
         )
     }
 
+    func playPreview(sound: SettingsStore.TranscriptionEndSound) {
+        guard let soundName = sound.soundFileName else { return }
+        let settings = SettingsStore.shared
+        self.play(
+            soundName: soundName,
+            desiredVolume: settings.transcriptionSoundVolume,
+            independentVolume: settings.transcriptionSoundIndependentVolume
+        )
+    }
+
     /// Preview current sound at a specific volume (used when slider is released).
     func playPreviewAtVolume(_ volume: Float) {
-        let selected = SettingsStore.shared.transcriptionStartSound
-        guard let soundName = selected.startSoundFileName else { return }
+        let settings = SettingsStore.shared
+        guard let soundName = settings.transcriptionStartSound.startSoundFileName
+            ?? settings.transcriptionEndSound.soundFileName
+        else { return }
         self.play(
             soundName: soundName,
             desiredVolume: volume,
-            independentVolume: SettingsStore.shared.transcriptionSoundIndependentVolume
+            independentVolume: settings.transcriptionSoundIndependentVolume
         )
     }
 
@@ -94,9 +130,9 @@ final class TranscriptionSoundPlayer {
     ) {
         if independentVolume {
             let currentSystemVol = Self.getSystemVolume()
-            guard currentSystemVol > 0.001 else { return }
-            // Save current system volume and temporarily set it to desired level
-            self.savedSystemVolume = currentSystemVol
+            guard self.independentVolumePlaybackState.beginPlayback(
+                currentSystemVolume: currentSystemVol
+            ) else { return }
             Self.setSystemVolume(desiredVolume)
         }
 
@@ -123,19 +159,22 @@ final class TranscriptionSoundPlayer {
                 source: "AppBenchmark"
             )
 
-            // Restore system volume after the sound finishes
-            if independentVolume, let saved = self.savedSystemVolume {
+            // Overlapping cues share one restoration group. The original system volume is
+            // restored only after the last playback completes.
+            if independentVolume {
                 let duration = player.duration
                 self.playbackQueue.asyncAfter(deadline: .now() + duration + 0.05) { [weak self] in
-                    Self.setSystemVolume(saved)
-                    self?.savedSystemVolume = nil
+                    guard let self,
+                          let originalVolume = self.independentVolumePlaybackState.finishPlayback()
+                    else { return }
+                    Self.setSystemVolume(originalVolume)
                 }
             }
         } catch {
-            // Restore system volume on error
-            if let saved = self.savedSystemVolume {
-                Self.setSystemVolume(saved)
-                self.savedSystemVolume = nil
+            if independentVolume,
+               let originalVolume = self.independentVolumePlaybackState.finishPlayback()
+            {
+                Self.setSystemVolume(originalVolume)
             }
             DebugLogger.shared.error(
                 "Failed to play sound \(soundName).m4a: \(error.localizedDescription)",

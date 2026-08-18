@@ -26,15 +26,15 @@ final class MediaPlaybackService {
     /// - Returns: `true` if we successfully paused playback, `false` if nothing was playing
     ///   or if we couldn't determine playback state.
     ///
-    /// - Note: Uses a local one-shot gate to protect against `MediaRemoteAdapter`
-    ///   firing the `getTrackInfo` callback more than once, which would otherwise
-    ///   crash with `EXC_BREAKPOINT` (SIGTRAP) due to double-resume of a
-    ///   `CheckedContinuation`.
+    /// - Note: The pinned BSD-licensed adapter exposes a listener instead of a one-shot query.
+    ///   This method starts it only long enough to receive the initial snapshot, then tears the
+    ///   listener down before completing.
     func pauseIfPlaying() async -> Bool {
         return await withCheckedContinuation { continuation in
             let resumeLock = NSLock()
             var didResume = false
 
+            @MainActor
             @discardableResult
             func resumeOnce(
                 _ value: Bool,
@@ -61,10 +61,14 @@ final class MediaPlaybackService {
                 }
 
                 beforeResume()
+                self.mediaController.onTrackInfoReceived = nil
+                self.mediaController.onListenerTerminated = nil
+                self.mediaController.stopListening()
                 continuation.resume(returning: value)
                 return true
             }
 
+            self.mediaController.stopListening()
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
                 if resumeOnce(false, logDuplicate: false) {
                     DebugLogger.shared.warning(
@@ -74,62 +78,51 @@ final class MediaPlaybackService {
                 }
             }
 
-            self.mediaController.getTrackInfo { [weak self] trackInfo in
-                guard let self = self else {
-                    resumeOnce(false)
-                    return
-                }
+            self.mediaController.onTrackInfoReceived = { [weak self] trackInfo in
+                Task { @MainActor in
+                    guard let self = self else {
+                        resumeOnce(false)
+                        return
+                    }
 
-                // If no track info is available, nothing is playing
-                guard let trackInfo = trackInfo else {
+                    let isPlaying = trackInfo.payload.isPlaying ?? false
+
+                    // Log what we found
                     DebugLogger.shared.debug(
-                        "MediaPlaybackService: No track info available, nothing to pause",
+                        """
+                        MediaPlaybackService: Track info received
+                        - App: \(trackInfo.payload.applicationName ?? "Unknown")
+                        - Bundle: \(trackInfo.payload.bundleIdentifier ?? "Unknown")
+                        - Title: \(trackInfo.payload.title ?? "Unknown")
+                        - isPlaying: \(trackInfo.payload.isPlaying?.description ?? "nil")
+                        - Determined playing: \(isPlaying)
+                        """,
                         source: "MediaPlaybackService"
                     )
-                    resumeOnce(false)
-                    return
-                }
 
-                // Determine if media is currently playing
-                // Use isPlaying if available, otherwise check playbackRate
-                let isPlaying: Bool
-                if let playing = trackInfo.payload.isPlaying {
-                    isPlaying = playing
-                } else {
-                    // playbackRate of 1.0 typically means playing, 0.0 means paused
-                    isPlaying = (trackInfo.payload.playbackRate ?? 0.0) > 0.0
-                }
-
-                // Log what we found
-                DebugLogger.shared.debug(
-                    """
-                    MediaPlaybackService: Track info received
-                    - App: \(trackInfo.payload.applicationName ?? "Unknown")
-                    - Bundle: \(trackInfo.payload.bundleIdentifier ?? "Unknown")
-                    - Title: \(trackInfo.payload.title ?? "Unknown")
-                    - isPlaying: \(trackInfo.payload.isPlaying?.description ?? "nil")
-                    - playbackRate: \(trackInfo.payload.playbackRate?.description ?? "nil")
-                    - Determined playing: \(isPlaying)
-                    """,
-                    source: "MediaPlaybackService"
-                )
-
-                if isPlaying {
-                    resumeOnce(true) {
-                        DebugLogger.shared.info(
-                            "MediaPlaybackService: Media is playing, sending pause command",
+                    if isPlaying {
+                        resumeOnce(true) {
+                            DebugLogger.shared.info(
+                                "MediaPlaybackService: Media is playing, sending pause command",
+                                source: "MediaPlaybackService"
+                            )
+                            self.mediaController.pause()
+                        }
+                    } else {
+                        DebugLogger.shared.debug(
+                            "MediaPlaybackService: Media is not playing, no action needed",
                             source: "MediaPlaybackService"
                         )
-                        self.mediaController.pause()
+                        resumeOnce(false)
                     }
-                } else {
-                    DebugLogger.shared.debug(
-                        "MediaPlaybackService: Media is not playing, no action needed",
-                        source: "MediaPlaybackService"
-                    )
-                    resumeOnce(false)
                 }
             }
+            self.mediaController.onListenerTerminated = {
+                Task { @MainActor in
+                    resumeOnce(false, logDuplicate: false)
+                }
+            }
+            self.mediaController.startListening()
         }
     }
 
@@ -154,7 +147,7 @@ final class MediaPlaybackService {
         self.mediaController.play()
     }
     #else
-    // Intel Mac stub - media control not available
+    /// Intel Mac stub - media control not available
     func pauseIfPlaying() async -> Bool {
         DebugLogger.shared.debug(
             "MediaPlaybackService: Not available on Intel Macs",

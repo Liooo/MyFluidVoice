@@ -66,7 +66,7 @@ struct CustomDictionaryView: View {
     }
 
     private var activePronunciationMatching: Bool {
-        self.pronunciationMatchingEnabled && SettingsStore.shared.selectedSpeechModel.supportsPronunciationMatching
+        self.pronunciationMatchingEnabled && SettingsStore.shared.localFallbackSpeechModel.supportsPronunciationMatching
     }
 
     private var pronunciationMatchingBinding: Binding<Bool> {
@@ -295,7 +295,7 @@ struct CustomDictionaryView: View {
             self.loadBoostTerms()
             self.automaticDictionaryLearningEnabled = SettingsStore.shared.automaticDictionaryLearningEnabled
             self.pronunciationMatchingEnabled = SettingsStore.shared.pronunciationMatchingEnabled
-            if !SettingsStore.shared.selectedSpeechModel.supportsPronunciationMatching {
+            if !SettingsStore.shared.localFallbackSpeechModel.supportsPronunciationMatching {
                 self.pronunciationMatchingEnabled = false
                 SettingsStore.shared.pronunciationMatchingEnabled = false
             }
@@ -424,7 +424,7 @@ struct CustomDictionaryView: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("Teach Words")
                             .font(self.theme.typography.sectionTitle)
-                        Text("Show FluidVoice the right spelling, by voice or by typing.")
+                        Text("Show MyFluidVoice the right spelling, by voice or by typing.")
                             .font(self.theme.typography.caption)
                             .foregroundStyle(self.theme.palette.secondaryText)
                     }
@@ -482,7 +482,7 @@ struct CustomDictionaryView: View {
 
     private var trainReplacementComposer: some View {
         VStack(alignment: .leading, spacing: self.theme.metrics.spacing.sm) {
-            TextField("Type the correct text, e.g. FluidVoice", text: self.$trainingReplacement)
+            TextField("Type the correct text, e.g. MyFluidVoice", text: self.$trainingReplacement)
                 .dictionaryInputChrome()
                 .disabled(self.isTrainingRecording || self.isTrainingProcessing)
                 .onChange(of: self.trainingReplacement) { oldValue, newValue in
@@ -603,7 +603,7 @@ struct CustomDictionaryView: View {
 
     private var manualTriggerField: some View {
         VStack(alignment: .leading, spacing: self.theme.metrics.spacing.sm) {
-            Text("When FluidVoice hears")
+            Text("When MyFluidVoice hears")
                 .font(self.theme.typography.captionStrong)
 
             TextField("fluid voice, fluid boys", text: self.$manualTriggerDraft)
@@ -620,7 +620,7 @@ struct CustomDictionaryView: View {
         VStack(alignment: .leading, spacing: self.theme.metrics.spacing.sm) {
             Text("Change it to")
                 .font(self.theme.typography.captionStrong)
-            TextField("FluidVoice", text: self.$manualReplacement)
+            TextField("MyFluidVoice", text: self.$manualReplacement)
                 .dictionaryInputChrome()
                 .onSubmit { self.addManualReplacementIfValid() }
             Text("This is what appears in your transcription.")
@@ -633,15 +633,22 @@ struct CustomDictionaryView: View {
         VoiceMatchingSettingsRow(
             isEnabled: self.pronunciationMatchingBinding,
             isDisabled: self.isTrainingRecording || self.isTrainingProcessing,
-            isAdvancedAvailable: SettingsStore.shared.selectedSpeechModel.supportsPronunciationMatching,
+            isAdvancedAvailable: SettingsStore.shared.localFallbackSpeechModel.supportsPronunciationMatching,
             onChange: self.handlePronunciationMatchingChange(enabled:)
         )
     }
 
     private var trainingRecorderPanel: some View {
         VStack(alignment: .leading, spacing: self.theme.metrics.spacing.md) {
-            Text("Teach FluidVoice your pronunciation")
+            Text("Teach MyFluidVoice your pronunciation")
                 .font(self.theme.typography.bodySmallStrong)
+
+            Text(
+                "Training uses \(SettingsStore.shared.localFallbackSpeechModel.displayName) locally · " +
+                    (SettingsStore.shared.localFallbackSpeechModel.isInstalled ? "ready" : "downloads when needed")
+            )
+            .font(self.theme.typography.caption)
+            .foregroundStyle(self.theme.palette.secondaryText)
 
             if self.trainingAlreadyCorrectWithoutReplacement {
                 Label("\(self.trainingTargetReference) is already recognized correctly.", systemImage: "checkmark.circle.fill")
@@ -651,7 +658,7 @@ struct CustomDictionaryView: View {
                 Label(
                     self.activePronunciationMatching
                         ? "Voice profile for \(self.trainingTargetReference) captured 3 times."
-                        : "FluidVoice recognized \(self.trainingTargetReference) 3 times in a row.",
+                        : "MyFluidVoice recognized \(self.trainingTargetReference) 3 times in a row.",
                     systemImage: "checkmark.circle.fill"
                 )
                 .font(self.theme.typography.captionStrong)
@@ -668,12 +675,12 @@ struct CustomDictionaryView: View {
                     )
                     self.trainingInstruction(
                         number: 3,
-                        text: "Say \(self.trainingTargetReference) naturally, then pause. FluidVoice records and listens again automatically."
+                        text: "Say \(self.trainingTargetReference) naturally, then pause. MyFluidVoice records and listens again automatically."
                     )
                     self.trainingInstruction(
                         number: 4,
                         text: self.activePronunciationMatching
-                            ? "Repeat 3 times to teach FluidVoice how your voice sounds."
+                            ? "Repeat 3 times to teach MyFluidVoice how your voice sounds."
                             : "Keep repeating it until the circle reaches 3/3."
                     )
                 }
@@ -855,7 +862,7 @@ struct CustomDictionaryView: View {
                                 .foregroundStyle(self.theme.palette.tertiaryText)
                         }
                     }
-                    Text("Words and phrases FluidVoice will correct automatically.")
+                    Text("Words and phrases MyFluidVoice will correct automatically.")
                         .font(self.theme.typography.caption)
                         .foregroundStyle(self.theme.palette.secondaryText)
                 }
@@ -973,7 +980,7 @@ struct CustomDictionaryView: View {
                     Text("Your Dictionary")
                         .font(self.theme.typography.sectionTitle)
 
-                    Text("FluidVoice automatically corrects these words and phrases.")
+                    Text("MyFluidVoice automatically corrects these words and phrases.")
                         .font(self.theme.typography.caption)
                         .foregroundStyle(self.theme.palette.secondaryText)
                 }
@@ -1198,7 +1205,7 @@ struct CustomDictionaryView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Word or Phrase")
                     .font(self.theme.typography.captionStrong)
-                TextField("FluidVoice", text: self.$boostTermText)
+                TextField("MyFluidVoice", text: self.$boostTermText)
                     .font(self.theme.typography.bodySmall)
                     .dictionaryInputChrome()
                     .onSubmit { self.saveBoostTermIfValid() }
@@ -1318,7 +1325,7 @@ struct CustomDictionaryView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Try Saying")
                         .font(self.theme.typography.captionStrong)
-                    Text("Examples of what FluidVoice will type.")
+                    Text("Examples of what MyFluidVoice will type.")
                         .font(self.theme.typography.caption)
                         .foregroundStyle(self.theme.palette.secondaryText)
                     self.punctuationTrySayingPreview
@@ -1353,7 +1360,7 @@ struct CustomDictionaryView: View {
                 if self.punctuationRules.isEmpty {
                     self.dictionaryEmptyState(
                         title: "No punctuation rules",
-                        detail: "Add what you say and what FluidVoice should type."
+                        detail: "Add what you say and what MyFluidVoice should type."
                     )
                 } else {
                     ScrollView(.vertical, showsIndicators: true) {
@@ -1391,7 +1398,7 @@ struct CustomDictionaryView: View {
             Text("Say the start word first, then say the punctuation name.")
             Text("When you say \"\(self.punctuationPreviewPrefix) comma\", it types \",\".")
             Text("When you say \"\(self.punctuationPreviewPrefix) question mark\", it types \"?\".")
-            Text("For each rule, add one spoken version per line. Then choose what FluidVoice types.")
+            Text("For each rule, add one spoken version per line. Then choose what MyFluidVoice types.")
         }
         .font(self.theme.typography.caption)
         .foregroundStyle(self.theme.palette.secondaryText)
@@ -1794,7 +1801,8 @@ struct CustomDictionaryView: View {
         self.isTrainingStarting = true
         self.isTrainingRecording = true
 
-        await self.asr.start(forDictionaryTraining: true)
+        let recordingStarter = DictionaryTrainingRecordingStarter(asrService: self.asr)
+        await recordingStarter.startCustomSample()
         self.isTrainingStarting = false
         if !self.asr.isRunning {
             self.isTrainingRecording = false
@@ -2314,7 +2322,7 @@ private struct VoiceMatchingSettingsRow: View {
                 HStack(alignment: .top, spacing: 8) {
                     Image(systemName: "flask.fill")
                         .foregroundStyle(self.theme.palette.accent)
-                    Text("Research Preview: Compares how your voice sounds instead of only the words FluidVoice hears. Results may vary.")
+                    Text("Research Preview: Compares how your voice sounds instead of only the words MyFluidVoice hears. Results may vary.")
                         .font(self.theme.typography.caption)
                         .foregroundStyle(self.theme.palette.secondaryText)
                         .fixedSize(horizontal: false, vertical: true)
@@ -2529,12 +2537,12 @@ private enum DictionaryTrainingCopy {
         }
         if isReady {
             return usesVoiceMatching
-                ? "Ready. FluidVoice learned how \(target) sounds in your voice."
-                : "Ready. FluidVoice got \(target) right 3 times in a row."
+                ? "Ready. MyFluidVoice learned how \(target) sounds in your voice."
+                : "Ready. MyFluidVoice got \(target) right 3 times in a row."
         }
         return usesVoiceMatching
             ? "Say \(target) 3 times to unlock Add Replacement."
-            : "Keep trying until FluidVoice gets \(target) right 3 times in a row."
+            : "Keep trying until MyFluidVoice gets \(target) right 3 times in a row."
     }
 }
 
@@ -3249,7 +3257,7 @@ struct AddDictionaryEntrySheet: View {
                 Text("This is what will appear in the final transcription.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                TextField("FluidVoice", text: self.$replacement)
+                TextField("MyFluidVoice", text: self.$replacement)
                     .dictionaryInputChrome()
                     .onSubmit { self.saveIfValid() }
             }
@@ -3401,7 +3409,7 @@ struct EditDictionaryEntrySheet: View {
                 Text("This is what will appear in the final transcription.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                TextField("FluidVoice", text: self.$replacement)
+                TextField("MyFluidVoice", text: self.$replacement)
                     .dictionaryInputChrome()
                     .onSubmit { self.saveIfValid() }
             }

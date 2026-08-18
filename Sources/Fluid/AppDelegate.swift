@@ -7,7 +7,6 @@
 
 import AppKit
 import Carbon
-import PromiseKit
 import SwiftUI
 import UserNotifications
 
@@ -78,7 +77,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         self.shutdownPrivateAIRuntimeForTermination()
         self.shutdownASRRuntimeForTermination()
         LocalAPIServer.shared.stop()
-        // Clean up the update check timer
         self.updateCheckTimer?.invalidate()
         self.updateCheckTimer = nil
     }
@@ -129,7 +127,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             return true
         }
 
-        // Ensure dock-icon reopen always foregrounds FluidVoice.
+        // Ensure dock-icon reopen always foregrounds MyFluidVoice.
         sender.activate(ignoringOtherApps: true)
 
         return !self.bringMainWindowToFrontIfPresent()
@@ -326,7 +324,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     private func isMainWindow(_ window: NSWindow) -> Bool {
         guard window.level == .normal else { return false }
         guard window.styleMask.contains(.titled) else { return false }
-        return window.title == "FluidVoice" || window.title.contains("FluidVoice")
+        return window.title == "MyFluidVoice" || window.title.contains("MyFluidVoice") ||
+            window.title == "FluidVoice" || window.title.contains("FluidVoice")
     }
 
     // MARK: - Periodic Update Checks
@@ -380,22 +379,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             } catch SimpleUpdateError.updateAlreadyInProgress {
                 DebugLogger.shared.info("Update installation already in progress", source: "AppDelegate")
             } catch {
-                if let pmkError = error as? PMKError, pmkError.isCancelled {
-                    DebugLogger.shared.info("App is already up-to-date", source: "AppDelegate")
-                    let isBeta = SettingsStore.shared.betaReleasesEnabled
-                    self.showUpdateAlert(
-                        title: isBeta ? "No Beta Updates" : "No Updates",
-                        message: isBeta
-                            ? "You're already running the latest build available in the beta channel."
-                            : "You're already running the latest version of Fluid!"
-                    )
-                } else {
-                    DebugLogger.shared.error("Update check failed: \(error)", source: "AppDelegate")
-                    self.showUpdateAlert(
-                        title: "Update Check Failed",
-                        message: "Unable to check for updates. Please try again later.\n\nError: \(error.localizedDescription)"
-                    )
-                }
+                DebugLogger.shared.error("Update check failed: \(error)", source: "AppDelegate")
+                self.showUpdateAlert(
+                    title: "Update Check Failed",
+                    message: "Unable to check for updates. Please try again later.\n\nError: \(error.localizedDescription)"
+                )
             }
         }
     }

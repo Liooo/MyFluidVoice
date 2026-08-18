@@ -20,10 +20,13 @@ struct TranscriptionHistoryEntry: Codable, Identifiable, Equatable {
     let characterCount: Int
     let wasAIProcessed: Bool
     let processingModel: String?
+    let speechProvider: String?
+    let speechModel: String?
     /// Non-nil when AI post-processing was configured but failed and we fell
     /// back to typing the raw transcription. The string carries the error
     /// message for display / debugging.
     let aiProcessingError: String?
+    let outputOutcome: DictationOutputOutcome?
     let audio: DictationAudioMetadata?
 
     init(
@@ -35,7 +38,10 @@ struct TranscriptionHistoryEntry: Codable, Identifiable, Equatable {
         windowTitle: String,
         wasAIProcessed: Bool,
         processingModel: String? = nil,
+        speechProvider: String? = nil,
+        speechModel: String? = nil,
         aiProcessingError: String? = nil,
+        outputOutcome: DictationOutputOutcome? = nil,
         audio: DictationAudioMetadata? = nil
     ) {
         self.id = id
@@ -47,7 +53,10 @@ struct TranscriptionHistoryEntry: Codable, Identifiable, Equatable {
         self.characterCount = processedText.count
         self.wasAIProcessed = wasAIProcessed
         self.processingModel = processingModel
+        self.speechProvider = speechProvider
+        self.speechModel = speechModel
         self.aiProcessingError = aiProcessingError
+        self.outputOutcome = outputOutcome
         self.audio = audio
     }
 
@@ -61,7 +70,10 @@ struct TranscriptionHistoryEntry: Codable, Identifiable, Equatable {
         characterCount: Int,
         wasAIProcessed: Bool,
         processingModel: String?,
+        speechProvider: String?,
+        speechModel: String?,
         aiProcessingError: String?,
+        outputOutcome: DictationOutputOutcome?,
         audio: DictationAudioMetadata?
     ) {
         self.id = id
@@ -73,7 +85,10 @@ struct TranscriptionHistoryEntry: Codable, Identifiable, Equatable {
         self.characterCount = characterCount
         self.wasAIProcessed = wasAIProcessed
         self.processingModel = processingModel
+        self.speechProvider = speechProvider
+        self.speechModel = speechModel
         self.aiProcessingError = aiProcessingError
+        self.outputOutcome = outputOutcome
         self.audio = audio
     }
 
@@ -88,13 +103,17 @@ struct TranscriptionHistoryEntry: Codable, Identifiable, Equatable {
         self.characterCount = try container.decode(Int.self, forKey: .characterCount)
         self.wasAIProcessed = try container.decode(Bool.self, forKey: .wasAIProcessed)
         self.processingModel = try container.decodeIfPresent(String.self, forKey: .processingModel)
+        self.speechProvider = try container.decodeIfPresent(String.self, forKey: .speechProvider)
+        self.speechModel = try container.decodeIfPresent(String.self, forKey: .speechModel)
         self.aiProcessingError = try container.decodeIfPresent(String.self, forKey: .aiProcessingError)
+        self.outputOutcome = try container.decodeIfPresent(DictationOutputOutcome.self, forKey: .outputOutcome)
         self.audio = try container.decodeIfPresent(DictationAudioMetadata.self, forKey: .audio)
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, timestamp, rawText, processedText, appName, windowTitle
-        case characterCount, wasAIProcessed, processingModel, aiProcessingError, audio
+        case characterCount, wasAIProcessed, processingModel, speechProvider, speechModel
+        case aiProcessingError, outputOutcome, audio
     }
 
     /// Preview text for list display (first 80 chars)
@@ -143,7 +162,10 @@ struct TranscriptionHistoryEntry: Codable, Identifiable, Equatable {
             characterCount: self.characterCount,
             wasAIProcessed: self.wasAIProcessed,
             processingModel: self.processingModel,
+            speechProvider: self.speechProvider,
+            speechModel: self.speechModel,
             aiProcessingError: self.aiProcessingError,
+            outputOutcome: self.outputOutcome,
             audio: audio
         )
     }
@@ -190,7 +212,10 @@ final class TranscriptionHistoryStore: ObservableObject {
         windowTitle: String,
         wasAIProcessed: Bool? = nil,
         processingModel: String? = nil,
+        speechProvider: String? = nil,
+        speechModel: String? = nil,
         aiProcessingError: String? = nil,
+        outputOutcome: DictationOutputOutcome? = nil,
         audio: DictationAudioMetadata? = nil
     ) {
         // Skip empty transcriptions
@@ -205,7 +230,10 @@ final class TranscriptionHistoryStore: ObservableObject {
             windowTitle: windowTitle,
             wasAIProcessed: wasAIProcessed ?? (processingModel != nil && aiProcessingError == nil),
             processingModel: processingModel,
+            speechProvider: speechProvider,
+            speechModel: speechModel,
             aiProcessingError: aiProcessingError,
+            outputOutcome: outputOutcome,
             audio: audio
         )
 

@@ -18,11 +18,20 @@ enum KeychainServiceError: Error, LocalizedError {
     }
 }
 
+enum KeychainServiceRollbackError: Error, LocalizedError {
+    case failed
+
+    var errorDescription: String? {
+        "Failed to restore Keychain state after legacy cleanup failure."
+    }
+}
+
 /// Lightweight helper for storing provider API keys in the system Keychain.
-/// Keys are stored as generic passwords scoped to the FluidVoice service.
+/// Keys retain FluidVoice's service identity so existing installations keep access after upgrade.
 final class KeychainService {
     static let shared = KeychainService()
 
+    // Keep the upstream service identity so an in-place fork upgrade retains API keys.
     private let service = "com.fluidvoice.provider-api-keys"
     private let account = "fluidApiKeys"
 
@@ -32,9 +41,15 @@ final class KeychainService {
 
     func storeKey(_ key: String, for providerID: String) throws {
         let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
-        var keys = try loadStoredKeys()
+        let snapshot = try self.loadStoredKeysWithPresence()
+        var keys = snapshot.values
         keys[providerID] = trimmed
-        try self.saveStoredKeys(keys)
+        try Self.performProviderMutation(
+            primary: { try self.writeStoredKeys(keys) },
+            requiredCleanup: { try self.removeLegacyEntries(providerIDs: [providerID]) },
+            rollback: { try self.restoreStoredKeys(snapshot) },
+            cleanup: { try self.removeLegacyEntries() }
+        )
     }
 
     func fetchKey(for providerID: String) throws -> String? {
@@ -43,9 +58,15 @@ final class KeychainService {
     }
 
     func deleteKey(for providerID: String) throws {
-        var keys = try loadStoredKeys()
-        guard keys.removeValue(forKey: providerID) != nil else { return }
-        try self.saveStoredKeys(keys)
+        let snapshot = try self.loadStoredKeysWithPresence()
+        var keys = snapshot.values
+        let shouldCommit = keys.removeValue(forKey: providerID) != nil
+        try Self.performProviderMutation(
+            primary: shouldCommit ? { try self.writeStoredKeys(keys) } : nil,
+            requiredCleanup: { try self.removeLegacyEntries(providerIDs: [providerID]) },
+            rollback: { try self.restoreStoredKeys(snapshot) },
+            cleanup: { try self.removeLegacyEntries() }
+        )
     }
 
     func containsKey(for providerID: String) -> Bool {
@@ -61,8 +82,76 @@ final class KeychainService {
         try self.loadStoredKeys()
     }
 
+    func fetchAllKeysWithPresence() throws -> (exists: Bool, values: [String: String]) {
+        try self.loadStoredKeysWithPresence()
+    }
+
     func storeAllKeys(_ values: [String: String]) throws {
         try self.saveStoredKeys(values)
+    }
+
+    func storeUnreservedKeys(_ values: [String: String]) throws {
+        let existing = try self.loadStoredKeys()
+        try self.saveStoredKeys(Self.replacingUnreservedKeys(existing: existing, replacements: values))
+    }
+
+    nonisolated static func performCommittedMutation(
+        primary: () throws -> Void,
+        cleanup: () throws -> Void
+    ) throws {
+        try primary()
+        _ = try? cleanup()
+    }
+
+    nonisolated static func performProviderMutation(
+        primary: (() throws -> Void)?,
+        requiredCleanup: () throws -> Void,
+        rollback: () throws -> Void,
+        cleanup: () throws -> Void
+    ) throws {
+        guard let primary else {
+            try requiredCleanup()
+            return
+        }
+
+        try primary()
+        do {
+            try requiredCleanup()
+        } catch let cleanupError {
+            do {
+                try rollback()
+            } catch {
+                throw KeychainServiceRollbackError.failed
+            }
+            throw cleanupError
+        }
+
+        _ = try? cleanup()
+    }
+
+    nonisolated static func unreservedKeys(
+        _ values: [String: String],
+        reservedPrefix: String = "asr:"
+    ) -> [String: String] {
+        values.filter { $0.key.hasPrefix(reservedPrefix) == false }
+    }
+
+    nonisolated static func replacingUnreservedKeys(
+        existing: [String: String],
+        replacements: [String: String],
+        reservedPrefix: String = "asr:"
+    ) -> [String: String] {
+        var result = existing.filter { $0.key.hasPrefix(reservedPrefix) }
+        result.merge(replacements.filter { $0.key.hasPrefix(reservedPrefix) == false }) { _, new in new }
+        return result
+    }
+
+    nonisolated static func authoritativeProviderKeys(
+        aggregateExists: Bool,
+        aggregate: [String: String],
+        legacy: [String: String]
+    ) -> [String: String] {
+        aggregateExists ? aggregate : legacy
     }
 
     func legacyProviderEntries() throws -> [String: String] {
@@ -94,7 +183,9 @@ final class KeychainService {
                 var dataItem: CFTypeRef?
                 let dataStatus = SecItemCopyMatching(dataQuery as CFDictionary, &dataItem)
                 guard dataStatus == errSecSuccess else {
-                    if dataStatus == errSecItemNotFound { continue }
+                    if dataStatus == errSecItemNotFound {
+                        continue
+                    }
                     throw KeychainServiceError.unhandled(dataStatus)
                 }
                 guard let data = dataItem as? Data,
@@ -131,6 +222,10 @@ final class KeychainService {
     // MARK: - Private helpers
 
     private func loadStoredKeys() throws -> [String: String] {
+        try self.loadStoredKeysWithPresence().values
+    }
+
+    private func loadStoredKeysWithPresence() throws -> (exists: Bool, values: [String: String]) {
         var query = self.aggregatedQuery()
         query[kSecReturnData as String] = kCFBooleanTrue
         query[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -144,47 +239,66 @@ final class KeychainService {
                 throw KeychainServiceError.invalidData
             }
             if data.isEmpty {
-                return [:]
+                return (exists: true, values: [:])
             }
             do {
-                return try JSONDecoder().decode([String: String].self, from: data)
+                let values = try JSONDecoder().decode([String: String].self, from: data)
+                return (exists: true, values: values)
             } catch {
                 throw KeychainServiceError.invalidData
             }
         case errSecItemNotFound:
-            return [:]
+            return (exists: false, values: [:])
         default:
             throw KeychainServiceError.unhandled(status)
         }
     }
 
     private func saveStoredKeys(_ keys: [String: String]) throws {
+        try Self.performCommittedMutation(
+            primary: { try self.writeStoredKeys(keys) },
+            cleanup: {
+                try self.removeLegacyEntries()
+            }
+        )
+    }
+
+    private func writeStoredKeys(_ keys: [String: String]) throws {
         let data = try JSONEncoder().encode(keys)
 
         var attributes = self.aggregatedQuery()
         attributes[kSecValueData as String] = data
 
         let status = SecItemAdd(attributes as CFDictionary, nil)
-
         switch status {
         case errSecSuccess:
-            try self.removeLegacyEntries()
             return
         case errSecDuplicateItem:
             let updateAttributes: [String: Any] = [
                 kSecValueData as String: data,
             ]
             let updateStatus = SecItemUpdate(
-                aggregatedQuery() as CFDictionary,
+                self.aggregatedQuery() as CFDictionary,
                 updateAttributes as CFDictionary
             )
             guard updateStatus == errSecSuccess else {
                 throw KeychainServiceError.unhandled(updateStatus)
             }
-            try self.removeLegacyEntries()
         default:
             throw KeychainServiceError.unhandled(status)
         }
+    }
+
+    private func restoreStoredKeys(_ snapshot: (exists: Bool, values: [String: String])) throws {
+        guard snapshot.exists else {
+            let status = SecItemDelete(self.aggregatedQuery() as CFDictionary)
+            guard status == errSecSuccess || status == errSecItemNotFound else {
+                throw KeychainServiceError.unhandled(status)
+            }
+            return
+        }
+
+        try self.writeStoredKeys(snapshot.values)
     }
 
     private func aggregatedQuery() -> [String: Any] {

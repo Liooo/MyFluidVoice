@@ -486,12 +486,12 @@ private struct MicrophoneChangeOverlayView: View {
             return "Choose an available microphone in Settings."
         }
         if self.notice.presentation == .startupSelection {
-            return "FluidVoice will try this microphone first when you dictate."
+            return "MyFluidVoice will try this microphone first when you dictate."
         }
         if self.notice.presentation == .selectionChange {
-            return "FluidVoice selected this microphone for capture."
+            return "MyFluidVoice selected this microphone for capture."
         }
-        return "FluidVoice confirmed this microphone is capturing audio."
+        return "MyFluidVoice confirmed this microphone is capturing audio."
     }
 }
 
@@ -625,7 +625,7 @@ private struct AutomaticDictionaryCorrectionOverlayView: View {
 
             self.correctionPair
 
-            Text("Save only this correction, or teach FluidVoice other pronunciations.")
+            Text("Save only this correction, or teach MyFluidVoice other pronunciations.")
                 .font(.system(size: 11))
                 .foregroundStyle(.white.opacity(0.58))
                 .lineLimit(1)
@@ -658,12 +658,12 @@ private struct AutomaticDictionaryCorrectionOverlayView: View {
             self.correctionPair
 
             VStack(alignment: .leading, spacing: 9) {
-                Text("Teach FluidVoice your pronunciation")
+                Text("Teach MyFluidVoice your pronunciation")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.94))
 
                 if self.session.isReady {
-                    Label("FluidVoice got it right 3 times in a row.", systemImage: "checkmark.circle.fill")
+                    Label("MyFluidVoice got it right 3 times in a row.", systemImage: "checkmark.circle.fill")
                         .font(.system(size: 10.5, weight: .medium))
                         .foregroundStyle(self.accent)
                 } else {
@@ -671,7 +671,7 @@ private struct AutomaticDictionaryCorrectionOverlayView: View {
                         self.trainingInstruction(number: 1, text: "Press Start once.")
                         self.trainingInstruction(
                             number: 2,
-                            text: "Say the word, then pause. FluidVoice captures it and listens again."
+                            text: "Say the word, then pause. MyFluidVoice captures it and listens again."
                         )
                         self.trainingInstruction(number: 3, text: "Repeat naturally until the circle reaches 3/3.")
                     }

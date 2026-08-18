@@ -7,7 +7,6 @@
 
 import AppKit
 import AVFoundation
-import PromiseKit
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -57,13 +56,6 @@ struct SettingsView: View {
     @State private var cachedDefaultInputUID: String = ""
     @State private var cachedDefaultOutputName: String = ""
 
-    // Analytics consent UI state (default ON; user can opt-out)
-    @State private var shareAnonymousAnalytics: Bool = SettingsStore.shared.shareAnonymousAnalytics
-    @State private var showAnalyticsPrivacy: Bool = false
-    @State private var pendingAnalyticsValue: Bool? = nil
-    @State private var showAreYouSureToStopAnalytics: Bool = false
-    @State private var rollbackVersion: String = ""
-    @State private var isRollingBack: Bool = false
     @State private var audioHistoryBudgetText: String = Self.audioBudgetText(for: SettingsStore.shared.audioHistoryBudgetGB)
     @State private var audioHistoryUsageBytes: Int64 = DictationAudioHistoryStore.shared.audioUsageBytes()
     @State private var draggedMicrophoneUID: String?
@@ -97,49 +89,6 @@ struct SettingsView: View {
 
     private func isRecording(_ target: ShortcutRecordingTarget) -> Bool {
         self.activeShortcutRecordingTarget == target
-    }
-
-    private var analyticsToggleBinding: Binding<Bool> {
-        Binding(
-            get: {
-                self.pendingAnalyticsValue ?? self.shareAnonymousAnalytics
-            },
-            set: { newValue in
-                // User is trying to turn OFF → ask first
-                if self.shareAnonymousAnalytics == true, newValue == false {
-                    self.pendingAnalyticsValue = false
-                    self.showAreYouSureToStopAnalytics = true
-
-                    return
-                }
-
-                // Normal ON path
-                self.shareAnonymousAnalytics = newValue
-                self.applyAnalyticsConsentChange(newValue)
-            }
-        )
-    }
-
-    private var analyticsConfirmationBinding: Binding<Bool> {
-        Binding(
-            get: { self.showAreYouSureToStopAnalytics },
-            set: { newValue in
-                // Only open modal if we have a pending value
-                if newValue {
-                    if self.pendingAnalyticsValue != nil {
-                        self.showAreYouSureToStopAnalytics = true
-                    }
-                } else {
-                    // Closing the modal: reset pending state
-                    self.showAreYouSureToStopAnalytics = false
-                    self.pendingAnalyticsValue = nil
-                }
-            }
-        )
-    }
-
-    private var currentAppVersion: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Unknown"
     }
 
     private var appDisplayName: String {
@@ -233,7 +182,7 @@ struct SettingsView: View {
                             // Launch at startup
                             self.settingsToggleRow(
                                 title: "Launch at startup",
-                                description: "Automatically start FluidVoice when you log in",
+                                description: "Automatically start MyFluidVoice when you log in",
                                 footnote: self.settings.launchAtStartupStatusMessage,
                                 errorMessage: self.settings.launchAtStartupErrorMessage,
                                 isOn: self.launchAtStartupBinding
@@ -243,7 +192,7 @@ struct SettingsView: View {
                             // Show window when launched at login
                             self.settingsToggleRow(
                                 title: "Show window when launched at login",
-                                description: "When off, FluidVoice starts silently in the menu bar at login. Opening the app yourself always shows the window.",
+                                description: "When off, MyFluidVoice starts silently in the menu bar at login. Opening the app yourself always shows the window.",
                                 isOn: Binding(
                                     get: { SettingsStore.shared.showMainWindowAtLoginLaunch },
                                     set: { SettingsStore.shared.showMainWindowAtLoginLaunch = $0 }
@@ -254,7 +203,7 @@ struct SettingsView: View {
                             // Hide from Dock & App Switcher
                             self.settingsToggleRow(
                                 title: "Hide from Dock & App Switcher",
-                                description: "Keep FluidVoice in the menu bar only (hides Dock icon and Cmd+Tab entry)",
+                                description: "Keep MyFluidVoice in the menu bar only (hides Dock icon and Cmd+Tab entry)",
                                 footnote: "Note: May require app restart to take effect.",
                                 isOn: Binding(
                                     get: { SettingsStore.shared.hideFromDockAndAppSwitcher },
@@ -314,12 +263,21 @@ struct SettingsView: View {
                             }
                             Divider().opacity(0.2)
 
+                            self.settingsToggleRow(
+                                title: "Transcription Sounds",
+                                description: "Play non-blocking feedback when recording starts and ends.",
+                                isOn: Binding(
+                                    get: { SettingsStore.shared.enableTranscriptionSounds },
+                                    set: { SettingsStore.shared.enableTranscriptionSounds = $0 }
+                                )
+                            )
+
                             HStack {
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text("Transcription Sounds")
+                                    Text("Start Sound")
                                         .font(self.theme.typography.bodyStrong)
                                         .foregroundStyle(self.settingsTitleText)
-                                    Text("Choose the sound cue for recording. Some cues include an end sound.")
+                                    Text("Plays after audio capture has started.")
                                         .font(self.theme.typography.bodySmall)
                                         .foregroundStyle(self.settingsSecondaryText)
                                 }
@@ -339,9 +297,41 @@ struct SettingsView: View {
                                 }
                                 .pickerStyle(.menu)
                                 .frame(width: 170, alignment: .trailing)
+                                .disabled(!SettingsStore.shared.enableTranscriptionSounds)
                             }
 
-                            if SettingsStore.shared.transcriptionStartSound != .none {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("End Sound")
+                                        .font(self.theme.typography.bodyStrong)
+                                        .foregroundStyle(self.settingsTitleText)
+                                    Text("Plays immediately when capture stops.")
+                                        .font(self.theme.typography.bodySmall)
+                                        .foregroundStyle(self.settingsSecondaryText)
+                                }
+
+                                Spacer()
+
+                                Picker("", selection: Binding(
+                                    get: { SettingsStore.shared.transcriptionEndSound },
+                                    set: { newValue in
+                                        SettingsStore.shared.transcriptionEndSound = newValue
+                                        TranscriptionSoundPlayer.shared.playPreview(sound: newValue)
+                                    }
+                                )) {
+                                    ForEach(SettingsStore.TranscriptionEndSound.allCases) { option in
+                                        Text(option.displayName).tag(option)
+                                    }
+                                }
+                                .pickerStyle(.menu)
+                                .frame(width: 170, alignment: .trailing)
+                                .disabled(!SettingsStore.shared.enableTranscriptionSounds)
+                            }
+
+                            if SettingsStore.shared.enableTranscriptionSounds,
+                               SettingsStore.shared.transcriptionStartSound != .none ||
+                               SettingsStore.shared.transcriptionEndSound != .none
+                            {
                                 HStack {
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text("Volume")
@@ -382,109 +372,6 @@ struct SettingsView: View {
                                 )
                             }
 
-                            Divider().opacity(0.2)
-
-                            // Upstream updates are intentionally disabled for this fork.
-                            VStack(alignment: .leading, spacing: 6) {
-                                HStack(alignment: .center) {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text("Automatic Updates")
-                                            .font(self.theme.typography.bodyStrong)
-                                            .foregroundStyle(self.settingsTitleText)
-                                        Text("Disabled for MyFluidVoice; upstream releases are not installed.")
-                                            .font(self.theme.typography.bodySmall)
-                                            .foregroundStyle(self.settingsSecondaryText)
-                                    }
-
-                                    Spacer()
-
-                                    Toggle("", isOn: Binding(
-                                        get: { SettingsStore.shared.autoUpdateCheckEnabled },
-                                        set: { SettingsStore.shared.autoUpdateCheckEnabled = $0 }
-                                    ))
-                                    .toggleStyle(.switch)
-                                    .tint(self.theme.palette.accent)
-                                    .labelsHidden()
-                                    .disabled(true)
-                                }
-
-                                if let lastCheck = SettingsStore.shared.lastUpdateCheckDate {
-                                    Text("Last checked: \(lastCheck.formatted(date: .abbreviated, time: .shortened))")
-                                        .font(self.theme.typography.bodySmall)
-                                        .foregroundStyle(self.settingsSecondaryText)
-                                }
-
-                                Text("Current version: \(self.currentAppVersion)")
-                                    .font(self.theme.typography.bodySmall)
-                                    .foregroundStyle(self.settingsSecondaryText)
-                            }
-
-                            HStack(spacing: 10) {
-                                Button(self.rollbackVersion.isEmpty ? "Rollback" : "Rollback to \(self.rollbackVersion)") {
-                                    guard !self.isRollingBack else { return }
-
-                                    let infoText = self.rollbackVersion.isEmpty ? "your previously installed version" : self.rollbackVersion
-                                    let targetVersion = self.rollbackVersion
-                                    let confirm = NSAlert()
-                                    confirm.messageText = "Rollback to \(infoText)?"
-                                    confirm.informativeText = "This will restore a previous app version and relaunch FluidVoice."
-                                    confirm.alertStyle = .warning
-                                    confirm.addButton(withTitle: "Rollback")
-                                    confirm.addButton(withTitle: "Cancel")
-
-                                    guard confirm.runModal() == .alertFirstButtonReturn else { return }
-
-                                    self.isRollingBack = true
-                                    Task {
-                                        defer {
-                                            Task { @MainActor in
-                                                self.isRollingBack = false
-                                            }
-                                        }
-
-                                        do {
-                                            try await SimpleUpdater.shared.rollbackToLatestBackup()
-                                            await MainActor.run {
-                                                let success = NSAlert()
-                                                success.messageText = "Rollback Successful"
-                                                success.informativeText = "Rolled back to \(targetVersion). FluidVoice will relaunch shortly."
-                                                success.alertStyle = .informational
-                                                success.addButton(withTitle: "Report Bug")
-                                                success.addButton(withTitle: "OK")
-                                                let response = success.runModal()
-                                                if response == .alertFirstButtonReturn {
-                                                    self.openIssueReportingPage()
-                                                }
-                                            }
-                                        } catch {
-                                            await MainActor.run {
-                                                let fail = NSAlert()
-                                                fail.messageText = "Rollback Failed"
-                                                fail.informativeText = error.localizedDescription
-                                                fail.alertStyle = .critical
-                                                fail.addButton(withTitle: "OK")
-                                                fail.runModal()
-                                                self.refreshRollbackState()
-                                            }
-                                        }
-                                    }
-                                }
-                                .buttonStyle(.bordered)
-                                .controlSize(.regular)
-                                .disabled(self.rollbackVersion.isEmpty || self.isRollingBack)
-                                .opacity(self.isRollingBack ? 0.7 : 1.0)
-                            }
-                            .padding(.top, 12)
-
-                            if self.rollbackVersion.isEmpty {
-                                Text("No rollback backup found.")
-                                    .font(self.theme.typography.bodySmall)
-                                    .foregroundStyle(self.settingsSecondaryText)
-                            } else {
-                                Text("Rollback target: \(self.rollbackVersion)")
-                                    .font(self.theme.typography.bodySmall)
-                                    .foregroundStyle(self.settingsSecondaryText)
-                            }
                         }
                     }
                     .padding(16)
@@ -770,6 +657,36 @@ struct SettingsView: View {
                                     }
                                     Divider().opacity(0.2)
 
+                                    self.optionToggleRow(
+                                        title: "Copy When No Text Field Is Focused",
+                                        description: "Keep the final processed transcript on the clipboard when MyFluidVoice cannot find a writable text field.",
+                                        isOn: Binding(
+                                            get: { SettingsStore.shared.copyWhenNoWritableInputFocused },
+                                            set: { SettingsStore.shared.copyWhenNoWritableInputFocused = $0 }
+                                        )
+                                    )
+                                    Divider().opacity(0.2)
+
+                                    self.dictationExitActionRow(
+                                        title: "Escape During Toggle Dictation",
+                                        description: "Choose what Escape does while a toggle-style recording is active.",
+                                        selection: Binding(
+                                            get: { SettingsStore.shared.escapeExitAction },
+                                            set: { SettingsStore.shared.escapeExitAction = $0 }
+                                        )
+                                    )
+                                    Divider().opacity(0.2)
+
+                                    self.dictationExitActionRow(
+                                        title: "Click Outside During Toggle Dictation",
+                                        description: "Choose what an external click does; clicks inside MyFluidVoice are ignored.",
+                                        selection: Binding(
+                                            get: { SettingsStore.shared.outsideClickExitAction },
+                                            set: { SettingsStore.shared.outsideClickExitAction = $0 }
+                                        )
+                                    )
+                                    Divider().opacity(0.2)
+
                                     HStack(alignment: .center) {
                                         VStack(alignment: .leading, spacing: 2) {
                                             Text("Text Insertion Mode")
@@ -916,29 +833,12 @@ struct SettingsView: View {
 
                                     self.optionToggleRow(
                                         title: "Pause Media During Transcription",
-                                        description: "Automatically pause currently playing audio/video when transcription starts. Resumes only if FluidVoice paused it.",
+                                        description: "Automatically pause currently playing audio/video when transcription starts. Resumes only if MyFluidVoice paused it.",
                                         isOn: Binding(
                                             get: { SettingsStore.shared.pauseMediaDuringTranscription },
                                             set: { SettingsStore.shared.pauseMediaDuringTranscription = $0 }
                                         )
                                     )
-                                    Divider().opacity(0.2)
-
-                                    self.optionToggleRow(
-                                        title: "Share Anonymous Analytics",
-                                        description: "Send anonymous usage and performance metrics to help improve FluidVoice. Never includes transcription text or prompts.",
-                                        isOn: self.analyticsToggleBinding
-                                    )
-
-                                    HStack {
-                                        Button("What we collect") {
-                                            self.showAnalyticsPrivacy = true
-                                        }
-                                        .buttonStyle(.link)
-
-                                        Spacer()
-                                    }
-                                    .padding(.top, 6)
                                 }
                                 .padding(12)
                             }
@@ -1372,27 +1272,6 @@ struct SettingsView: View {
             }
             .padding(16)
         }
-        .sheet(isPresented: self.$showAnalyticsPrivacy) {
-            AnalyticsPrivacyView()
-                .frame(minWidth: 520, minHeight: 520)
-                .appTheme(self.theme)
-        }
-        .sheet(isPresented: self.analyticsConfirmationBinding) {
-            AnalyticsConfirmationView(
-                onConfirm: {
-                    if let pending = pendingAnalyticsValue {
-                        self.shareAnonymousAnalytics = pending
-                        self.applyAnalyticsConsentChange(pending)
-                    }
-                    self.pendingAnalyticsValue = nil
-                    self.showAreYouSureToStopAnalytics = false
-                },
-                onCancel: {
-                    self.pendingAnalyticsValue = nil
-                    self.showAreYouSureToStopAnalytics = false
-                }
-            )
-        }
         .onAppear {
             Task { @MainActor in
                 // Ensure the shared audio startup gate is scheduled. Safe to call repeatedly.
@@ -1438,7 +1317,6 @@ struct SettingsView: View {
                 let defaultInput = AudioDevice.getDefaultInputDevice()
                 self.cachedDefaultInputUID = defaultInput?.uid ?? ""
                 self.cachedDefaultOutputName = AudioDevice.getDefaultOutputDevice()?.name ?? ""
-                self.refreshRollbackState()
                 self.settings.refreshLaunchAtStartupStatus(clearError: true, logMismatch: false)
                 self.refreshAudioHistoryUsage()
             }
@@ -1446,15 +1324,6 @@ struct SettingsView: View {
         .onChange(of: self.visualizerNoiseThreshold) { _, newValue in
             SettingsStore.shared.visualizerNoiseThreshold = newValue
         }
-    }
-
-    private func refreshRollbackState() {
-        self.rollbackVersion = SimpleUpdater.shared.latestRollbackVersion() ?? ""
-    }
-
-    private func openIssueReportingPage() {
-        guard let url = URL(string: "https://github.com/altic-dev/Fluid-oss/issues/new/choose") else { return }
-        NSWorkspace.shared.open(url)
     }
 
     private func exportBackup() {
@@ -1476,7 +1345,7 @@ struct SettingsView: View {
 
             self.presentInfoAlert(
                 title: "Backup Exported",
-                message: "Saved your FluidVoice backup to:\n\(url.path)"
+                message: "Saved your MyFluidVoice backup to:\n\(url.path)"
             )
         } catch {
             self.presentErrorAlert(
@@ -1537,9 +1406,6 @@ struct SettingsView: View {
     }
 
     private func syncLocalSettingsAfterBackupRestore() {
-        self.shareAnonymousAnalytics = SettingsStore.shared.shareAnonymousAnalytics
-        self.pendingAnalyticsValue = nil
-        self.showAreYouSureToStopAnalytics = false
         self.refreshAudioHistoryUsage()
     }
 
@@ -1564,7 +1430,7 @@ struct SettingsView: View {
             let confirm = NSAlert()
             confirm.messageText = "Prune saved audio?"
             confirm.informativeText = """
-            This budget is below current audio usage. FluidVoice will delete the oldest saved audio first and keep transcript history.
+            This budget is below current audio usage. MyFluidVoice will delete the oldest saved audio first and keep transcript history.
             """
             confirm.alertStyle = .warning
             confirm.addButton(withTitle: "Apply and Prune")
@@ -1637,63 +1503,6 @@ struct SettingsView: View {
         alert.alertStyle = .critical
         alert.addButton(withTitle: "OK")
         alert.runModal()
-    }
-
-    private func openPreviousBuildPicker() {
-        Task { @MainActor in
-            do {
-                let options = try await SimpleUpdater.shared.fetchRecentReleaseBuildOptions(
-                    owner: "altic-dev",
-                    repo: "Fluid-oss",
-                    limit: 3,
-                    includePrerelease: SettingsStore.shared.betaReleasesEnabled
-                )
-                self.presentPreviousBuildPicker(options)
-            } catch {
-                self.openAllReleasesPage()
-            }
-        }
-    }
-
-    private func presentPreviousBuildPicker(_ options: [SimpleUpdater.ReleaseBuildOption]) {
-        guard !options.isEmpty else {
-            self.openAllReleasesPage()
-            return
-        }
-
-        let picker = NSAlert()
-        picker.messageText = "Download Previous Build"
-        picker.informativeText = "No local rollback backup was found. Choose a recent release build:"
-        picker.alertStyle = .informational
-
-        for option in options {
-            picker.addButton(withTitle: option.version)
-        }
-        picker.addButton(withTitle: "All Releases")
-        picker.addButton(withTitle: "Cancel")
-
-        let response = picker.runModal()
-        let first = NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
-        let index = response.rawValue - first
-
-        if index >= 0, index < options.count {
-            NSWorkspace.shared.open(options[index].url)
-            return
-        }
-        if index == options.count {
-            self.openAllReleasesPage()
-        }
-    }
-
-    private func openAllReleasesPage() {
-        guard let url = URL(string: "https://github.com/altic-dev/Fluid-oss/releases") else { return }
-        NSWorkspace.shared.open(url)
-    }
-
-    private func applyAnalyticsConsentChange(_ enabled: Bool) {
-        SettingsStore.shared.shareAnonymousAnalytics = enabled
-        AnalyticsService.shared.setEnabled(enabled)
-        AnalyticsService.shared.capture(.analyticsConsentChanged, properties: ["enabled": enabled])
     }
 
     // MARK: - Helper Views
@@ -2093,6 +1902,34 @@ struct SettingsView: View {
             )
     }
 
+    private func dictationExitActionRow(
+        title: String,
+        description: String,
+        selection: Binding<DictationExitAction>
+    ) -> some View {
+        HStack(alignment: .center, spacing: 16) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(self.theme.typography.bodyStrong)
+                    .foregroundStyle(self.settingsTitleText)
+                Text(description)
+                    .font(self.theme.typography.bodySmall)
+                    .foregroundStyle(self.settingsSecondaryText)
+            }
+
+            Spacer()
+
+            Picker("", selection: selection) {
+                ForEach(DictationExitAction.allCases) { action in
+                    Text(action.displayName).tag(action)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .frame(width: 180, alignment: .trailing)
+        }
+    }
+
     @ViewBuilder
     private func shortcutRow(
         content: ShortcutRowContent,
@@ -2233,7 +2070,7 @@ private extension SettingsView {
             )
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
 
-            Text("FluidVoice tries microphones from top to bottom. Drag to reorder; unavailable devices keep their place.")
+            Text("MyFluidVoice tries microphones from top to bottom. Drag to reorder; unavailable devices keep their place.")
                 .font(self.theme.typography.bodySmall)
                 .foregroundStyle(self.settingsSecondaryText)
                 .fixedSize(horizontal: false, vertical: true)
@@ -2420,7 +2257,7 @@ private extension SettingsView {
             )
         } else {
             self.microphoneQualityGuidanceRow(
-                message: "This order applies only to FluidVoice and does not change your macOS input.",
+                message: "This order applies only to MyFluidVoice and does not change your macOS input.",
                 systemImage: "info.circle",
                 color: self.settingsSecondaryText
             )
@@ -2589,7 +2426,7 @@ private struct SettingsPersistentScrollView<Content: View>: NSViewRepresentable 
 }
 
 private struct MicrophoneSettingsScrollAnchor: NSViewRepresentable {
-    static let identifier = NSUserInterfaceItemIdentifier("FluidVoice.MicrophoneSettingsScrollAnchor")
+    static let identifier = NSUserInterfaceItemIdentifier("MyFluidVoice.MicrophoneSettingsScrollAnchor")
 
     func makeNSView(context _: Context) -> NSView {
         let view = NSView()
@@ -2771,16 +2608,11 @@ struct AnalyticsConfirmationView: View {
 
     private var contactInfoText: AttributedString {
         var text = AttributedString(
-            "If you have any concerns we would love to hear about it, please email alticdev@gmail.com or file an issue in our GitHub."
+            "If you have concerns, please file an issue in the MyFluidVoice GitHub repository."
         )
 
-        if let emailRange = text.range(of: "alticdev@gmail.com") {
-            text[emailRange].link = URL(string: "mailto:alticdev@gmail.com")
-            text[emailRange].foregroundColor = self.theme.palette.accent
-        }
-
         if let githubRange = text.range(of: "GitHub") {
-            text[githubRange].link = URL(string: "https://github.com/altic-dev/FluidVoice")
+            text[githubRange].link = URL(string: "https://github.com/Liooo/MyFluidVoice")
             text[githubRange].foregroundColor = self.theme.palette.accent
         }
 
@@ -2792,7 +2624,7 @@ struct AnalyticsConfirmationView: View {
             Text("Are you sure you want to stop sharing anonymous analytics?")
                 .font(.headline)
 
-            Text("By sharing anonymous usage data, you help us build the features you care about most. We never collect personal information (Audio, Transcription text etc), ever. Your support simply helps us make FluidVoice better for you.")
+            Text("MyFluidVoice does not transmit anonymous analytics data.")
                 .font(self.theme.typography.bodySmall)
                 .foregroundStyle(.secondary)
                 .padding(12)

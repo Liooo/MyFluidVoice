@@ -26,6 +26,9 @@ nonisolated struct ShortcutModifierTapCaptureDecision: Equatable {
     }
 
     nonisolated struct State: Equatable {
+        // The enclosing decision implementation needs these details, but exposing them to the
+        // whole module would make the transition representation part of the internal API.
+        // swiftlint:disable strict_fileprivate
         fileprivate nonisolated enum Phase: Equatable {
             case idle
             case firstPress(keyCode: UInt16, timestamp: TimeInterval)
@@ -40,6 +43,7 @@ nonisolated struct ShortcutModifierTapCaptureDecision: Equatable {
         fileprivate init(phase: Phase) {
             self.phase = phase
         }
+        // swiftlint:enable strict_fileprivate
     }
 
     let state: State

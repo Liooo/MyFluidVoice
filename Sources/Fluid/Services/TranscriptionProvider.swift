@@ -106,7 +106,7 @@ final nonisolated class ModelPreparationProgressRelay: @unchecked Sendable {
 
 /// Unified result type for ASR transcription across all providers
 /// Named ASRTranscriptionResult to avoid conflict with MeetingTranscriptionService.TranscriptionResult
-struct ASRTranscriptionResult {
+nonisolated struct ASRTranscriptionResult: Sendable {
     let text: String
     let confidence: Float
     let pronunciationEnrollment: PronunciationEnrollmentCapture?
@@ -170,16 +170,43 @@ protocol TranscriptionProvider {
     /// Clear cached models
     func clearCache() async throws
 
+    /// Clear per-recording decoder state after a cancelled transcription without deleting models.
+    func resetAfterCancellation() async
+
     /// Whether cancellation should discard an incomplete app-managed model cache.
     var shouldClearCacheAfterCancellation: Bool { get }
+
+    /// Minimum captured audio length supplied to the provider finalizer.
+    var minimumFinalAudioSampleCount: Int { get }
+
+    /// Whether callers may include transcript text in diagnostic logs.
+    var allowsTranscriptLogging: Bool { get }
 }
 
-// Default implementation for optional methods
+/// Default implementation for optional methods
 extension TranscriptionProvider {
-    func modelsExistOnDisk() -> Bool { return false }
+    func modelsExistOnDisk() -> Bool {
+        return false
+    }
+
     func clearCache() async throws {}
-    var shouldClearCacheAfterCancellation: Bool { true }
-    var prefersNativeFileTranscription: Bool { false }
+    func resetAfterCancellation() async {}
+    var shouldClearCacheAfterCancellation: Bool {
+        true
+    }
+
+    var minimumFinalAudioSampleCount: Int {
+        0
+    }
+
+    var allowsTranscriptLogging: Bool {
+        true
+    }
+
+    var prefersNativeFileTranscription: Bool {
+        false
+    }
+
     func transcribeStreaming(_ samples: [Float]) async throws -> ASRTranscriptionResult {
         try await self.transcribe(samples)
     }

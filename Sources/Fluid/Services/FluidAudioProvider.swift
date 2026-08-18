@@ -1,4 +1,11 @@
 import Foundation
+
+enum FluidAudioFinalTranscriptionFallback {
+    nonisolated static func shouldRetry(after error: Error, isTaskCancelled: Bool) -> Bool {
+        !isTaskCancelled && !(error is CancellationError)
+    }
+}
+
 #if arch(arm64)
 import FluidAudio
 
@@ -260,6 +267,12 @@ final class FluidAudioProvider: TranscriptionProvider {
             self.logFinalBenchmark(samples: samples, text: result.text, startedAt: startedAt, usedFallback: false)
             return result
         } catch {
+            guard FluidAudioFinalTranscriptionFallback.shouldRetry(
+                after: error,
+                isTaskCancelled: Task.isCancelled
+            ) else {
+                throw CancellationError()
+            }
             guard let fallback = self.streamingAsrManager, fallback !== manager else {
                 throw error
             }
@@ -566,8 +579,14 @@ final class FluidAudioProvider: TranscriptionProvider {
 /// Check-shim for Intel Macs where FluidAudio is not available
 final class FluidAudioProvider: TranscriptionProvider {
     let name = "FluidAudio (Apple Silicon ONLY)"
-    var isAvailable: Bool { false }
-    var isReady: Bool { false }
+    var isAvailable: Bool {
+        false
+    }
+
+    var isReady: Bool {
+        false
+    }
+
     private(set) var isWordBoostingActive: Bool = false
     private(set) var boostedVocabularyTermsCount: Int = 0
 

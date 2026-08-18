@@ -382,9 +382,14 @@ nonisolated extension HotkeyShortcut {
             return lhs.mouseButton == rhs.mouseButton &&
                 lhs.relevantModifierFlags == rhs.relevantModifierFlags
         case .keyboard:
-            guard lhs.gesture == rhs.gesture,
-                  lhs.includeBothModifierSides == rhs.includeBothModifierSides
-            else { return false }
+            guard lhs.gesture == rhs.gesture else { return false }
+
+            if lhs.isDoubleModifierShortcut, rhs.isDoubleModifierShortcut {
+                return lhs.modifierTriggerFlag == rhs.modifierTriggerFlag &&
+                    lhs.includeBothModifierSides == rhs.includeBothModifierSides
+            }
+
+            guard lhs.includeBothModifierSides == rhs.includeBothModifierSides else { return false }
 
             let lhsModifierKeyCodes = lhs.normalizedModifierKeyCodes
             let rhsModifierKeyCodes = rhs.normalizedModifierKeyCodes

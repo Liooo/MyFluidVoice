@@ -13,6 +13,10 @@ on:
       - 'Package.resolved'
       - 'Info.plist'
       - 'Fluid.entitlements'
+      - 'LICENSE'
+      - 'build.sh'
+      - 'scripts/**'
+      - '.github/workflows/pr-archive.yml'
 
 permissions:
   contents: read
@@ -23,7 +27,7 @@ concurrency:
 
 jobs:
   archive:
-    name: "Archive FluidVoice PR #${{ github.event.pull_request.number }}"
+    name: "Archive MyFluidVoice PR #${{ github.event.pull_request.number }}"
     if: github.event.pull_request.draft == false
     runs-on: macos-latest
     timeout-minutes: 45
@@ -31,8 +35,9 @@ jobs:
       PR_NUMBER: ${{ github.event.pull_request.number }}
       AUTHOR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
       PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
       PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-      APP_NAME: "FluidVoice #${{ github.event.pull_request.number }}"
+      APP_NAME: "MyFluidVoice #${{ github.event.pull_request.number }}"
       BUNDLE_IDENTIFIER: com.FluidApp.app.pr${{ github.event.pull_request.number }}
 
     steps:
@@ -46,6 +51,11 @@ jobs:
               exit 1
             fi
           done
+          if [[ ! "$PR_NUMBER" =~ ^[0-9]+$ ]] || \
+             [[ ! "$PR_HEAD_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+            echo "GitHub did not provide valid PR source metadata." >&2
+            exit 1
+          fi
 
       - name: Checkout exact PR head commit
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -90,7 +100,7 @@ jobs:
 
       - name: Archive PR build
         env:
-          ARCHIVE_PATH: ${{ runner.temp }}/FluidVoice-PR-${{ github.event.pull_request.number }}.xcarchive
+          ARCHIVE_PATH: ${{ runner.temp }}/MyFluidVoice-PR-${{ github.event.pull_request.number }}.xcarchive
         run: |
           set -euo pipefail
 
@@ -109,26 +119,29 @@ jobs:
       - name: Validate and package archive
         id: package
         env:
-          ARCHIVE_PATH: ${{ runner.temp }}/FluidVoice-PR-${{ github.event.pull_request.number }}.xcarchive
-          STAGING_PATH: ${{ runner.temp }}/FluidVoice-PR-${{ github.event.pull_request.number }}
+          ARCHIVE_PATH: ${{ runner.temp }}/MyFluidVoice-PR-${{ github.event.pull_request.number }}.xcarchive
+          STAGING_PATH: ${{ runner.temp }}/MyFluidVoice-PR-${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
 
-          ORIGINAL_APP_PATH="$ARCHIVE_PATH/Products/Applications/FluidVoice.app"
+          ORIGINAL_APP_PATH="$ARCHIVE_PATH/Products/Applications/MyFluidVoice.app"
           APP_PATH="$ARCHIVE_PATH/Products/Applications/$APP_NAME.app"
-          EXECUTABLE_PATH="$APP_PATH/Contents/MacOS/FluidVoice"
+          EXECUTABLE_PATH="$APP_PATH/Contents/MacOS/MyFluidVoice"
           INFO_PLIST="$APP_PATH/Contents/Info.plist"
           ARCHIVE_INFO_PLIST="$ARCHIVE_PATH/Info.plist"
           MANIFEST_PATH="$STAGING_PATH/build-manifest.json"
           MANIFEST_PLIST="$STAGING_PATH/build-manifest.plist"
           README_PATH="$STAGING_PATH/README.txt"
-          ARCHIVE_ZIP="$STAGING_PATH/FluidVoice-PR-$PR_NUMBER.xcarchive.zip"
-          APP_ZIP="$STAGING_PATH/FluidVoice-PR-$PR_NUMBER.app.zip"
-          VERIFY_PATH="$RUNNER_TEMP/FluidVoice-PR-$PR_NUMBER-verify"
-          EFFECTIVE_ENTITLEMENTS="$RUNNER_TEMP/FluidVoice-PR-$PR_NUMBER.entitlements"
-          VERIFIED_ENTITLEMENTS="$RUNNER_TEMP/FluidVoice-PR-$PR_NUMBER-verified.entitlements"
+          LICENSE_PATH="$STAGING_PATH/LICENSE"
+          ARCHIVE_ZIP="$STAGING_PATH/MyFluidVoice-PR-$PR_NUMBER.xcarchive.zip"
+          APP_ZIP="$STAGING_PATH/MyFluidVoice-PR-$PR_NUMBER.app.zip"
+          VERIFY_PATH="$RUNNER_TEMP/MyFluidVoice-PR-$PR_NUMBER-verify"
+          EFFECTIVE_ENTITLEMENTS="$RUNNER_TEMP/MyFluidVoice-PR-$PR_NUMBER.entitlements"
+          VERIFIED_ENTITLEMENTS="$RUNNER_TEMP/MyFluidVoice-PR-$PR_NUMBER-verified.entitlements"
           SHORT_SHA="${PR_HEAD_SHA:0:12}"
-          ARTIFACT_NAME="FluidVoice-PR-$PR_NUMBER-$SHORT_SHA"
+          ARTIFACT_NAME="MyFluidVoice-PR-$PR_NUMBER-$SHORT_SHA"
+          SOURCE_ARCHIVE_NAME="MyFluidVoice-PR-$PR_NUMBER-source-$SHORT_SHA.zip"
+          SOURCE_ARCHIVE="$STAGING_PATH/$SOURCE_ARCHIVE_NAME"
 
           test -d "$ARCHIVE_PATH"
           test -d "$ORIGINAL_APP_PATH"
@@ -152,19 +165,12 @@ jobs:
           /usr/libexec/PlistBuddy -c "Set :ApplicationProperties:ApplicationPath Applications/$APP_NAME.app" "$ARCHIVE_INFO_PLIST"
           /usr/libexec/PlistBuddy -c "Set :ApplicationProperties:CFBundleIdentifier $BUNDLE_IDENTIFIER" "$ARCHIVE_INFO_PLIST"
 
-          # Xcode's XCFramework copy flattens CTranscribe's version symlinks.
-          # Restore the canonical framework layout before replacing its stale
-          # upstream signature.
+          # Canonicalize the known transcribe-cpp-swift 0.1.2 packaging layout
+          # before replacing its stale upstream signature.
           CTRANSCRIBE_FRAMEWORK="$APP_PATH/Contents/Frameworks/CTranscribe.framework"
-          test -d "$CTRANSCRIBE_FRAMEWORK/Versions/A"
-          rm -rf \
-            "$CTRANSCRIBE_FRAMEWORK/Versions/Current" \
-            "$CTRANSCRIBE_FRAMEWORK/CTranscribe" \
-            "$CTRANSCRIBE_FRAMEWORK/Resources" \
-            "$CTRANSCRIBE_FRAMEWORK/Versions/A/_CodeSignature"
-          ln -s A "$CTRANSCRIBE_FRAMEWORK/Versions/Current"
-          ln -s Versions/Current/CTranscribe "$CTRANSCRIBE_FRAMEWORK/CTranscribe"
-          ln -s Versions/Current/Resources "$CTRANSCRIBE_FRAMEWORK/Resources"
+          CTRANSCRIBE_NORMALIZER="$GITHUB_WORKSPACE/scripts/normalize-ctranscribe-framework.sh"
+          test -x "$CTRANSCRIBE_NORMALIZER"
+          "$CTRANSCRIBE_NORMALIZER" "$APP_PATH"
 
           # Ad-hoc signing requires no certificate or secret, but gives macOS
           # TCC a valid code identity for permissions such as Accessibility.
@@ -230,17 +236,50 @@ jobs:
             exit 1
           fi
 
+          if [[ "$STAGING_PATH" != "$RUNNER_TEMP/MyFluidVoice-PR-$PR_NUMBER" ]] || \
+             [[ "$VERIFY_PATH" != "$RUNNER_TEMP/MyFluidVoice-PR-$PR_NUMBER-verify" ]]; then
+            echo "Refusing to clean unexpected packaging paths." >&2
+            exit 1
+          fi
           rm -rf "$STAGING_PATH" "$VERIFY_PATH"
           mkdir -p "$STAGING_PATH" "$VERIFY_PATH"
 
           XCODE_VERSION=$(xcodebuild -version | tr '\n' ' ' | xargs)
           BUILD_TIMESTAMP=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          SOURCE_TREE_SHA=$(git rev-parse "${PR_MERGE_SHA}^{tree}")
+          LICENSE_BLOB_SHA=$(git rev-parse "${PR_BASE_SHA}:LICENSE")
+          PR_URL="https://github.com/$GITHUB_REPOSITORY/pull/$PR_NUMBER"
+          SOURCE_HEAD_URL="https://github.com/$PR_HEAD_REPOSITORY/commit/$PR_HEAD_SHA"
+          SOURCE_BASE_URL="https://github.com/$GITHUB_REPOSITORY/commit/$PR_BASE_SHA"
+
+          git show "${PR_BASE_SHA}:LICENSE" > "$LICENSE_PATH"
+          grep -q 'GNU GENERAL PUBLIC LICENSE' "$LICENSE_PATH"
+          grep -q 'Version 3, 29 June 2007' "$LICENSE_PATH"
+          LICENSE_SHA256=$(shasum -a 256 "$LICENSE_PATH" | awk '{ print $1 }')
+          git archive \
+            --format=zip \
+            --prefix="MyFluidVoice-source-$SHORT_SHA/" \
+            --output="$SOURCE_ARCHIVE" \
+            "$PR_MERGE_SHA"
+          SOURCE_ARCHIVE_SHA256=$(shasum -a 256 "$SOURCE_ARCHIVE" | awk '{ print $1 }')
 
           plutil -create xml1 "$MANIFEST_PLIST"
           plutil -insert pr_number -integer "$PR_NUMBER" "$MANIFEST_PLIST"
           plutil -insert author_association -string "$AUTHOR_ASSOCIATION" "$MANIFEST_PLIST"
+          plutil -insert pr_url -string "$PR_URL" "$MANIFEST_PLIST"
+          plutil -insert pr_head_repository -string "$PR_HEAD_REPOSITORY" "$MANIFEST_PLIST"
           plutil -insert pr_head_sha -string "$PR_HEAD_SHA" "$MANIFEST_PLIST"
+          plutil -insert pr_head_source_url -string "$SOURCE_HEAD_URL" "$MANIFEST_PLIST"
+          plutil -insert pr_base_sha -string "$PR_BASE_SHA" "$MANIFEST_PLIST"
+          plutil -insert pr_base_source_url -string "$SOURCE_BASE_URL" "$MANIFEST_PLIST"
           plutil -insert pr_merge_sha -string "$PR_MERGE_SHA" "$MANIFEST_PLIST"
+          plutil -insert source_tree_sha -string "$SOURCE_TREE_SHA" "$MANIFEST_PLIST"
+          plutil -insert source_archive -string "$SOURCE_ARCHIVE_NAME" "$MANIFEST_PLIST"
+          plutil -insert source_archive_sha256 -string "$SOURCE_ARCHIVE_SHA256" "$MANIFEST_PLIST"
+          plutil -insert license_file -string LICENSE "$MANIFEST_PLIST"
+          plutil -insert license_source_revision -string "$PR_BASE_SHA" "$MANIFEST_PLIST"
+          plutil -insert license_blob_sha -string "$LICENSE_BLOB_SHA" "$MANIFEST_PLIST"
+          plutil -insert license_sha256 -string "$LICENSE_SHA256" "$MANIFEST_PLIST"
           plutil -insert xcode_version -string "$XCODE_VERSION" "$MANIFEST_PLIST"
           plutil -insert app_name -string "$APP_NAME" "$MANIFEST_PLIST"
           plutil -insert bundle_identifier -string "$BUNDLE_IDENTIFIER" "$MANIFEST_PLIST"
@@ -251,8 +290,8 @@ jobs:
           rm "$MANIFEST_PLIST"
 
           cat > "$README_PATH" <<EOF
-          FluidVoice PR #$PR_NUMBER
-          ========================
+          MyFluidVoice PR #$PR_NUMBER
+          ==========================
 
           This is an ad-hoc-signed test build from pull request #$PR_NUMBER.
 
@@ -260,6 +299,29 @@ jobs:
           Bundle identifier: $BUNDLE_IDENTIFIER
           PR head SHA: $PR_HEAD_SHA
           PR merge SHA: $PR_MERGE_SHA
+
+          License and corresponding source
+          --------------------------------
+
+          MyFluidVoice is licensed under GNU GPL version 3. The complete license
+          from target base $PR_BASE_SHA is included as LICENSE.
+
+          License blob SHA: $LICENSE_BLOB_SHA
+          License SHA-256: $LICENSE_SHA256
+
+          The exact Corresponding Source tree used for this build is included as:
+
+            $SOURCE_ARCHIVE_NAME
+
+          Source tree SHA: $SOURCE_TREE_SHA
+          Source archive SHA-256: $SOURCE_ARCHIVE_SHA256
+          Pull request: $PR_URL
+          PR head source: $SOURCE_HEAD_URL
+          Target base source: $SOURCE_BASE_URL
+
+          The build workflow created merge commit $PR_MERGE_SHA locally from the
+          PR head and target base above. The bundled source archive records its
+          exact file tree without relying on that temporary commit remaining online.
 
           Because the app is not Developer ID signed or notarized, macOS may prevent
           it from opening normally.
@@ -281,14 +343,17 @@ jobs:
 
           test -s "$MANIFEST_PATH"
           test -s "$README_PATH"
+          test -s "$LICENSE_PATH"
+          test -s "$SOURCE_ARCHIVE"
           test -s "$ARCHIVE_ZIP"
           test -s "$APP_ZIP"
+          unzip -tq "$SOURCE_ARCHIVE"
           unzip -tq "$ARCHIVE_ZIP"
           unzip -tq "$APP_ZIP"
 
           ditto -x -k "$APP_ZIP" "$VERIFY_PATH"
           VERIFIED_APP_PATH="$VERIFY_PATH/$APP_NAME.app"
-          test -x "$VERIFIED_APP_PATH/Contents/MacOS/FluidVoice"
+          test -x "$VERIFIED_APP_PATH/Contents/MacOS/MyFluidVoice"
           test -L "$VERIFIED_APP_PATH/Contents/Frameworks/CTranscribe.framework/Versions/Current"
           codesign --verify --deep --strict --verbose=2 "$VERIFIED_APP_PATH"
           if [[ "$(codesign -d --entitlements - --xml "$VERIFIED_APP_PATH" 2>/dev/null | plutil -extract 'com\.apple\.security\.device\.audio-input' raw -o - -)" != "true" ]]; then
@@ -306,6 +371,8 @@ jobs:
             echo "- App: \`$APP_NAME.app\`"
             echo "- Bundle identifier: \`$BUNDLE_IDENTIFIER\`"
             echo "- Signing: ad-hoc (no certificate required)"
+            echo "- License: GNU GPLv3 (\`LICENSE\` included)"
+            echo "- Exact source: \`$SOURCE_ARCHIVE_NAME\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload PR archive artifact

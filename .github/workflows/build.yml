@@ -38,6 +38,8 @@ jobs:
             - 'Package.resolved'
             - 'Info.plist'
             - 'Fluid.entitlements'
+            - 'build.sh'
+            - 'scripts/**'
             - '.swiftlint.yml'
             - '.github/workflows/build.yml'
 
@@ -61,7 +63,7 @@ jobs:
           lint --strict --config .swiftlint.yml
 
   build:
-    name: Build FluidVoice
+    name: Build MyFluidVoice
     if: needs.changes.outputs.relevant == 'true' && needs.lint.result == 'success'
     needs: [changes, lint]
     runs-on: macos-latest

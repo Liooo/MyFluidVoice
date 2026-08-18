@@ -81,7 +81,11 @@ final class RewriteModeService: ObservableObject {
         self.conversationHistory = []
     }
 
-    func processRewriteRequest(_ prompt: String) async {
+    func processRewriteRequest(
+        _ prompt: String,
+        isAuthorized: @escaping @MainActor () -> Bool = { true }
+    ) async {
+        guard isAuthorized(), !Task.isCancelled else { return }
         let startTime = Date()
         self.appendDiagnosticLog(
             "processRewriteRequest start | promptChars=\(prompt.count) | hadOriginal=\(!self.originalText.isEmpty) | contextChars=\(self.selectedContextText.count)"
@@ -126,6 +130,10 @@ final class RewriteModeService: ObservableObject {
 
         do {
             let response = try await callLLM(messages: conversationHistory, isWriteMode: isWriteMode)
+            guard isAuthorized(), !Task.isCancelled else {
+                self.isProcessing = false
+                return
+            }
             self.conversationHistory.append(Message(role: .assistant, content: response))
             self.rewrittenText = response
             self.isProcessing = false
@@ -142,6 +150,10 @@ final class RewriteModeService: ObservableObject {
                 ]
             )
         } catch {
+            guard isAuthorized(), !Task.isCancelled, !(error is CancellationError) else {
+                self.isProcessing = false
+                return
+            }
             self.conversationHistory.append(Message(role: .assistant, content: "Error: \(error.localizedDescription)"))
             self.isProcessing = false
             self.appendDiagnosticLog(
@@ -423,8 +435,12 @@ final class RewriteModeService: ObservableObject {
     private func providerKey(for providerID: String) -> String {
         let trimmed = providerID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "" }
-        if ModelRepository.shared.isBuiltIn(trimmed) { return trimmed }
-        if trimmed.hasPrefix("custom:") { return trimmed }
+        if ModelRepository.shared.isBuiltIn(trimmed) {
+            return trimmed
+        }
+        if trimmed.hasPrefix("custom:") {
+            return trimmed
+        }
         return "custom:\(trimmed)"
     }
 

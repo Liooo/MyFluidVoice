@@ -17,9 +17,15 @@ struct SettingsBackupPayload: Codable, Equatable {
     let privateAIBackendPreference: SettingsStore.PrivateAIBackendPreference?
     let privateAIContextTokenLimit: Int?
     let selectedSpeechModel: SettingsStore.SpeechModel
+    let localFallbackSpeechModelID: String?
     let selectedCohereLanguage: SettingsStore.CohereLanguage
     let selectedNemotronLanguage: SettingsStore.NemotronLanguage?
     let selectedAppleSpeechLocaleIdentifier: String?
+    let sonioxLanguageModeID: String?
+    let sonioxRegionID: String?
+    // Optional so backups created before per-input-source model routing still decode.
+    // swiftlint:disable:next discouraged_optional_collection
+    let speechModelAssignmentsByInputSourceID: [String: SettingsStore.SpeechModel]?
     let hotkeyShortcut: HotkeyShortcut
     // Older backup files only contain hotkeyShortcut; nil restores that legacy single shortcut.
     // swiftlint:disable:next discouraged_optional_collection
@@ -47,7 +53,9 @@ struct SettingsBackupPayload: Codable, Equatable {
     let hideFromDockAndAppSwitcher: Bool
     let showMainWindowAtLoginLaunch: Bool?
     let accentColorOption: SettingsStore.AccentColorOption
+    let enableTranscriptionSounds: Bool?
     let transcriptionStartSound: SettingsStore.TranscriptionStartSound
+    let transcriptionEndSound: SettingsStore.TranscriptionEndSound?
     let transcriptionSoundVolume: Float
     let transcriptionSoundIndependentVolume: Bool
     let autoUpdateCheckEnabled: Bool
@@ -61,6 +69,9 @@ struct SettingsBackupPayload: Codable, Equatable {
     let skipSilentRecordingsEnabled: Bool?
     let enableAIStreaming: Bool
     let copyTranscriptionToClipboard: Bool
+    let copyWhenNoWritableInputFocused: Bool?
+    let escapeExitAction: DictationExitAction?
+    let outsideClickExitAction: DictationExitAction?
     let textInsertionMode: SettingsStore.TextInsertionMode
     let preferredInputDeviceUID: String?
     // Optional so backups created before microphone priority ordering still decode.
@@ -134,7 +145,7 @@ enum BackupServiceError: LocalizedError {
         case let .unsupportedSchemaVersion(version):
             return "This backup uses an unsupported schema version (\(version.major).\(version.minor))."
         case .invalidJSON:
-            return "The selected backup file is not a valid FluidVoice backup."
+            return "The selected backup file is not a valid MyFluidVoice backup."
         }
     }
 }
@@ -202,7 +213,7 @@ final class BackupService {
     func suggestedFilename(for date: Date = Date()) -> String {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd_HH-mm"
-        return "FluidVoice_Backup_\(formatter.string(from: date)).json"
+        return "MyFluidVoice_Backup_\(formatter.string(from: date)).json"
     }
 
     private func validate(_ document: AppBackupDocument) throws {

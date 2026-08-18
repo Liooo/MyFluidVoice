@@ -17,6 +17,203 @@ final class HotkeyShortcutTests: XCTestCase {
     private let microphoneSelectionMigrationVersionKey = "AppOnlyMicrophoneSelectionMigrationVersion"
     private let experimentalDirectAudioCaptureEnabledKey = "ExperimentalDirectAudioCaptureEnabled"
 
+    func testShortcutRecorderRecognizesSamePhysicalModifierDoubleTap() {
+        var replay = ShortcutModifierTapCaptureReplay()
+
+        XCTAssertEqual(replay.flagsChanged(keyCode: 56, pressed: [56], timestamp: 1.0), .observeChord)
+        XCTAssertEqual(replay.flagsChanged(keyCode: 56, pressed: [], timestamp: 1.05), .waitForSecondPress(deadline: 1.3))
+        XCTAssertEqual(replay.flagsChanged(keyCode: 56, pressed: [56], timestamp: 1.2), .handled)
+        XCTAssertEqual(replay.flagsChanged(keyCode: 56, pressed: [], timestamp: 1.24), .recordDouble(keyCode: 56))
+    }
+
+    func testShortcutRecorderCommitsSingleModifierAtStrictDeadline() {
+        var replay = ShortcutModifierTapCaptureReplay()
+
+        XCTAssertEqual(replay.flagsChanged(keyCode: 56, pressed: [56], timestamp: 4.0), .observeChord)
+        XCTAssertEqual(replay.flagsChanged(keyCode: 56, pressed: [], timestamp: 4.05), .waitForSecondPress(deadline: 4.3))
+        XCTAssertEqual(replay.deadline(timestamp: 4.299), .handled)
+        XCTAssertEqual(replay.deadline(timestamp: 4.3), .recordSingle(keyCode: 56))
+    }
+
+    func testShortcutRecorderRejectsOppositeSideAndAdditionalModifier() {
+        var oppositeSide = ShortcutModifierTapCaptureReplay()
+        _ = oppositeSide.flagsChanged(keyCode: 56, pressed: [56], timestamp: 10.0)
+        _ = oppositeSide.flagsChanged(keyCode: 56, pressed: [], timestamp: 10.04)
+        XCTAssertEqual(
+            oppositeSide.flagsChanged(keyCode: 60, pressed: [60], timestamp: 10.1),
+            .cancelCandidateAndObserveChord
+        )
+
+        var chord = ShortcutModifierTapCaptureReplay()
+        _ = chord.flagsChanged(keyCode: 56, pressed: [56], timestamp: 20.0)
+        XCTAssertEqual(
+            chord.flagsChanged(keyCode: 59, pressed: [56, 59], timestamp: 20.05),
+            .cancelCandidateAndObserveChord
+        )
+    }
+
+    func testShortcutRecorderInterruptCancelsPendingTap() {
+        var replay = ShortcutModifierTapCaptureReplay()
+        _ = replay.flagsChanged(keyCode: 56, pressed: [56], timestamp: 30.0)
+        _ = replay.flagsChanged(keyCode: 56, pressed: [], timestamp: 30.04)
+
+        XCTAssertEqual(replay.interrupt(), .handled)
+        XCTAssertEqual(replay.deadline(timestamp: 30.3), .handled)
+    }
+
+    func testPressedModifierTrackingIgnoresDuplicateFlagsChangedEvents() {
+        let firstPress = PressedModifierKeyCodesDecision.synchronize(
+            previous: [],
+            changedKeyCode: 56,
+            modifiers: .shift,
+            changedKeyIsPhysicallyPressed: true
+        )
+        let duplicate = PressedModifierKeyCodesDecision.synchronize(
+            previous: firstPress,
+            changedKeyCode: 56,
+            modifiers: .shift,
+            changedKeyIsPhysicallyPressed: true
+        )
+
+        XCTAssertEqual(firstPress, [56])
+        XCTAssertEqual(duplicate, [56])
+    }
+
+    func testPressedModifierTrackingUsesEventFlagsWhenPhysicalStateLags() {
+        let pressed = PressedModifierKeyCodesDecision.synchronize(
+            previous: [],
+            changedKeyCode: 56,
+            modifiers: .shift,
+            changedKeyIsPhysicallyPressed: false
+        )
+
+        XCTAssertEqual(pressed, [56])
+    }
+
+    func testLaggingPhysicalStateStillRecognizesFnShiftModifierChord() {
+        let shortcut = HotkeyShortcut(
+            keyCode: 63,
+            modifierFlags: [],
+            modifierKeyCodes: [63, 56]
+        )
+        let replay = ModifierOnlyFlagsReplay(shortcut: shortcut)
+        var pressedModifierKeyCodes: Set<UInt16> = []
+
+        pressedModifierKeyCodes = PressedModifierKeyCodesDecision.synchronize(
+            previous: pressedModifierKeyCodes,
+            changedKeyCode: 63,
+            modifiers: .function,
+            changedKeyIsPhysicallyPressed: false
+        )
+        replay.flagsChanged(
+            keyCode: 63,
+            modifiers: .function,
+            nextPressed: pressedModifierKeyCodes
+        )
+
+        pressedModifierKeyCodes = PressedModifierKeyCodesDecision.synchronize(
+            previous: pressedModifierKeyCodes,
+            changedKeyCode: 56,
+            modifiers: [.function, .shift],
+            changedKeyIsPhysicallyPressed: false
+        )
+        replay.flagsChanged(
+            keyCode: 56,
+            modifiers: [.function, .shift],
+            nextPressed: pressedModifierKeyCodes
+        )
+
+        XCTAssertEqual(replay.activeModifierOnlyType, .transcription)
+
+        pressedModifierKeyCodes = PressedModifierKeyCodesDecision.synchronize(
+            previous: pressedModifierKeyCodes,
+            changedKeyCode: 56,
+            modifiers: .function,
+            changedKeyIsPhysicallyPressed: false
+        )
+        replay.flagsChanged(
+            keyCode: 56,
+            modifiers: .function,
+            nextPressed: pressedModifierKeyCodes
+        )
+
+        XCTAssertEqual(replay.cleanFinishCount, 1)
+    }
+
+    func testLaggingPhysicalStateStillRecognizesDoubleShift() {
+        var replay = DoubleModifierReplay(shortcut: Self.doubleShiftShortcut)
+        var pressedModifierKeyCodes: Set<UInt16> = []
+
+        pressedModifierKeyCodes = PressedModifierKeyCodesDecision.synchronize(
+            previous: pressedModifierKeyCodes,
+            changedKeyCode: 56,
+            modifiers: .shift,
+            changedKeyIsPhysicallyPressed: false
+        )
+        XCTAssertEqual(
+            replay.flagsChanged(keyCode: 56, pressed: pressedModifierKeyCodes, timestamp: 1.00),
+            .handled
+        )
+
+        pressedModifierKeyCodes = PressedModifierKeyCodesDecision.synchronize(
+            previous: pressedModifierKeyCodes,
+            changedKeyCode: 56,
+            modifiers: [],
+            changedKeyIsPhysicallyPressed: false
+        )
+        XCTAssertEqual(
+            replay.flagsChanged(keyCode: 56, pressed: pressedModifierKeyCodes, timestamp: 1.05),
+            .handled
+        )
+
+        pressedModifierKeyCodes = PressedModifierKeyCodesDecision.synchronize(
+            previous: pressedModifierKeyCodes,
+            changedKeyCode: 56,
+            modifiers: .shift,
+            changedKeyIsPhysicallyPressed: false
+        )
+        XCTAssertEqual(
+            replay.flagsChanged(keyCode: 56, pressed: pressedModifierKeyCodes, timestamp: 1.20),
+            .secondPress
+        )
+
+        pressedModifierKeyCodes = PressedModifierKeyCodesDecision.synchronize(
+            previous: pressedModifierKeyCodes,
+            changedKeyCode: 56,
+            modifiers: [],
+            changedKeyIsPhysicallyPressed: false
+        )
+        XCTAssertEqual(
+            replay.flagsChanged(keyCode: 56, pressed: pressedModifierKeyCodes, timestamp: 1.25),
+            .secondRelease
+        )
+    }
+
+    func testPressedModifierTrackingKeepsPhysicalSidesDistinct() {
+        let bothSides = PressedModifierKeyCodesDecision.synchronize(
+            previous: [56],
+            changedKeyCode: 60,
+            modifiers: .shift,
+            changedKeyIsPhysicallyPressed: true
+        )
+        let leftOnly = PressedModifierKeyCodesDecision.synchronize(
+            previous: bothSides,
+            changedKeyCode: 60,
+            modifiers: .shift,
+            changedKeyIsPhysicallyPressed: false
+        )
+        let released = PressedModifierKeyCodesDecision.synchronize(
+            previous: leftOnly,
+            changedKeyCode: 56,
+            modifiers: [],
+            changedKeyIsPhysicallyPressed: false
+        )
+
+        XCTAssertEqual(bothSides, [56, 60])
+        XCTAssertEqual(leftOnly, [56])
+        XCTAssertTrue(released.isEmpty)
+    }
+
     @MainActor
     func testBottomOverlayRapidStopStartStopDoesNotDropFinalHide() async {
         let audioPublisher = Just(CGFloat.zero).eraseToAnyPublisher()
@@ -376,10 +573,462 @@ final class HotkeyShortcutTests: XCTestCase {
         XCTAssertFalse(unmodifiedSideButton.conflictsWith(optionOnly))
     }
 
+    func testLegacyShortcutPayloadDefaultsToSingleGesture() throws {
+        let json = #"{"kind":"keyboard","keyCode":56,"modifierFlagsRawValue":0,"modifierKeyCodes":[56]}"#
+        let shortcut = try JSONDecoder().decode(
+            HotkeyShortcut.self,
+            from: XCTUnwrap(json.data(using: .utf8))
+        )
+
+        XCTAssertEqual(shortcut.gesture, .single)
+    }
+
+    func testDoubleModifierShortcutRoundTripsAndDisplaysByModifierFamily() throws {
+        let shortcut = HotkeyShortcut(
+            keyCode: 56,
+            modifierFlags: .shift,
+            modifierKeyCodes: [56],
+            gesture: .doubleTap
+        )
+        let decoded = try JSONDecoder().decode(
+            HotkeyShortcut.self,
+            from: JSONEncoder().encode(shortcut)
+        )
+
+        XCTAssertEqual(decoded, shortcut)
+        XCTAssertEqual(decoded.gesture, .doubleTap)
+        XCTAssertEqual(decoded.displayString, "Double-tap Shift")
+    }
+
+    func testDoubleModifierDisplaysSupportedModifierFamilies() {
+        let shortcuts: [(UInt16, NSEvent.ModifierFlags, String)] = [
+            (55, .command, "Double-tap Command"),
+            (58, .option, "Double-tap Option"),
+            (59, .control, "Double-tap Control"),
+            (56, .shift, "Double-tap Shift"),
+            (63, .function, "Double-tap fn"),
+        ]
+
+        for (keyCode, flag, display) in shortcuts {
+            let shortcut = HotkeyShortcut(
+                keyCode: keyCode,
+                modifierFlags: flag,
+                modifierKeyCodes: [keyCode],
+                gesture: .doubleTap
+            )
+            XCTAssertTrue(shortcut.isDoubleModifierShortcut)
+            XCTAssertEqual(shortcut.displayString, display)
+        }
+    }
+
+    func testDoubleModifierEqualityUsesFamilyWhileSingleModifierEqualityKeepsPhysicalSide() {
+        let doubleLeftShift = HotkeyShortcut(
+            keyCode: 56,
+            modifierFlags: .shift,
+            modifierKeyCodes: [56],
+            gesture: .doubleTap
+        )
+        let doubleRightShift = HotkeyShortcut(
+            keyCode: 60,
+            modifierFlags: .shift,
+            modifierKeyCodes: [60],
+            gesture: .doubleTap
+        )
+        let singleLeftShift = HotkeyShortcut(keyCode: 56, modifierFlags: .shift, modifierKeyCodes: [56])
+        let singleRightShift = HotkeyShortcut(keyCode: 60, modifierFlags: .shift, modifierKeyCodes: [60])
+
+        XCTAssertEqual(doubleLeftShift, doubleRightShift)
+        XCTAssertNotEqual(singleLeftShift, singleRightShift)
+        XCTAssertNotEqual(doubleLeftShift, singleLeftShift)
+        XCTAssertTrue(doubleLeftShift.conflictsWith(singleRightShift))
+        XCTAssertTrue(singleRightShift.conflictsWith(doubleLeftShift))
+    }
+
+    func testDoubleModifierTapIntervalIsThreeHundredMilliseconds() {
+        XCTAssertEqual(DoubleModifierTapDecision.interval, 0.300)
+    }
+
+    func testGlobalDoubleModifierRuntimeUsesCGEventNanosecondTimestamp() {
+        XCTAssertEqual(
+            HotkeyEventTime.seconds(from: 2_345_000_000),
+            2.345,
+            accuracy: 0.000_001
+        )
+    }
+
+    func testDoubleModifierRuntimeConsumesOnlyTheRecognizedSecondTap() {
+        XCTAssertFalse(DoubleModifierEventConsumptionDecision.shouldConsume(.ignore))
+        XCTAssertFalse(
+            DoubleModifierEventConsumptionDecision.shouldConsume(.handled),
+            "A possible first tap must remain visible to the frontmost app"
+        )
+        XCTAssertTrue(DoubleModifierEventConsumptionDecision.shouldConsume(.secondPress))
+        XCTAssertTrue(DoubleModifierEventConsumptionDecision.shouldConsume(.secondRelease))
+    }
+
+    func testPasteLastMouseUpIsConsumedOnlyAfterMatchingMouseDown() {
+        let shortcut = HotkeyShortcut(mouseButton: 0, modifierFlags: .command)
+        var pairing = PasteLastMousePressPairing()
+
+        XCTAssertFalse(pairing.beginIfRecognized(
+            shortcutEnabled: true,
+            shortcut: shortcut,
+            button: 0,
+            modifiers: []
+        ))
+        XCTAssertFalse(pairing.consumeMouseUp(button: 0))
+
+        XCTAssertTrue(pairing.beginIfRecognized(
+            shortcutEnabled: true,
+            shortcut: shortcut,
+            button: 0,
+            modifiers: .command
+        ))
+        XCTAssertFalse(pairing.consumeMouseUp(button: 1))
+        XCTAssertTrue(
+            pairing.consumeMouseUp(button: 0),
+            "The paired up stays consumed even if Command was released before the mouse button"
+        )
+        XCTAssertFalse(pairing.consumeMouseUp(button: 0), "A consumed down pairs with exactly one up")
+    }
+
+    func testPasteLastMousePressPairingResetDropsPendingUp() {
+        let shortcut = HotkeyShortcut(mouseButton: 2, modifierFlags: .option)
+        var pairing = PasteLastMousePressPairing()
+
+        XCTAssertTrue(pairing.beginIfRecognized(
+            shortcutEnabled: true,
+            shortcut: shortcut,
+            button: 2,
+            modifiers: .option
+        ))
+        pairing.reset()
+
+        XCTAssertFalse(pairing.consumeMouseUp(button: 2))
+    }
+
+    func testAutomaticQuickReleaseBeforeQueuedStartCarriesToggleStyle() {
+        var resolution = AutomaticActivationResolution()
+
+        resolution.recordQuickTap(for: .transcription, resolvedActiveSession: false)
+
+        XCTAssertEqual(resolution.consume(for: .transcription), .toggle)
+        XCTAssertNil(resolution.consume(for: .transcription))
+    }
+
+    func testAutomaticQuickReleaseAfterSessionStartDoesNotLeakToNextSession() {
+        var resolution = AutomaticActivationResolution()
+
+        resolution.recordQuickTap(for: .transcription, resolvedActiveSession: true)
+
+        XCTAssertNil(resolution.consume(for: .transcription))
+    }
+
+    func testAutomaticActivationResolutionResetsWithHotkeyState() {
+        var resolution = AutomaticActivationResolution()
+        resolution.recordQuickTap(for: .commandMode, resolvedActiveSession: false)
+
+        resolution.reset()
+
+        XCTAssertNil(resolution.consume(for: .commandMode))
+    }
+
+    func testLiteralEscapePolicyDoesNotDependOnConfiguredCancelBinding() {
+        XCTAssertTrue(
+            DictationEscapeKeyDecision.shouldRouteToEscapePolicy(
+                keyCode: 53,
+                modifiers: []
+            )
+        )
+        XCTAssertFalse(
+            DictationEscapeKeyDecision.shouldRouteToEscapePolicy(
+                keyCode: 53,
+                modifiers: .command
+            )
+        )
+        XCTAssertFalse(
+            DictationEscapeKeyDecision.shouldRouteToEscapePolicy(
+                keyCode: 12,
+                modifiers: []
+            )
+        )
+
+        XCTAssertEqual(
+            DictationEscapeKeyDecision.evaluateKeyDown(
+                keyCode: 53,
+                modifiers: [],
+                policyDisposition: .consume,
+                isConfiguredCancelMatch: false
+            ),
+            .consumeEscapePolicy
+        )
+        XCTAssertEqual(
+            DictationEscapeKeyDecision.evaluateKeyDown(
+                keyCode: 53,
+                modifiers: [],
+                policyDisposition: .passThrough,
+                isConfiguredCancelMatch: true
+            ),
+            .passThrough,
+            "Do Nothing must not fall through to a Cancel binding that also uses Escape"
+        )
+        XCTAssertEqual(
+            DictationEscapeKeyDecision.evaluateKeyDown(
+                keyCode: 53,
+                modifiers: [],
+                policyDisposition: .notApplicable,
+                isConfiguredCancelMatch: true
+            ),
+            .configurableCancel,
+            "Outside a toggle session, an Escape Cancel binding must retain cancel behavior"
+        )
+    }
+
+    func testDoubleModifierCaptureIsRejectedForKeyDownOnlyActions() {
+        XCTAssertFalse(ShortcutRecordingTarget.cancel.allowsDoubleModifierShortcut)
+        XCTAssertFalse(ShortcutRecordingTarget.pasteLast.allowsDoubleModifierShortcut)
+        XCTAssertTrue(ShortcutRecordingTarget.primaryDictation(.add).allowsDoubleModifierShortcut)
+        XCTAssertTrue(ShortcutRecordingTarget.secondaryDictation.allowsDoubleModifierShortcut)
+    }
+
+    func testDoubleModifierSingleTapNeverTriggers() {
+        var state = DoubleModifierTapDecision.State()
+        let shortcut = Self.doubleShiftShortcut
+
+        var decision = DoubleModifierTapDecision.evaluate(
+            shortcut: shortcut,
+            holdModeType: .transcription,
+            event: .modifierFlagsChanged(
+                keyCode: 56,
+                pressedModifierKeyCodes: [56],
+                isRepeat: false,
+                timestamp: 1.0
+            ),
+            state: state
+        )
+        state = decision.state
+        XCTAssertEqual(decision.outcome, .handled)
+
+        decision = DoubleModifierTapDecision.evaluate(
+            shortcut: shortcut,
+            holdModeType: .transcription,
+            event: .modifierFlagsChanged(
+                keyCode: 56,
+                pressedModifierKeyCodes: [],
+                isRepeat: false,
+                timestamp: 1.05
+            ),
+            state: state
+        )
+
+        XCTAssertEqual(decision.outcome, .handled)
+        XCTAssertNotEqual(decision.state, DoubleModifierTapDecision.State())
+    }
+
+    func testDoubleModifierCleanSameSideTapTriggersOnSecondPressAndRelease() {
+        var replay = DoubleModifierReplay(shortcut: Self.doubleShiftShortcut)
+
+        XCTAssertEqual(replay.flagsChanged(keyCode: 56, pressed: [56], timestamp: 1.00), .handled)
+        XCTAssertEqual(replay.flagsChanged(keyCode: 56, pressed: [], timestamp: 1.05), .handled)
+        XCTAssertEqual(replay.flagsChanged(keyCode: 56, pressed: [56], timestamp: 1.20), .secondPress)
+        XCTAssertEqual(replay.flagsChanged(keyCode: 56, pressed: [56], timestamp: 1.21), .handled)
+        XCTAssertEqual(replay.flagsChanged(keyCode: 56, pressed: [], timestamp: 1.25), .secondRelease)
+        XCTAssertEqual(replay.state, DoubleModifierTapDecision.State())
+    }
+
+    func testDoubleModifierAlternatingPhysicalSidesCancelsSequence() {
+        var replay = DoubleModifierReplay(shortcut: Self.doubleShiftShortcut)
+
+        _ = replay.flagsChanged(keyCode: 56, pressed: [56], timestamp: 1.00)
+        _ = replay.flagsChanged(keyCode: 56, pressed: [], timestamp: 1.05)
+        XCTAssertEqual(replay.flagsChanged(keyCode: 60, pressed: [60], timestamp: 1.20), .handled)
+        XCTAssertEqual(replay.flagsChanged(keyCode: 60, pressed: [60], timestamp: 1.21), .handled)
+        XCTAssertEqual(replay.flagsChanged(keyCode: 60, pressed: [], timestamp: 1.25), .handled)
+        XCTAssertEqual(replay.state, DoubleModifierTapDecision.State())
+    }
+
+    func testDoubleModifierInterveningInputAndAdditionalModifierCancelPendingTap() {
+        var ordinaryInputReplay = DoubleModifierReplay(shortcut: Self.doubleShiftShortcut)
+        _ = ordinaryInputReplay.flagsChanged(keyCode: 56, pressed: [56], timestamp: 1.00)
+        _ = ordinaryInputReplay.flagsChanged(keyCode: 56, pressed: [], timestamp: 1.05)
+        ordinaryInputReplay.interrupt(pressed: [])
+        XCTAssertEqual(ordinaryInputReplay.state, DoubleModifierTapDecision.State())
+
+        var extraModifierReplay = DoubleModifierReplay(shortcut: Self.doubleShiftShortcut)
+        _ = extraModifierReplay.flagsChanged(keyCode: 56, pressed: [56], timestamp: 1.00)
+        XCTAssertEqual(
+            extraModifierReplay.flagsChanged(keyCode: 58, pressed: [56, 58], timestamp: 1.02),
+            .ignore
+        )
+        XCTAssertEqual(
+            extraModifierReplay.flagsChanged(keyCode: 58, pressed: [56], timestamp: 1.03),
+            .ignore,
+            "Unrelated modifier events must not be swallowed while canceling a pending double tap"
+        )
+        _ = extraModifierReplay.flagsChanged(keyCode: 56, pressed: [], timestamp: 1.05)
+        XCTAssertEqual(extraModifierReplay.state, DoubleModifierTapDecision.State())
+    }
+
+    func testDoubleModifierRepeatAndTimeoutDoNotCompletePendingTap() {
+        var repeatReplay = DoubleModifierReplay(shortcut: Self.doubleShiftShortcut)
+        _ = repeatReplay.flagsChanged(keyCode: 56, pressed: [56], timestamp: 1.00)
+        _ = repeatReplay.flagsChanged(keyCode: 56, pressed: [], timestamp: 1.05)
+        XCTAssertEqual(
+            repeatReplay.flagsChanged(keyCode: 56, pressed: [56], isRepeat: true, timestamp: 1.20),
+            .handled
+        )
+        _ = repeatReplay.flagsChanged(keyCode: 56, pressed: [], timestamp: 1.25)
+        XCTAssertEqual(repeatReplay.state, DoubleModifierTapDecision.State())
+
+        var timeoutReplay = DoubleModifierReplay(shortcut: Self.doubleShiftShortcut)
+        _ = timeoutReplay.flagsChanged(keyCode: 56, pressed: [56], timestamp: 1.00)
+        _ = timeoutReplay.flagsChanged(keyCode: 56, pressed: [], timestamp: 1.05)
+        XCTAssertEqual(timeoutReplay.flagsChanged(keyCode: 56, pressed: [56], timestamp: 1.351), .handled)
+        XCTAssertEqual(timeoutReplay.flagsChanged(keyCode: 56, pressed: [], timestamp: 1.40), .handled)
+    }
+
+    func testDoubleModifierLongFirstHoldConsumesRecognitionWindow() {
+        var replay = DoubleModifierReplay(shortcut: Self.doubleShiftShortcut)
+
+        _ = replay.flagsChanged(keyCode: 56, pressed: [56], timestamp: 0.000)
+        _ = replay.flagsChanged(
+            keyCode: 56,
+            pressed: [],
+            timestamp: DoubleModifierTapDecision.interval + 0.001
+        )
+        XCTAssertEqual(replay.state, DoubleModifierTapDecision.State())
+
+        XCTAssertEqual(
+            replay.flagsChanged(
+                keyCode: 56,
+                pressed: [56],
+                timestamp: DoubleModifierTapDecision.interval + 0.010
+            ),
+            .handled,
+            "The window is measured from the first press, so a long first hold cannot become a double tap"
+        )
+    }
+
+    func testDoubleModifierSecondPressAtExactBoundaryDoesNotTrigger() {
+        var replay = DoubleModifierReplay(shortcut: Self.doubleShiftShortcut)
+
+        _ = replay.flagsChanged(keyCode: 56, pressed: [56], timestamp: 0.000)
+        _ = replay.flagsChanged(keyCode: 56, pressed: [], timestamp: 0.050)
+
+        XCTAssertEqual(
+            replay.flagsChanged(
+                keyCode: 56,
+                pressed: [56],
+                timestamp: DoubleModifierTapDecision.interval
+            ),
+            .handled,
+            "Only a second press strictly before 0.300 seconds is recognized"
+        )
+    }
+
+    func testModifierOnlyResetStopsAsyncStartBeforeClearingPressOwnership() {
+        let decision = ModifierOnlyResetDecision.evaluate(
+            isMomentaryMode: true,
+            isRunningOrStarting: true,
+            hasActivePress: true
+        )
+
+        XCTAssertTrue(decision.shouldStopBeforeClearingPressState)
+        XCTAssertFalse(
+            ModifierOnlyResetDecision.evaluate(
+                isMomentaryMode: false,
+                isRunningOrStarting: true,
+                hasActivePress: true
+            ).shouldStopBeforeClearingPressState,
+            "Toggle recording is not owned by a physical release"
+        )
+        XCTAssertFalse(
+            ModifierOnlyResetDecision.evaluate(
+                isMomentaryMode: true,
+                isRunningOrStarting: true,
+                hasActivePress: false
+            ).shouldStopBeforeClearingPressState,
+            "Reconfiguration must not stop an unrelated recording"
+        )
+    }
+
+    func testDoubleModifierInterruptedFirstReleaseWaitsForAllModifiersAndNeverTriggers() {
+        var replay = DoubleModifierReplay(shortcut: Self.doubleShiftShortcut)
+
+        _ = replay.flagsChanged(keyCode: 56, pressed: [56], timestamp: 1.00)
+        XCTAssertEqual(replay.flagsChanged(keyCode: 58, pressed: [56, 58], timestamp: 1.02), .ignore)
+        XCTAssertEqual(replay.flagsChanged(keyCode: 56, pressed: [58], timestamp: 1.05), .handled)
+        XCTAssertEqual(replay.flagsChanged(keyCode: 58, pressed: [], timestamp: 1.06), .ignore)
+        XCTAssertEqual(replay.flagsChanged(keyCode: 56, pressed: [56], timestamp: 1.20), .handled)
+        XCTAssertEqual(replay.flagsChanged(keyCode: 56, pressed: [], timestamp: 1.25), .handled)
+    }
+
+    func testDoubleModifierPendingTapIgnoresOtherConfiguredDoubleShortcuts() {
+        var state = DoubleModifierTapDecision.State()
+        let promptDoubleShift = HotkeyShortcut(
+            keyCode: 56,
+            modifierFlags: .shift,
+            modifierKeyCodes: [56],
+            gesture: .doubleTap
+        )
+        state = DoubleModifierTapDecision.evaluate(
+            shortcut: Self.doubleShiftShortcut,
+            holdModeType: .transcription,
+            event: .modifierFlagsChanged(
+                keyCode: 56,
+                pressedModifierKeyCodes: [56],
+                isRepeat: false,
+                timestamp: 1.00
+            ),
+            state: state
+        ).state
+
+        let otherShortcutDecision = DoubleModifierTapDecision.evaluate(
+            shortcut: promptDoubleShift,
+            holdModeType: .promptMode,
+            event: .modifierFlagsChanged(
+                keyCode: 56,
+                pressedModifierKeyCodes: [56],
+                isRepeat: false,
+                timestamp: 1.01
+            ),
+            state: state
+        )
+
+        XCTAssertEqual(otherShortcutDecision.outcome, .ignore)
+        XCTAssertEqual(otherShortcutDecision.state, state)
+    }
+
+    func testDoubleModifierResetClearsFirstOrPendingTapButKeepsRecognizedSecondPressUntilRelease() {
+        var pendingReplay = DoubleModifierReplay(shortcut: Self.doubleShiftShortcut)
+        _ = pendingReplay.flagsChanged(keyCode: 56, pressed: [56], timestamp: 1.00)
+        pendingReplay.reset()
+        XCTAssertEqual(pendingReplay.state, DoubleModifierTapDecision.State())
+
+        var recognizedReplay = DoubleModifierReplay(shortcut: Self.doubleShiftShortcut)
+        _ = recognizedReplay.flagsChanged(keyCode: 56, pressed: [56], timestamp: 1.00)
+        _ = recognizedReplay.flagsChanged(keyCode: 56, pressed: [], timestamp: 1.05)
+        _ = recognizedReplay.flagsChanged(keyCode: 56, pressed: [56], timestamp: 1.20)
+        recognizedReplay.interrupt(pressed: [56])
+        XCTAssertEqual(
+            recognizedReplay.flagsChanged(keyCode: 56, pressed: [], timestamp: 1.25),
+            .secondRelease
+        )
+    }
+
+    private static let doubleShiftShortcut = HotkeyShortcut(
+        keyCode: 56,
+        modifierFlags: .shift,
+        modifierKeyCodes: [56],
+        gesture: .doubleTap
+    )
     func testLegacyPrimaryModifierShortcutMigratesToDoubleTap() throws {
         try self.withRestoredDefaults(keys: [self.legacyHotkeyShortcutKey, self.primaryDictationShortcutsKey]) {
             let legacyJSON = #"[{"kind":"keyboard","keyCode":56,"modifierFlagsRawValue":0,"modifierKeyCodes":[56]}]"#
-            UserDefaults.standard.set(try XCTUnwrap(legacyJSON.data(using: .utf8)), forKey: self.primaryDictationShortcutsKey)
+            UserDefaults.standard.set(
+                try XCTUnwrap(legacyJSON.data(using: .utf8)),
+                forKey: self.primaryDictationShortcutsKey
+            )
             UserDefaults.standard.removeObject(forKey: self.legacyHotkeyShortcutKey)
 
             let migrated = try XCTUnwrap(SettingsStore.shared.primaryDictationShortcuts.first)
@@ -387,25 +1036,6 @@ final class HotkeyShortcutTests: XCTestCase {
             XCTAssertEqual(migrated.displayString, "Double-tap Shift")
             XCTAssertFalse(migrated.includeBothModifierSides)
         }
-    }
-
-    func testDoubleModifierShortcutRequiresTwoCleanTaps() {
-        let shortcut = HotkeyShortcut(
-            keyCode: 56,
-            modifierFlags: .shift,
-            modifierKeyCodes: [56],
-            gesture: .doubleTap
-        )
-        var replay = DoubleModifierReplay(shortcut: shortcut)
-
-        XCTAssertEqual(replay.flagsChanged(keyCode: 56, pressed: [56], timestamp: 1.00), .handled)
-        XCTAssertEqual(replay.flagsChanged(keyCode: 56, pressed: [], timestamp: 1.05), .handled)
-        XCTAssertNotEqual(replay.state, DoubleModifierTapDecision.State())
-
-        XCTAssertEqual(replay.flagsChanged(keyCode: 56, pressed: [56], timestamp: 1.20), .secondPress)
-        XCTAssertEqual(replay.flagsChanged(keyCode: 56, pressed: [56], timestamp: 1.21), .handled)
-        XCTAssertEqual(replay.flagsChanged(keyCode: 56, pressed: [], timestamp: 1.25), .secondRelease)
-        XCTAssertEqual(replay.state, DoubleModifierTapDecision.State())
     }
 
     func testDoubleModifierRejectsOppositeSideUnlessBothSidesEnabled() {
@@ -432,8 +1062,14 @@ final class HotkeyShortcutTests: XCTestCase {
         var bothSidesReplay = DoubleModifierReplay(shortcut: bothSides)
         _ = bothSidesReplay.flagsChanged(keyCode: 56, pressed: [56], timestamp: 1.00)
         _ = bothSidesReplay.flagsChanged(keyCode: 56, pressed: [], timestamp: 1.05)
-        XCTAssertEqual(bothSidesReplay.flagsChanged(keyCode: 60, pressed: [60], timestamp: 1.20), .secondPress)
-        XCTAssertEqual(bothSidesReplay.flagsChanged(keyCode: 60, pressed: [], timestamp: 1.25), .secondRelease)
+        XCTAssertEqual(
+            bothSidesReplay.flagsChanged(keyCode: 60, pressed: [60], timestamp: 1.20),
+            .secondPress
+        )
+        XCTAssertEqual(
+            bothSidesReplay.flagsChanged(keyCode: 60, pressed: [], timestamp: 1.25),
+            .secondRelease
+        )
     }
 
     func testModifierOnlyMatchingCanIncludeBothPhysicalSides() {
@@ -1568,33 +2204,6 @@ private final class FakeAudioDeviceManager: AudioDeviceManaging {
     }
 }
 
-/// Minimal driver that replays double-modifier `flagsChanged` events through the pure recognizer.
-private struct DoubleModifierReplay {
-    let shortcut: HotkeyShortcut
-    private(set) var state = DoubleModifierTapDecision.State()
-
-    mutating func flagsChanged(
-        keyCode: UInt16,
-        pressed: Set<UInt16>,
-        isRepeat: Bool = false,
-        timestamp: TimeInterval
-    ) -> DoubleModifierTapDecision.Outcome {
-        let decision = DoubleModifierTapDecision.evaluate(
-            shortcut: self.shortcut,
-            holdModeType: .transcription,
-            event: .modifierFlagsChanged(
-                keyCode: keyCode,
-                pressedModifierKeyCodes: pressed,
-                isRepeat: isRepeat,
-                timestamp: timestamp
-            ),
-            state: self.state
-        )
-        self.state = decision.state
-        return decision.outcome
-    }
-}
-
 /// Minimal driver that replays a `flagsChanged` / `keyDown` sequence through the pure
 /// `ModifierOnlyShortcutFlagsDecision` state machine. `nextPressed` is the
 /// `synchronizedPressedModifierKeyCodes` output for each event (the sync function is provably
@@ -1642,5 +2251,91 @@ private final class ModifierOnlyFlagsReplay {
         if self.activeModifierOnlyType != nil {
             self.otherKeyPressedDuringModifier = true
         }
+    }
+}
+
+private struct DoubleModifierReplay {
+    let shortcut: HotkeyShortcut
+    private(set) var state = DoubleModifierTapDecision.State()
+
+    @discardableResult
+    mutating func flagsChanged(
+        keyCode: UInt16,
+        pressed: Set<UInt16>,
+        isRepeat: Bool = false,
+        timestamp: TimeInterval
+    ) -> DoubleModifierTapDecision.Outcome {
+        let decision = DoubleModifierTapDecision.evaluate(
+            shortcut: self.shortcut,
+            holdModeType: .transcription,
+            event: .modifierFlagsChanged(
+                keyCode: keyCode,
+                pressedModifierKeyCodes: pressed,
+                isRepeat: isRepeat,
+                timestamp: timestamp
+            ),
+            state: self.state
+        )
+        self.state = decision.state
+        return decision.outcome
+    }
+
+    mutating func interrupt(pressed: Set<UInt16>) {
+        let decision = DoubleModifierTapDecision.evaluate(
+            shortcut: self.shortcut,
+            holdModeType: .transcription,
+            event: .interrupt(pressedModifierKeyCodes: pressed),
+            state: self.state
+        )
+        self.state = decision.state
+    }
+
+    mutating func reset() {
+        let decision = DoubleModifierTapDecision.evaluate(
+            shortcut: self.shortcut,
+            holdModeType: .transcription,
+            event: .reset,
+            state: self.state
+        )
+        self.state = decision.state
+    }
+}
+
+private struct ShortcutModifierTapCaptureReplay {
+    private(set) var state = ShortcutModifierTapCaptureDecision.State()
+
+    mutating func flagsChanged(
+        keyCode: UInt16,
+        pressed: Set<UInt16>,
+        timestamp: TimeInterval
+    ) -> ShortcutModifierTapCaptureDecision.Outcome {
+        let decision = ShortcutModifierTapCaptureDecision.evaluate(
+            event: .flagsChanged(
+                keyCode: keyCode,
+                pressedModifierKeyCodes: pressed,
+                timestamp: timestamp
+            ),
+            state: self.state
+        )
+        self.state = decision.state
+        return decision.outcome
+    }
+
+    mutating func deadline(timestamp: TimeInterval) -> ShortcutModifierTapCaptureDecision.Outcome {
+        let decision = ShortcutModifierTapCaptureDecision.evaluate(
+            event: .deadline(timestamp: timestamp),
+            state: self.state
+        )
+        self.state = decision.state
+        return decision.outcome
+    }
+
+    mutating func interrupt() -> ShortcutModifierTapCaptureDecision.Outcome {
+        let decision = ShortcutModifierTapCaptureDecision.evaluate(
+            event: .interrupt,
+            state: self.state
+        )
+        self.state = decision.state
+        return decision.outcome
     }
 }

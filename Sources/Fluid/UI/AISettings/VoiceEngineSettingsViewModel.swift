@@ -6,9 +6,16 @@ import SwiftUI
 final class VoiceEngineSettingsViewModel: ObservableObject {
     let settings: SettingsStore
     private let appServices: AppServices
+    private let asrOverride: ASRService?
+    private let sonioxCredentialService: SonioxCredentialService
     private var cancellables = Set<AnyCancellable>()
+    private var sonioxMutationTask: Task<Void, Never>?
+    private var sonioxMutationGeneration: UInt64 = 0
+    private var settingsBackupRestoreObserver: NSObjectProtocol?
 
-    var asr: ASRService { self.appServices.asr }
+    var asr: ASRService {
+        self.asrOverride ?? self.appServices.asr
+    }
 
     var areSpeechModelActionsBlocked: Bool {
         self.asr.isRunning
@@ -16,6 +23,8 @@ final class VoiceEngineSettingsViewModel: ObservableObject {
             || self.asr.hasActiveModelDownload
             || self.asr.hasActiveModelPreparation
             || self.asr.isCancellingModelPreparation
+            || self.asr.hasActiveRecordingSession
+            || self.asr.isRunningOrStarting
             || (!self.asr.isAsrReady && (self.asr.isDownloadingModel || self.asr.isLoadingModel))
     }
 
@@ -30,6 +39,12 @@ final class VoiceEngineSettingsViewModel: ObservableObject {
     @Published var showAdvancedSpeechInfo: Bool = false
     @Published var suppressSpeechProviderSync: Bool = false
     @Published var skipNextSpeechModelSync: Bool = false
+    @Published var sonioxAPIKeyDraft = ""
+    @Published private(set) var sonioxStoredCredentialFingerprint: String?
+    @Published private(set) var sonioxCredentialState: SonioxCredentialState = .apiKeyRequired
+    @Published private(set) var isVerifyingSonioxCredential = false
+    @Published private(set) var sonioxCredentialError: String?
+    @Published var showSonioxSetup = false
 
     var downloadingModel: SettingsStore.SpeechModel? {
         guard let modelID = self.asr.downloadingModelId else { return nil }
@@ -46,25 +61,73 @@ final class VoiceEngineSettingsViewModel: ObservableObject {
 
     @Published var removeFillerWordsEnabled: Bool
 
-    init(settings: SettingsStore, appServices: AppServices) {
+    init(
+        settings: SettingsStore,
+        appServices: AppServices,
+        asr: ASRService? = nil,
+        sonioxCredentialService: SonioxCredentialService? = nil
+    ) {
         self.settings = settings
         self.appServices = appServices
+        self.asrOverride = asr
+        self.sonioxCredentialService = sonioxCredentialService ?? SonioxCredentialService()
         self.previewSpeechModel = settings.selectedSpeechModel
         self.selectedSpeechProvider = settings.selectedSpeechModel.provider
         self.removeFillerWordsEnabled = settings.removeFillerWordsEnabled
         appServices.objectWillChange
             .sink { [weak self] _ in
-                Task { @MainActor in
-                    self?.objectWillChange.send()
+                guard let self else { return }
+                MainActor.assumeIsolated {
+                    self.refreshSonioxCredentialState()
+                    self.objectWillChange.send()
                 }
             }
             .store(in: &self.cancellables)
+        self.asr.objectWillChange
+            .sink { [weak self] _ in
+                guard let self else { return }
+                MainActor.assumeIsolated {
+                    self.refreshSonioxCredentialState()
+                    self.objectWillChange.send()
+                }
+            }
+            .store(in: &self.cancellables)
+        settings.objectWillChange
+            .sink { [weak self] _ in
+                guard let self else { return }
+                MainActor.assumeIsolated {
+                    self.refreshSonioxCredentialState()
+                    self.objectWillChange.send()
+                }
+            }
+            .store(in: &self.cancellables)
+        self.settingsBackupRestoreObserver = NotificationCenter.default.addObserver(
+            forName: .settingsBackupDidRestore,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            MainActor.assumeIsolated {
+                self.invalidateSonioxCredentialMutation()
+                self.refreshSonioxCredentialState()
+                self.objectWillChange.send()
+            }
+        }
+        self.refreshSonioxCredentialState()
+    }
+
+    deinit {
+        self.sonioxMutationTask?.cancel()
+        if let observer = self.settingsBackupRestoreObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
     }
 
     func onAppear() {
         self.previewSpeechModel = self.settings.selectedSpeechModel
         self.selectedSpeechProvider = self.settings.selectedSpeechModel.provider
         self.removeFillerWordsEnabled = self.settings.removeFillerWordsEnabled
+        self.refreshSonioxCredentialState()
 
         Task {
             await self.asr.checkIfModelsExistAsync()
@@ -81,6 +144,140 @@ final class VoiceEngineSettingsViewModel: ObservableObject {
         self.setSelectedSpeechProvider(newValue.provider)
     }
 
+    var sonioxCredentialMutationBlocked: Bool {
+        self.isVerifyingSonioxCredential || self.asr.hasActiveRecordingSession || self.asr.isRunningOrStarting
+    }
+
+    var canRemoveSonioxCredential: Bool {
+        self.sonioxStoredCredentialFingerprint != nil && !self.sonioxCredentialMutationBlocked
+    }
+
+    static func shouldRouteSonioxAssignmentToSetup(
+        model: SettingsStore.SpeechModel,
+        credentialState: SonioxCredentialState
+    ) -> Bool {
+        model.isCloudSpeechModel && credentialState != .configured && credentialState != .ready
+    }
+
+    func refreshSonioxCredentialState() {
+        do {
+            self.sonioxStoredCredentialFingerprint = try self.sonioxCredentialService.storedCredentialFingerprint()
+        } catch {
+            self.sonioxStoredCredentialFingerprint = nil
+            self.sonioxCredentialError = "Unable to read Soniox credential state."
+        }
+        self.sonioxCredentialState = SonioxCredentialStateResolver.resolve(
+            cachedCredentialFingerprint: self.sonioxStoredCredentialFingerprint,
+            verificationReceipt: self.settings.sonioxVerificationReceipt,
+            selectedRegion: self.settings.sonioxRegion,
+            isVerifying: self.isVerifyingSonioxCredential,
+            activeRecordingModel: self.asr.activeRecordingSpeechModel
+        )
+    }
+
+    func requestSonioxSetup() {
+        self.showSonioxSetup = true
+        self.previewSpeechModel = .sonioxV5
+        self.selectedSpeechProvider = .soniox
+    }
+
+    func setSonioxRegion(_ region: SettingsStore.SonioxRegion) {
+        guard !self.sonioxCredentialMutationBlocked else { return }
+        self.settings.sonioxRegion = region
+        self.refreshSonioxCredentialState()
+    }
+
+    func saveAndVerifySonioxCredential() {
+        guard !self.sonioxCredentialMutationBlocked else { return }
+        let generation = self.sonioxMutationGeneration &+ 1
+        self.sonioxMutationGeneration = generation
+        let region = self.settings.sonioxRegion
+        let candidate = self.sonioxAPIKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard candidate.isEmpty == false else { return }
+        self.sonioxCredentialError = nil
+        self.isVerifyingSonioxCredential = true
+        self.refreshSonioxCredentialState()
+        self.sonioxMutationTask?.cancel()
+        self.sonioxMutationTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer {
+                if self.sonioxMutationGeneration == generation {
+                    self.isVerifyingSonioxCredential = false
+                    self.sonioxMutationTask = nil
+                    self.refreshSonioxCredentialState()
+                }
+            }
+            do {
+                let result = try await self.sonioxCredentialService.saveAndVerify(
+                    apiKey: candidate,
+                    region: region,
+                    commitIfCurrent: { [weak self] in
+                        guard let self,
+                              self.sonioxMutationGeneration == generation,
+                              self.isVerifyingSonioxCredential,
+                              self.settings.sonioxRegion == region,
+                              !self.asr.hasActiveRecordingSession
+                        else { return false }
+                        return true
+                    }
+                )
+                guard self.sonioxMutationGeneration == generation else { return }
+                switch result {
+                case .removed:
+                    self.settings.sonioxVerificationReceipt = nil
+                    self.sonioxAPIKeyDraft = ""
+                case let .verified(receipt):
+                    self.settings.sonioxVerificationReceipt = receipt
+                    self.sonioxAPIKeyDraft = ""
+                }
+            } catch is CancellationError {
+                guard self.sonioxMutationGeneration == generation else { return }
+                self.sonioxCredentialError = "Verification was cancelled."
+            } catch let error as SonioxCredentialError {
+                guard self.sonioxMutationGeneration == generation else { return }
+                self.sonioxCredentialError = error.errorDescription ?? "Soniox credential verification failed."
+            } catch {
+                guard self.sonioxMutationGeneration == generation else { return }
+                self.sonioxCredentialError = "Soniox credential verification failed."
+            }
+        }
+    }
+
+    func removeSonioxCredential() {
+        guard !self.sonioxCredentialMutationBlocked else { return }
+        self.sonioxMutationGeneration &+= 1
+        self.sonioxMutationTask?.cancel()
+        self.sonioxMutationTask = nil
+        do {
+            try self.sonioxCredentialService.remove()
+            self.settings.sonioxVerificationReceipt = nil
+            self.sonioxAPIKeyDraft = ""
+            self.sonioxCredentialError = nil
+        } catch {
+            self.sonioxCredentialError = "Unable to remove the Soniox credential."
+        }
+        self.refreshSonioxCredentialState()
+    }
+
+    private func invalidateSonioxCredentialMutation() {
+        self.sonioxMutationGeneration &+= 1
+        self.sonioxMutationTask?.cancel()
+        self.sonioxMutationTask = nil
+        self.isVerifyingSonioxCredential = false
+    }
+
+    func assignSpeechModel(_ model: SettingsStore.SpeechModel, forInputSourceID inputSourceID: String) {
+        guard !self.areSpeechModelActionsBlocked else { return }
+        if Self.shouldRouteSonioxAssignmentToSetup(
+            model: model,
+            credentialState: self.sonioxCredentialState
+        ) {
+            self.requestSonioxSetup()
+            return
+        }
+        self.settings.setSpeechModelAssignment(model, forInputSourceID: inputSourceID)
+    }
+
     var filteredSpeechModels: [SettingsStore.SpeechModel] {
         var models = SettingsStore.SpeechModel.availableModels
 
@@ -95,6 +292,8 @@ final class VoiceEngineSettingsViewModel: ObservableObject {
             models = models.filter { $0.provider == .cohere }
         case .openai:
             models = models.filter { $0.provider == .openai }
+        case .soniox:
+            models = models.filter { $0.provider == .soniox }
         }
 
         if self.englishOnlyFilter {
@@ -122,13 +321,25 @@ final class VoiceEngineSettingsViewModel: ObservableObject {
     }
 
     func activateSpeechModel(_ model: SettingsStore.SpeechModel) {
-        guard !self.areSpeechModelActionsBlocked else { return }
+        guard !self.areSpeechModelActionsBlocked,
+              SettingsStore.SpeechModel.availableModels.contains(model)
+        else { return }
+        if model.isCloudSpeechModel {
+            self.refreshSonioxCredentialState()
+            guard self.sonioxCredentialState == .configured || self.sonioxCredentialState == .ready else {
+                self.requestSonioxSetup()
+                return
+            }
+        }
         withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
             self.settings.selectedSpeechModel = model
             self.previewSpeechModel = model
             self.setSelectedSpeechProvider(model.provider)
         }
         self.asr.resetTranscriptionProvider()
+        if model.isCloudSpeechModel {
+            return
+        }
         Task {
             do {
                 try await self.asr.ensureAsrReady()
@@ -226,6 +437,8 @@ final class VoiceEngineSettingsViewModel: ObservableObject {
             return "Nemotron 3.5 Multilingual is slower but more accurate. Supports around 40 languages with auto or manual language selection. Best on Apple Silicon with 8GB+ RAM."
         case .nemotronStreaming, .nemotronStreaming320:
             return "Nemotron Speech 3.5 Streaming Capable uses NVIDIA's streaming CoreML pipeline. Supports around 40 languages with auto or manual language selection."
+        case .sonioxV5:
+            return "Soniox v5 Realtime streams dictation through Soniox with automatic language detection or an input-language hint."
         default:
             return "Whisper models support 99 languages and work on any Mac."
         }
