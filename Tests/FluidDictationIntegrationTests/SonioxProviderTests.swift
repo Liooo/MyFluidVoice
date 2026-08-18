@@ -452,7 +452,7 @@ final class SonioxProviderTests: XCTestCase {
 
         transport.enqueue(.text(self.serverMessage(tokens: [("answer", true), ("ignored", false), ("<fin>", true)], finished: false)))
         await self.waitUntil { transport.sentFrames.count >= 9 }
-        XCTAssertEqual(transport.sentFrames[8], .binary(Data()))
+        XCTAssertEqual(transport.sentFrames[8], .text(""))
         transport.enqueue(.text(self.serverMessage(tokens: [("!", true)], finished: true)))
 
         let result = try await finalTask.value
@@ -470,7 +470,7 @@ final class SonioxProviderTests: XCTestCase {
         await self.waitUntil { transport.sentFrames.count >= 7 }
 
         XCTAssertEqual(transport.sentFrames[5], .text("{\"type\":\"finalize\"}"))
-        XCTAssertEqual(transport.sentFrames[6], .binary(Data()))
+        XCTAssertEqual(transport.sentFrames[6], .text(""))
         transport.enqueue(.text(self.serverMessage(tokens: [("answer", true)], finished: true)))
 
         let result = try await finalTask.value

@@ -314,7 +314,7 @@ private actor SonioxStreamingSession {
             try Task.checkCancellation()
             await DebugLogger.shared.debug("Soniox finalization control sent; sending end-of-audio", source: "SonioxProvider")
             self.armTimeout()
-            try await self.send(.binary(Data()))
+            try await self.send(.text(""))
             self.emptyFramePhase = .sent
             await DebugLogger.shared.debug("Soniox finalization end-of-audio sent; waiting for finished", source: "SonioxProvider")
             if self.snapshot.finished {
