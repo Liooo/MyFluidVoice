@@ -3047,23 +3047,19 @@ struct BottomOverlayView: View {
                 // Waveform + Mode label row
                 HStack(spacing: 0) {
                     let inputSourceBadge = self.contentState.recordingInputSourceBadge
-                    let hasInputSourceBadge = inputSourceBadge?.isEmpty == false
 
-                    HStack(spacing: 0) {
-                        self.targetAppIconView
-
-                        if let inputSourceBadge, !inputSourceBadge.isEmpty {
-                            self.inputSourceBadgeView(inputSourceBadge)
-                                .padding(.leading, self.layout.hPadding / 1.5)
-                                .padding(.trailing, self.layout.hPadding / 3)
-                        }
-                    }
-                    .opacity(self.shouldShowTargetAppIconGroup ? 1 : 0)
+                    self.targetAppIconView
+                        .padding(.trailing, self.layout.hPadding / 1.5)
+                        .opacity(self.shouldShowTargetAppIconGroup ? 1 : 0)
 
                     // Waveform visualization
                     BottomWaveformView(color: self.modeColor, layout: self.layout)
-                        .padding(.leading, hasInputSourceBadge ? 0 : self.layout.hPadding / 1.5)
                         .frame(width: self.layout.waveformWidth, height: self.layout.waveformHeight)
+
+                    if let inputSourceBadge, !inputSourceBadge.isEmpty {
+                        self.inputSourceBadgeView(inputSourceBadge)
+                            .padding(.leading, self.layout.hPadding / 3)
+                    }
 
                     // Mode label + model load hint
                     if self.layout.showsModeLabel {
