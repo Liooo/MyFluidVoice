@@ -12,7 +12,7 @@
 
 - The badge is informational only and must not change model selection, locale binding, focus restoration, or typing behavior.
 - Capture the badge at recording start and keep it fixed for that session; do not live-update it during a recording.
-- Prefer the native `kTISPropertyIconRef` icon; fall back to locale flag, then uppercase language code, then no badge.
+- Prefer the native `kTISPropertyIconImageURL` image; fall back to locale flag, then uppercase language code, then no badge.
 - Do not persist the badge or add a settings toggle.
 - Keep existing target-app icon sizing and waveform placement stable.
 - Run focused tests, strict SwiftLint, `git diff --check`, and a signed macOS build before claiming completion.
@@ -92,7 +92,7 @@ nonisolated enum KeyboardInputSourceBadgeFormatter {
 }
 ```
 
-`currentInputSourceBadge()` must read the current TIS source and snapshot, then call `badge(for:nativeIcon:)`. The injected `badge(for:nativeIcon:)` must resolve the locale using `KeyboardInputSourceLocaleResolver.localeIdentifier(for:)`, preserve the source ID/locale, and choose the injected icon first, then the formatter's flag or language code. The production helper reads `kTISPropertyIconRef` from the current matching TIS source by ID and converts it with `NSImage(iconRef:label:)` when non-nil. Return `nil` only when the source is unavailable and no fallback locale can be derived. Keep native icon conversion isolated in a private helper so deprecated Carbon/AppKit bridging is limited to one line and can fail safely.
+`currentInputSourceBadge()` must read the current TIS source and snapshot, then call `badge(for:nativeIcon:)`. The injected `badge(for:nativeIcon:)` must resolve the locale using `KeyboardInputSourceLocaleResolver.localeIdentifier(for:)`, preserve the source ID/locale, and choose the injected icon first, then the formatter's flag or language code. The production helper reads `kTISPropertyIconImageURL` from the current matching TIS source and loads an `NSImage` from that URL when non-nil. Return `nil` only when the source is unavailable and no fallback locale can be derived. Keep native icon loading isolated in a private helper so Carbon bridging is limited to one line and can fail safely.
 
 - [ ] **Step 4: Run tests and verify GREEN**
 

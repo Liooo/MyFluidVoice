@@ -22,7 +22,7 @@ Show the input source used for the active dictation session beside the target ap
 Extend the keyboard input source service with a presentation-only value that contains:
 
 - the existing source ID and resolved locale;
-- an optional `NSImage` created from `kTISPropertyIconRef` when available;
+- an optional `NSImage` loaded from the input source's `kTISPropertyIconImageURL` when available;
 - a deterministic fallback label (flag emoji first, language code second).
 
 The existing `KeyboardInputSourceSnapshot` remains the routing/session value and does not gain an `NSImage` field, preserving its `Sendable` and test-friendly shape. Icon/label resolution happens synchronously on the main/UI side when the recording context is captured.
