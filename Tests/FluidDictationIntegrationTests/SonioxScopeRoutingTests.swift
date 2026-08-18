@@ -600,6 +600,14 @@ final class SonioxScopeRoutingTests: XCTestCase {
         let badge = try XCTUnwrap(KeyboardInputSourceService.badge(for: source, nativeIcon: icon))
         XCTAssertTrue(badge.nativeIcon === icon)
         XCTAssertNil(badge.fallbackText)
+
+        let emptyBadge = KeyboardInputSourceBadge(
+            sourceID: source.id,
+            localeIdentifier: "",
+            nativeIcon: nil,
+            fallbackText: nil
+        )
+        XCTAssertTrue(emptyBadge.isEmpty)
     }
 
     private func fixtureURL() throws -> URL {

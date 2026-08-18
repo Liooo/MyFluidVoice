@@ -2129,6 +2129,39 @@ struct BottomOverlayView: View {
         self.contentState.targetAppIcon ?? self.activeAppMonitor.activeAppIcon ?? self.lastResolvedAppIcon
     }
 
+    private var shouldShowTargetAppIconGroup: Bool {
+        let showModelLoading = self.layout.showsModeLabel && !self.appServices.asr.isAsrReady &&
+            (self.appServices.asr.isLoadingModel || self.appServices.asr.isDownloadingModel)
+        return self.displayedAppIcon != nil || showModelLoading || !self.layout.showsModeLabel
+    }
+
+    @ViewBuilder
+    private var targetAppIconView: some View {
+        let appIcon = self.displayedAppIcon
+        let showModelLoading = self.layout.showsModeLabel && !self.appServices.asr.isAsrReady &&
+            (self.appServices.asr.isLoadingModel || self.appServices.asr.isDownloadingModel)
+
+        VStack(spacing: 2) {
+            if showModelLoading {
+                ProgressView()
+                    .controlSize(.mini)
+            }
+            if let appIcon {
+                Image(nsImage: appIcon)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: self.layout.iconSize, height: self.layout.iconSize)
+                    .clipShape(RoundedRectangle(cornerRadius: self.layout.iconSize / 4))
+            } else if !self.layout.showsModeLabel {
+                Circle()
+                    .fill(self.modeColor.opacity(0.9))
+                    .frame(width: max(self.layout.iconSize * 0.45, 7), height: max(self.layout.iconSize * 0.45, 7))
+            }
+        }
+        .frame(width: self.layout.iconSize, height: self.layout.iconSize)
+        .opacity((appIcon != nil || showModelLoading || !self.layout.showsModeLabel) ? 1 : 0)
+    }
+
     private var processingLabel: String {
         switch self.contentState.mode {
         case .dictation: return "Refining..."
@@ -2990,29 +3023,32 @@ struct BottomOverlayView: View {
 
                 // Waveform + Mode label row
                 HStack(spacing: self.layout.hPadding / 1.5) {
-                    // Target app icon (the app where text will be typed)
-                    let appIcon = self.displayedAppIcon
-                    let showModelLoading = self.layout.showsModeLabel && !self.appServices.asr.isAsrReady &&
-                        (self.appServices.asr.isLoadingModel || self.appServices.asr.isDownloadingModel)
-                    VStack(spacing: 2) {
-                        if showModelLoading {
-                            ProgressView()
-                                .controlSize(.mini)
-                        }
-                        if let appIcon = appIcon {
-                            Image(nsImage: appIcon)
-                                .resizable()
-                                .aspectRatio(contentMode: .fit)
-                                .frame(width: self.layout.iconSize, height: self.layout.iconSize)
-                                .clipShape(RoundedRectangle(cornerRadius: self.layout.iconSize / 4))
-                        } else if !self.layout.showsModeLabel {
-                            Circle()
-                                .fill(self.modeColor.opacity(0.9))
-                                .frame(width: max(self.layout.iconSize * 0.45, 7), height: max(self.layout.iconSize * 0.45, 7))
+                    let inputSourceBadge = self.contentState.recordingInputSourceBadge
+                    HStack(spacing: 3) {
+                        self.targetAppIconView
+
+                        if let inputSourceBadge, !inputSourceBadge.isEmpty {
+                            if let icon = inputSourceBadge.nativeIcon {
+                                Image(nsImage: icon)
+                                    .resizable()
+                                    .aspectRatio(contentMode: .fit)
+                                    .frame(
+                                        width: max(self.layout.iconSize * 0.62, 9),
+                                        height: max(self.layout.iconSize * 0.62, 9)
+                                    )
+                                    .clipShape(RoundedRectangle(cornerRadius: 2))
+                            } else if let fallbackText = inputSourceBadge.fallbackText {
+                                Text(fallbackText)
+                                    .font(.system(size: max(self.layout.iconSize * 0.48, 8), weight: .semibold))
+                                    .frame(
+                                        minWidth: max(self.layout.iconSize * 0.62, 11),
+                                        minHeight: max(self.layout.iconSize * 0.62, 11)
+                                    )
+                                    .background(.thinMaterial, in: Capsule())
+                            }
                         }
                     }
-                    .frame(width: self.layout.iconSize, height: self.layout.iconSize)
-                    .opacity((appIcon != nil || showModelLoading || !self.layout.showsModeLabel) ? 1 : 0)
+                    .opacity(self.shouldShowTargetAppIconGroup ? 1 : 0)
 
                     // Waveform visualization
                     BottomWaveformView(color: self.modeColor, layout: self.layout)
