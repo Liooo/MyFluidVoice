@@ -3032,19 +3032,16 @@ struct BottomOverlayView: View {
                                 Image(nsImage: icon)
                                     .resizable()
                                     .aspectRatio(contentMode: .fit)
-                                    .frame(
-                                        width: max(self.layout.iconSize * 0.62, 9),
-                                        height: max(self.layout.iconSize * 0.62, 9)
-                                    )
-                                    .clipShape(RoundedRectangle(cornerRadius: 2))
+                                    .frame(width: self.layout.iconSize, height: self.layout.iconSize)
+                                    .clipShape(RoundedRectangle(cornerRadius: self.layout.iconSize / 4))
                             } else if let fallbackText = inputSourceBadge.fallbackText {
                                 Text(fallbackText)
-                                    .font(.system(size: max(self.layout.iconSize * 0.48, 8), weight: .semibold))
-                                    .frame(
-                                        minWidth: max(self.layout.iconSize * 0.62, 11),
-                                        minHeight: max(self.layout.iconSize * 0.62, 11)
+                                    .font(.system(size: max(self.layout.iconSize * 0.58, 10), weight: .semibold))
+                                    .frame(width: self.layout.iconSize, height: self.layout.iconSize)
+                                    .background(
+                                        .thinMaterial,
+                                        in: RoundedRectangle(cornerRadius: self.layout.iconSize / 4)
                                     )
-                                    .background(.thinMaterial, in: Capsule())
                             }
                         }
                     }
