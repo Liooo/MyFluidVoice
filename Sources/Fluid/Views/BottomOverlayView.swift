@@ -218,7 +218,7 @@ final class BottomOverlayWindowController {
             self.clearPresentationResources()
             self.endReleaseTransition(flushDeferredUpdate: false)
             NotchContentState.shared.setBottomOverlayDismissing(false)
-            NotchContentState.shared.targetAppIcon = nil
+            NotchContentState.shared.clearRecordingPresentationContext()
             Self.overlayBench("bottom_hide_return reason=no_window")
             return .hidden
         }
@@ -249,7 +249,7 @@ final class BottomOverlayWindowController {
         NotchContentState.shared.setBottomOverlayPresented(false)
         self.endReleaseTransition(flushDeferredUpdate: false)
         NotchContentState.shared.setBottomOverlayDismissing(false)
-        NotchContentState.shared.targetAppIcon = nil
+        NotchContentState.shared.clearRecordingPresentationContext()
         Self.overlayBench("bottom_hide_complete elapsedMs=\(Self.elapsedMs(since: startedAt))")
         return .hidden
     }
@@ -2129,6 +2129,62 @@ struct BottomOverlayView: View {
         self.contentState.targetAppIcon ?? self.activeAppMonitor.activeAppIcon ?? self.lastResolvedAppIcon
     }
 
+    private var shouldShowTargetAppIconGroup: Bool {
+        let showModelLoading = self.layout.showsModeLabel && !self.appServices.asr.isAsrReady &&
+            (self.appServices.asr.isLoadingModel || self.appServices.asr.isDownloadingModel)
+        return self.displayedAppIcon != nil || showModelLoading || !self.layout.showsModeLabel
+    }
+
+    @ViewBuilder
+    private var targetAppIconView: some View {
+        let appIcon = self.displayedAppIcon
+        let showModelLoading = self.layout.showsModeLabel && !self.appServices.asr.isAsrReady &&
+            (self.appServices.asr.isLoadingModel || self.appServices.asr.isDownloadingModel)
+
+        VStack(spacing: 2) {
+            if showModelLoading {
+                ProgressView()
+                    .controlSize(.mini)
+            }
+            if let appIcon {
+                Image(nsImage: appIcon)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: self.layout.iconSize, height: self.layout.iconSize)
+                    .clipShape(RoundedRectangle(cornerRadius: self.layout.iconSize / 4))
+            } else if !self.layout.showsModeLabel {
+                Circle()
+                    .fill(self.modeColor.opacity(0.9))
+                    .frame(width: max(self.layout.iconSize * 0.45, 7), height: max(self.layout.iconSize * 0.45, 7))
+            }
+        }
+        .frame(width: self.layout.iconSize, height: self.layout.iconSize)
+        .opacity((appIcon != nil || showModelLoading || !self.layout.showsModeLabel) ? 1 : 0)
+    }
+
+    @ViewBuilder
+    private func inputSourceBadgeView(_ badge: KeyboardInputSourceBadge) -> some View {
+        if let icon = badge.nativeIcon {
+            Image(nsImage: icon)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(
+                    width: self.layout.iconSize * 0.84,
+                    height: self.layout.iconSize * 0.84
+                )
+                .clipShape(RoundedRectangle(cornerRadius: self.layout.iconSize * 0.21))
+                .frame(width: self.layout.iconSize, height: self.layout.iconSize)
+        } else if let fallbackText = badge.fallbackText {
+            Text(fallbackText)
+                .font(.system(size: max(self.layout.iconSize * 0.58, 10), weight: .semibold))
+                .frame(width: self.layout.iconSize, height: self.layout.iconSize)
+                .background(
+                    .thinMaterial,
+                    in: RoundedRectangle(cornerRadius: self.layout.iconSize / 4)
+                )
+        }
+    }
+
     private var processingLabel: String {
         switch self.contentState.mode {
         case .dictation: return "Refining..."
@@ -2989,34 +3045,21 @@ struct BottomOverlayView: View {
                 }
 
                 // Waveform + Mode label row
-                HStack(spacing: self.layout.hPadding / 1.5) {
-                    // Target app icon (the app where text will be typed)
-                    let appIcon = self.displayedAppIcon
-                    let showModelLoading = self.layout.showsModeLabel && !self.appServices.asr.isAsrReady &&
-                        (self.appServices.asr.isLoadingModel || self.appServices.asr.isDownloadingModel)
-                    VStack(spacing: 2) {
-                        if showModelLoading {
-                            ProgressView()
-                                .controlSize(.mini)
-                        }
-                        if let appIcon = appIcon {
-                            Image(nsImage: appIcon)
-                                .resizable()
-                                .aspectRatio(contentMode: .fit)
-                                .frame(width: self.layout.iconSize, height: self.layout.iconSize)
-                                .clipShape(RoundedRectangle(cornerRadius: self.layout.iconSize / 4))
-                        } else if !self.layout.showsModeLabel {
-                            Circle()
-                                .fill(self.modeColor.opacity(0.9))
-                                .frame(width: max(self.layout.iconSize * 0.45, 7), height: max(self.layout.iconSize * 0.45, 7))
-                        }
-                    }
-                    .frame(width: self.layout.iconSize, height: self.layout.iconSize)
-                    .opacity((appIcon != nil || showModelLoading || !self.layout.showsModeLabel) ? 1 : 0)
+                HStack(spacing: 0) {
+                    let inputSourceBadge = self.contentState.recordingInputSourceBadge
+
+                    self.targetAppIconView
+                        .padding(.trailing, self.layout.hPadding / 1.5)
+                        .opacity(self.shouldShowTargetAppIconGroup ? 1 : 0)
 
                     // Waveform visualization
                     BottomWaveformView(color: self.modeColor, layout: self.layout)
                         .frame(width: self.layout.waveformWidth, height: self.layout.waveformHeight)
+
+                    if let inputSourceBadge, !inputSourceBadge.isEmpty {
+                        self.inputSourceBadgeView(inputSourceBadge)
+                            .padding(.leading, self.layout.hPadding / 3)
+                    }
 
                     // Mode label + model load hint
                     if self.layout.showsModeLabel {
@@ -3037,6 +3080,7 @@ struct BottomOverlayView: View {
                                     .lineLimit(1)
                             }
                         }
+                        .padding(.leading, self.layout.hPadding / 1.5)
                     }
                 }
             }

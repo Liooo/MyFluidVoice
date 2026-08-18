@@ -41,6 +41,9 @@ class NotchContentState: ObservableObject {
     /// Icon of the target app (where text will be typed)
     @Published var targetAppIcon: NSImage?
 
+    /// Input source badge captured for the active dictation session.
+    @Published var recordingInputSourceBadge: KeyboardInputSourceBadge?
+
     /// The PID of the app we should restore focus to after interacting with overlays.
     /// Captured at recording start to keep the target stable for the session.
     @Published var recordingTargetPID: pid_t? = nil
@@ -212,6 +215,11 @@ class NotchContentState: ObservableObject {
         let normalizedOffset = max(offset, 8)
         guard abs(self.bottomOverlayDismissOffsetY - normalizedOffset) > 0.5 else { return }
         self.bottomOverlayDismissOffsetY = normalizedOffset
+    }
+
+    func clearRecordingPresentationContext() {
+        self.targetAppIcon = nil
+        self.recordingInputSourceBadge = nil
     }
 
     // MARK: - Command Output Methods

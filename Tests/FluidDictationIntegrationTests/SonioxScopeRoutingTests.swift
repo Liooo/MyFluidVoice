@@ -1,3 +1,4 @@
+import AppKit
 @testable import FluidVoice_Debug
 import Foundation
 import XCTest
@@ -560,6 +561,53 @@ final class SonioxScopeRoutingTests: XCTestCase {
             XCTAssertEqual(try self.providerName(from: response), SettingsStore.SpeechModel.appleSpeech.displayName)
             XCTAssertEqual(factory.requestedModels, [.appleSpeech])
         }
+    }
+
+    func testIMEBadgeFormatsFlagsAndLanguageCodes() {
+        XCTAssertEqual(KeyboardInputSourceBadgeFormatter.flag(for: "ja-JP"), "🇯🇵")
+        XCTAssertEqual(KeyboardInputSourceBadgeFormatter.flag(for: "en-US"), "🇺🇸")
+        XCTAssertEqual(KeyboardInputSourceBadgeFormatter.flag(for: "zh-CN"), "🇨🇳")
+        XCTAssertEqual(KeyboardInputSourceBadgeFormatter.flag(for: "zh-TW"), "🇹🇼")
+        XCTAssertEqual(KeyboardInputSourceBadgeFormatter.flag(for: "ko-KR"), "🇰🇷")
+        XCTAssertNil(KeyboardInputSourceBadgeFormatter.flag(for: "ja"))
+        XCTAssertEqual(KeyboardInputSourceBadgeFormatter.languageCode(for: "ja"), "JA")
+        XCTAssertEqual(KeyboardInputSourceBadgeFormatter.languageCode(for: "en-GB"), "EN")
+        XCTAssertNil(KeyboardInputSourceBadgeFormatter.languageCode(for: ""))
+    }
+
+    func testIMEBadgePreservesSnapshotAndUsesFallbackWithoutNativeIcon() throws {
+        let source = KeyboardInputSourceSnapshot(
+            id: "com.google.inputmethod.Japanese.base",
+            localizedName: "Google Japanese",
+            languages: ["ja-JP"]
+        )
+
+        let badge = try XCTUnwrap(KeyboardInputSourceService.badge(for: source, nativeIcon: nil))
+        XCTAssertEqual(badge.sourceID, source.id)
+        XCTAssertEqual(badge.localeIdentifier, "ja-JP")
+        XCTAssertNil(badge.nativeIcon)
+        XCTAssertEqual(badge.fallbackText, "🇯🇵")
+    }
+
+    func testIMEBadgePrefersNativeIconOverFallback() throws {
+        let source = KeyboardInputSourceSnapshot(
+            id: "com.apple.keylayout.US",
+            localizedName: "U.S.",
+            languages: ["en-US"]
+        )
+        let icon = NSImage(size: NSSize(width: 16, height: 16))
+
+        let badge = try XCTUnwrap(KeyboardInputSourceService.badge(for: source, nativeIcon: icon))
+        XCTAssertTrue(badge.nativeIcon === icon)
+        XCTAssertNil(badge.fallbackText)
+
+        let emptyBadge = KeyboardInputSourceBadge(
+            sourceID: source.id,
+            localeIdentifier: "",
+            nativeIcon: nil,
+            fallbackText: nil
+        )
+        XCTAssertTrue(emptyBadge.isEmpty)
     }
 
     private func fixtureURL() throws -> URL {
