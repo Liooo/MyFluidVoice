@@ -1875,6 +1875,10 @@ struct ContentView: View {
         self.captureRecordingFormattingContextIfNeeded()
     }
 
+    private func captureRecordingInputSourceBadge() {
+        NotchContentState.shared.recordingInputSourceBadge = KeyboardInputSourceService.currentInputSourceBadge()
+    }
+
     private func resolveTypingTargetPID() -> (pid: pid_t?, shouldRestoreOriginalFocus: Bool) {
         let originalPID = NotchContentState.shared.recordingTargetPID
         let currentFocusedPID = TypingService.currentSystemFocusedPID()
@@ -3611,6 +3615,7 @@ struct ContentView: View {
         // Snapshot the target before creating or showing any MyFluidVoice UI. Waiting for first
         // PCM lets the overlay become focused and replaces the intended external insertion target.
         self.captureRecordingContext()
+        self.captureRecordingInputSourceBadge()
         let session = self.beginDictationSession(activationStyleOverride: activationStyleOverride)
         let model = session.speechConfiguration.model
         DebugLogger.shared.info(
@@ -4476,6 +4481,7 @@ extension ContentView {
         }
         // Capture focus before overlay/session UI can become the frontmost target.
         self.captureRecordingContext()
+        self.captureRecordingInputSourceBadge()
         if self.isOnboardingVoicePlaygroundStepActive {
             self.asr.finalText = ""
             self.settings.onboardingPlaygroundValidated = false

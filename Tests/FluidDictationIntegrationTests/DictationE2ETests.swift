@@ -1,3 +1,4 @@
+import AppKit
 @testable import FluidVoice_Debug
 import Foundation
 import XCTest
@@ -4064,6 +4065,22 @@ final class RecordingSpeechSessionSelectionTests: XCTestCase {
             sessionID: RecordingSessionID(),
             configuration: configuration
         ))
+    }
+
+    func testRecordingPresentationContextClearsTargetIconAndIMEBadge() {
+        let state = NotchContentState.shared
+        state.targetAppIcon = NSImage(size: NSSize(width: 16, height: 16))
+        state.recordingInputSourceBadge = KeyboardInputSourceBadge(
+            sourceID: "com.google.inputmethod.Japanese.base",
+            localeIdentifier: "ja-JP",
+            nativeIcon: nil,
+            fallbackText: "🇯🇵"
+        )
+
+        state.clearRecordingPresentationContext()
+
+        XCTAssertNil(state.targetAppIcon)
+        XCTAssertNil(state.recordingInputSourceBadge)
     }
 
     private func sessionID(

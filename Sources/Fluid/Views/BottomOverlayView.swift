@@ -218,7 +218,7 @@ final class BottomOverlayWindowController {
             self.clearPresentationResources()
             self.endReleaseTransition(flushDeferredUpdate: false)
             NotchContentState.shared.setBottomOverlayDismissing(false)
-            NotchContentState.shared.targetAppIcon = nil
+            NotchContentState.shared.clearRecordingPresentationContext()
             Self.overlayBench("bottom_hide_return reason=no_window")
             return .hidden
         }
@@ -249,7 +249,7 @@ final class BottomOverlayWindowController {
         NotchContentState.shared.setBottomOverlayPresented(false)
         self.endReleaseTransition(flushDeferredUpdate: false)
         NotchContentState.shared.setBottomOverlayDismissing(false)
-        NotchContentState.shared.targetAppIcon = nil
+        NotchContentState.shared.clearRecordingPresentationContext()
         Self.overlayBench("bottom_hide_complete elapsedMs=\(Self.elapsedMs(since: startedAt))")
         return .hidden
     }
