@@ -532,15 +532,6 @@ final class MenuBarManager: NSObject, ObservableObject, NSMenuDelegate {
         self.microphoneMenuItem = microphoneMenuItem
         self.microphoneSubmenu = microphoneSubmenu
 
-        // Check for Updates
-        let updateItem = NSMenuItem(
-            title: "Check for Updates...",
-            action: #selector(checkForUpdates(_:)),
-            keyEquivalent: ""
-        )
-        updateItem.target = self
-        menu.addItem(updateItem)
-
         menu.addItem(.separator())
 
         let rollbackMenuItem = NSMenuItem(
@@ -704,43 +695,6 @@ final class MenuBarManager: NSObject, ObservableObject, NSMenuDelegate {
         self.refreshMicrophoneMenu()
     }
 
-    @objc private func checkForUpdates(_ sender: Any?) {
-        DebugLogger.shared.info("🔎 Menu action: Check for Updates…", source: "MenuBarManager")
-
-        // Call the AppDelegate's manual update check method if available
-        if let appDelegate = NSApp.delegate as? AppDelegate {
-            appDelegate.checkForUpdatesManually()
-            return
-        }
-
-        // Fallback: perform direct, tolerant check so the menu item always does something
-        Task { @MainActor in
-            do {
-                try await SimpleUpdater.shared.checkAndUpdate(
-                    owner: "altic-dev",
-                    repo: "Fluid-oss",
-                    includePrerelease: SettingsStore.shared.betaReleasesEnabled
-                )
-            } catch SimpleUpdateError.updateAlreadyInProgress {
-                DebugLogger.shared.info("Update installation already in progress", source: "MenuBarManager")
-            } catch {
-                let msg = NSAlert()
-                if let pmkError = error as? PMKError, pmkError.isCancelled {
-                    let isBeta = SettingsStore.shared.betaReleasesEnabled
-                    msg.messageText = isBeta ? "You’re Up To Date (Beta)" : "You’re Up To Date"
-                    msg.informativeText = isBeta
-                        ? "You're already running the latest build available in the beta channel."
-                        : "You're already running the latest version of FluidVoice."
-                } else {
-                    msg.messageText = "Update Check Failed"
-                    msg.informativeText = "Unable to check for updates. Please try again later.\n\nError: \(error.localizedDescription)"
-                }
-                msg.alertStyle = .informational
-                msg.runModal()
-            }
-        }
-    }
-
     @objc private func rollbackToPreviousVersion(_ sender: Any?) {
         let availableVersion = SimpleUpdater.shared.latestRollbackVersion() ?? ""
         guard !availableVersion.isEmpty else {
@@ -748,11 +702,8 @@ final class MenuBarManager: NSObject, ObservableObject, NSMenuDelegate {
             msg.messageText = "No rollback backup found"
             msg.informativeText = "No previous version backup is available on this device."
             msg.alertStyle = .informational
-            msg.addButton(withTitle: "Get Previous Builds")
-            msg.addButton(withTitle: "Cancel")
-            if msg.runModal() == .alertFirstButtonReturn {
-                self.openPreviousBuildPicker()
-            }
+            msg.addButton(withTitle: "OK")
+            msg.runModal()
             return
         }
 

@@ -55,11 +55,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             properties: ["accessibility_trusted": AXIsProcessTrusted()]
         )
 
-        // Check for updates automatically if enabled (initial check on launch)
-        self.checkForUpdatesAutomatically()
-
-        // Schedule periodic update checks every hour while app is running
-        self.schedulePeriodicUpdateChecks()
+        // MyFluidVoice does not update from the upstream FluidVoice release channel.
+        SettingsStore.shared.autoUpdateCheckEnabled = false
 
         // Login Items can launch hidden; reveal the real SwiftUI window so ContentView startup runs.
         self.openMainWindowOnLaunch()
@@ -349,6 +346,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     // MARK: - Manual Update Check
 
     @objc func checkForUpdatesManually() {
+        guard SimpleUpdater.updatesEnabled else {
+            DebugLogger.shared.info("Manual update check ignored for MyFluidVoice", source: "AppDelegate")
+            return
+        }
+
         // Confirm invocation
         DebugLogger.shared.info("🔎 Manual update check triggered", source: "AppDelegate")
 
@@ -401,6 +403,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     // MARK: - Automatic Update Check
 
     private func checkForUpdatesAutomatically() {
+        guard SimpleUpdater.updatesEnabled else {
+            DebugLogger.shared.debug("Automatic update check disabled for MyFluidVoice", source: "AppDelegate")
+            return
+        }
+
         // Check if we should perform an automatic update check
         guard SettingsStore.shared.shouldCheckForUpdates() else {
             let reason = !SettingsStore.shared.autoUpdateCheckEnabled ? "disabled by user" : "checked recently"

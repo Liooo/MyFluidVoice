@@ -1715,9 +1715,17 @@ final class SettingsStore: ObservableObject {
             if let data = defaults.data(forKey: Keys.primaryDictationShortcutsKey),
                let shortcuts = try? JSONDecoder().decode([HotkeyShortcut].self, from: data)
             {
-                return Self.normalizedPrimaryDictationShortcuts(shortcuts, fallback: fallback)
+                let normalized = Self.normalizedPrimaryDictationShortcuts(shortcuts, fallback: fallback)
+                if Self.isLegacyHotkeyShortcutEncoding(data) {
+                    return self.migrateLegacyPrimaryDictationShortcuts(normalized)
+                }
+                return normalized
             }
-            return [fallback]
+            let normalized = [fallback]
+            if self.isLegacyHotkeyShortcutStorage(forKey: Keys.hotkeyShortcutKey) {
+                return self.migrateLegacyPrimaryDictationShortcuts(normalized)
+            }
+            return normalized
         }
         set {
             objectWillChange.send()
@@ -1728,7 +1736,7 @@ final class SettingsStore: ObservableObject {
     }
 
     private static var defaultPrimaryDictationShortcut: HotkeyShortcut {
-        HotkeyShortcut(keyCode: 61, modifierFlags: [])
+        HotkeyShortcut(keyCode: 61, modifierFlags: [], gesture: .doubleTap)
     }
 
     private var legacyHotkeyShortcut: HotkeyShortcut {
@@ -1752,6 +1760,42 @@ final class SettingsStore: ObservableObject {
             unique.append(fallback)
         }
         return unique
+    }
+
+    private static func isLegacyHotkeyShortcutEncoding(_ data: Data) -> Bool {
+        guard let object = try? JSONSerialization.jsonObject(with: data),
+              let dictionaries = object as? [[String: Any]],
+              !dictionaries.isEmpty
+        else {
+            return false
+        }
+        return dictionaries.contains { $0["gesture"] == nil }
+    }
+
+    private func isLegacyHotkeyShortcutStorage(forKey key: String) -> Bool {
+        guard let data = self.defaults.data(forKey: key) else { return false }
+        guard let object = try? JSONSerialization.jsonObject(with: data),
+              let dictionary = object as? [String: Any]
+        else {
+            return false
+        }
+        return dictionary["gesture"] == nil
+    }
+
+    private func migrateLegacyPrimaryDictationShortcuts(_ shortcuts: [HotkeyShortcut]) -> [HotkeyShortcut] {
+        var migrated = shortcuts
+        for index in migrated.indices where migrated[index].isModifierOnlyShortcut {
+            migrated[index].gesture = .doubleTap
+        }
+
+        guard migrated != shortcuts else { return shortcuts }
+        self.storePrimaryDictationShortcuts(migrated)
+        self.storeLegacyHotkeyShortcut(migrated[0])
+        DebugLogger.shared.info(
+            "Migrated modifier-only primary dictation shortcuts to double-tap gestures",
+            source: "SettingsStore"
+        )
+        return migrated
     }
 
     private func storePrimaryDictationShortcuts(_ shortcuts: [HotkeyShortcut]) {
@@ -2407,7 +2451,7 @@ final class SettingsStore: ObservableObject {
     var autoUpdateCheckEnabled: Bool {
         get {
             let value = self.defaults.object(forKey: Keys.autoUpdateCheckEnabled)
-            return value as? Bool ?? true // Default to enabled
+            return value as? Bool ?? false // MyFluidVoice does not update from upstream
         }
         set {
             self.defaults.set(newValue, forKey: Keys.autoUpdateCheckEnabled)

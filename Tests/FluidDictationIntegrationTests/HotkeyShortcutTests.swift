@@ -376,6 +376,90 @@ final class HotkeyShortcutTests: XCTestCase {
         XCTAssertFalse(unmodifiedSideButton.conflictsWith(optionOnly))
     }
 
+    func testLegacyPrimaryModifierShortcutMigratesToDoubleTap() throws {
+        try self.withRestoredDefaults(keys: [self.legacyHotkeyShortcutKey, self.primaryDictationShortcutsKey]) {
+            let legacyJSON = #"[{"kind":"keyboard","keyCode":56,"modifierFlagsRawValue":0,"modifierKeyCodes":[56]}]"#
+            UserDefaults.standard.set(try XCTUnwrap(legacyJSON.data(using: .utf8)), forKey: self.primaryDictationShortcutsKey)
+            UserDefaults.standard.removeObject(forKey: self.legacyHotkeyShortcutKey)
+
+            let migrated = try XCTUnwrap(SettingsStore.shared.primaryDictationShortcuts.first)
+            XCTAssertEqual(migrated.gesture, .doubleTap)
+            XCTAssertEqual(migrated.displayString, "Double-tap Shift")
+            XCTAssertFalse(migrated.includeBothModifierSides)
+        }
+    }
+
+    func testDoubleModifierShortcutRequiresTwoCleanTaps() {
+        let shortcut = HotkeyShortcut(
+            keyCode: 56,
+            modifierFlags: .shift,
+            modifierKeyCodes: [56],
+            gesture: .doubleTap
+        )
+        var replay = DoubleModifierReplay(shortcut: shortcut)
+
+        XCTAssertEqual(replay.flagsChanged(keyCode: 56, pressed: [56], timestamp: 1.00), .handled)
+        XCTAssertEqual(replay.flagsChanged(keyCode: 56, pressed: [], timestamp: 1.05), .handled)
+        XCTAssertNotEqual(replay.state, DoubleModifierTapDecision.State())
+
+        XCTAssertEqual(replay.flagsChanged(keyCode: 56, pressed: [56], timestamp: 1.20), .secondPress)
+        XCTAssertEqual(replay.flagsChanged(keyCode: 56, pressed: [56], timestamp: 1.21), .handled)
+        XCTAssertEqual(replay.flagsChanged(keyCode: 56, pressed: [], timestamp: 1.25), .secondRelease)
+        XCTAssertEqual(replay.state, DoubleModifierTapDecision.State())
+    }
+
+    func testDoubleModifierRejectsOppositeSideUnlessBothSidesEnabled() {
+        let leftOnly = HotkeyShortcut(
+            keyCode: 56,
+            modifierFlags: .shift,
+            modifierKeyCodes: [56],
+            gesture: .doubleTap
+        )
+        var leftOnlyReplay = DoubleModifierReplay(shortcut: leftOnly)
+        _ = leftOnlyReplay.flagsChanged(keyCode: 56, pressed: [56], timestamp: 1.00)
+        _ = leftOnlyReplay.flagsChanged(keyCode: 56, pressed: [], timestamp: 1.05)
+        _ = leftOnlyReplay.flagsChanged(keyCode: 60, pressed: [60], timestamp: 1.20)
+        _ = leftOnlyReplay.flagsChanged(keyCode: 60, pressed: [], timestamp: 1.25)
+        XCTAssertEqual(leftOnlyReplay.state, DoubleModifierTapDecision.State())
+
+        let bothSides = HotkeyShortcut(
+            keyCode: 56,
+            modifierFlags: .shift,
+            modifierKeyCodes: [56],
+            gesture: .doubleTap,
+            includeBothModifierSides: true
+        )
+        var bothSidesReplay = DoubleModifierReplay(shortcut: bothSides)
+        _ = bothSidesReplay.flagsChanged(keyCode: 56, pressed: [56], timestamp: 1.00)
+        _ = bothSidesReplay.flagsChanged(keyCode: 56, pressed: [], timestamp: 1.05)
+        XCTAssertEqual(bothSidesReplay.flagsChanged(keyCode: 60, pressed: [60], timestamp: 1.20), .secondPress)
+        XCTAssertEqual(bothSidesReplay.flagsChanged(keyCode: 60, pressed: [], timestamp: 1.25), .secondRelease)
+    }
+
+    func testModifierOnlyMatchingCanIncludeBothPhysicalSides() {
+        let shortcut = HotkeyShortcut(
+            keyCode: 56,
+            modifierFlags: .shift,
+            modifierKeyCodes: [56],
+            includeBothModifierSides: true
+        )
+        let start = ModifierOnlyShortcutFlagsDecision.evaluate(
+            shortcut: shortcut,
+            holdModeType: .transcription,
+            isEnabled: true,
+            keyCode: 60,
+            modifiers: .shift,
+            state: ModifierOnlyShortcutTrackingState(
+                pressedModifierKeyCodes: [60],
+                activeModifierOnlyType: nil,
+                activeModifierOnlyShortcut: nil,
+                otherKeyPressedDuringModifier: false,
+                isModeKeyPressed: false
+            )
+        )
+        XCTAssertEqual(start.outcome, .start)
+    }
+
     /// Regression for #688: a single-modifier dictation hotkey (Left Option) must not falsely
     /// start recording when an unrelated Shift+key combo is typed while the configured modifier
     /// is held. The release of the extra Shift used to re-enter the modifier-only start block and
@@ -1481,6 +1565,33 @@ private final class FakeAudioDeviceManager: AudioDeviceManaging {
 
     func isInputDeviceUsable(_ device: AudioDevice.Device) -> Bool {
         self.unusableInputUIDs.contains(device.uid) == false
+    }
+}
+
+/// Minimal driver that replays double-modifier `flagsChanged` events through the pure recognizer.
+private struct DoubleModifierReplay {
+    let shortcut: HotkeyShortcut
+    private(set) var state = DoubleModifierTapDecision.State()
+
+    mutating func flagsChanged(
+        keyCode: UInt16,
+        pressed: Set<UInt16>,
+        isRepeat: Bool = false,
+        timestamp: TimeInterval
+    ) -> DoubleModifierTapDecision.Outcome {
+        let decision = DoubleModifierTapDecision.evaluate(
+            shortcut: self.shortcut,
+            holdModeType: .transcription,
+            event: .modifierFlagsChanged(
+                keyCode: keyCode,
+                pressedModifierKeyCodes: pressed,
+                isRepeat: isRepeat,
+                timestamp: timestamp
+            ),
+            state: self.state
+        )
+        self.state = decision.state
+        return decision.outcome
     }
 }
 

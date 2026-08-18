@@ -384,14 +384,14 @@ struct SettingsView: View {
 
                             Divider().opacity(0.2)
 
-                            // Automatic Updates
+                            // Upstream updates are intentionally disabled for this fork.
                             VStack(alignment: .leading, spacing: 6) {
                                 HStack(alignment: .center) {
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text("Automatic Updates")
                                             .font(self.theme.typography.bodyStrong)
                                             .foregroundStyle(self.settingsTitleText)
-                                        Text("Check for updates automatically once per hour")
+                                        Text("Disabled for MyFluidVoice; upstream releases are not installed.")
                                             .font(self.theme.typography.bodySmall)
                                             .foregroundStyle(self.settingsSecondaryText)
                                     }
@@ -405,33 +405,7 @@ struct SettingsView: View {
                                     .toggleStyle(.switch)
                                     .tint(self.theme.palette.accent)
                                     .labelsHidden()
-                                }
-
-                                HStack(alignment: .center) {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text("Beta Releases")
-                                            .font(self.theme.typography.bodyStrong)
-                                            .foregroundStyle(self.settingsTitleText)
-                                        Text("Opt in to preview builds that may be unstable")
-                                            .font(self.theme.typography.bodySmall)
-                                            .foregroundStyle(self.settingsSecondaryText)
-                                    }
-
-                                    Spacer()
-
-                                    Toggle("", isOn: Binding(
-                                        get: { SettingsStore.shared.betaReleasesEnabled },
-                                        set: { SettingsStore.shared.betaReleasesEnabled = $0 }
-                                    ))
-                                    .toggleStyle(.switch)
-                                    .tint(self.theme.palette.accent)
-                                    .labelsHidden()
-                                }
-
-                                if SettingsStore.shared.betaReleasesEnabled {
-                                    Text("Beta opt-in enabled. Update checks include both stable and beta builds.")
-                                        .font(.caption)
-                                        .foregroundStyle(self.theme.palette.warning)
+                                    .disabled(true)
                                 }
 
                                 if let lastCheck = SettingsStore.shared.lastUpdateCheckDate {
@@ -445,51 +419,7 @@ struct SettingsView: View {
                                     .foregroundStyle(self.settingsSecondaryText)
                             }
 
-                            // Update Buttons
                             HStack(spacing: 10) {
-                                Button("Check for Updates") {
-                                    Task { @MainActor in
-                                        do {
-                                            let includePrerelease = SettingsStore.shared.betaReleasesEnabled
-                                            try await SimpleUpdater.shared.checkAndUpdate(
-                                                owner: "altic-dev",
-                                                repo: "Fluid-oss",
-                                                includePrerelease: includePrerelease
-                                            )
-                                        } catch SimpleUpdateError.updateAlreadyInProgress {
-                                            DebugLogger.shared.info(
-                                                "Update installation already in progress",
-                                                source: "SettingsView"
-                                            )
-                                        } catch {
-                                            let msg = NSAlert()
-                                            if let pmkError = error as? PMKError, pmkError.isCancelled {
-                                                let isBeta = SettingsStore.shared.betaReleasesEnabled
-                                                msg.messageText = isBeta ? "You're Up To Date (Beta)" : "You're Up To Date"
-                                                msg.informativeText = isBeta
-                                                    ? "You're already running the latest build available in the beta channel."
-                                                    : "You're already running the latest version of FluidVoice."
-                                            } else {
-                                                msg.messageText = "Update Check Failed"
-                                                msg.informativeText = "Unable to check for updates. Please try again later.\n\nError: \(error.localizedDescription)"
-                                            }
-                                            msg.alertStyle = .informational
-                                            msg.runModal()
-                                        }
-                                    }
-                                }
-                                .buttonStyle(.borderedProminent)
-                                .tint(self.theme.palette.accent)
-                                .controlSize(.regular)
-
-                                Button("Release Notes") {
-                                    if let url = URL(string: "https://github.com/altic-dev/Fluid-oss/releases") {
-                                        NSWorkspace.shared.open(url)
-                                    }
-                                }
-                                .buttonStyle(.bordered)
-                                .controlSize(.regular)
-
                                 Button(self.rollbackVersion.isEmpty ? "Rollback" : "Rollback to \(self.rollbackVersion)") {
                                     guard !self.isRollingBack else { return }
 
@@ -543,12 +473,6 @@ struct SettingsView: View {
                                 .controlSize(.regular)
                                 .disabled(self.rollbackVersion.isEmpty || self.isRollingBack)
                                 .opacity(self.isRollingBack ? 0.7 : 1.0)
-
-                                Button("Get Previous Builds") {
-                                    self.openPreviousBuildPicker()
-                                }
-                                .buttonStyle(.bordered)
-                                .controlSize(.regular)
                             }
                             .padding(.top, 12)
 
@@ -2052,49 +1976,76 @@ struct SettingsView: View {
         let target = ShortcutRecordingTarget.primaryDictation(.replace(index))
         let isRecording = self.isRecording(target)
 
-        HStack(spacing: 10) {
-            Color.clear
-                .frame(width: 20)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 10) {
+                Color.clear
+                    .frame(width: 20)
 
-            if isRecording {
-                self.shortcutCapturePill()
-            } else {
-                self.shortcutDisplayPill(shortcut.displayString)
-            }
-
-            Button(isRecording ? "Cancel" : "Change") {
                 if isRecording {
-                    self.shortcutRecordingMessage = nil
-                    self.activeShortcutRecordingTarget = nil
+                    self.shortcutCapturePill()
                 } else {
-                    DebugLogger.shared.debug("Starting to record replacement primary dictation shortcut", source: "SettingsView")
-                    self.shortcutRecordingMessage = nil
-                    self.activeShortcutRecordingTarget = target
+                    self.shortcutDisplayPill(shortcut.displayString)
+                }
+
+                Button(isRecording ? "Cancel" : "Change") {
+                    if isRecording {
+                        self.shortcutRecordingMessage = nil
+                        self.activeShortcutRecordingTarget = nil
+                    } else {
+                        DebugLogger.shared.debug("Starting to record replacement primary dictation shortcut", source: "SettingsView")
+                        self.shortcutRecordingMessage = nil
+                        self.activeShortcutRecordingTarget = target
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(!isRecording && self.isRecordingAnyShortcut)
+
+                Button("Remove") {
+                    guard self.primaryDictationShortcuts.count > 1,
+                          self.primaryDictationShortcuts.indices.contains(index)
+                    else { return }
+                    self.primaryDictationShortcuts.remove(at: index)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(self.primaryDictationShortcuts.count <= 1 || self.isRecordingAnyShortcut)
+
+                if isRecording,
+                   let recordingMessage = self.shortcutRecordingMessage,
+                   !recordingMessage.isEmpty
+                {
+                    Text(recordingMessage)
+                        .font(.caption)
+                        .foregroundStyle(self.theme.palette.warning)
                 }
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .disabled(!isRecording && self.isRecordingAnyShortcut)
 
-            Button("Remove") {
-                guard self.primaryDictationShortcuts.count > 1,
-                      self.primaryDictationShortcuts.indices.contains(index)
-                else { return }
-                self.primaryDictationShortcuts.remove(at: index)
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .disabled(self.primaryDictationShortcuts.count <= 1 || self.isRecordingAnyShortcut)
-
-            if isRecording,
-               let recordingMessage = self.shortcutRecordingMessage,
-               !recordingMessage.isEmpty
-            {
-                Text(recordingMessage)
-                    .font(.caption)
-                    .foregroundStyle(self.theme.palette.warning)
+            if !isRecording, shortcut.isModifierOnlyShortcut {
+                Toggle(
+                    "Include both left and right modifier keys",
+                    isOn: self.primaryShortcutBothSidesBinding(index: index)
+                )
+                .toggleStyle(.checkbox)
+                .font(.caption)
+                .padding(.leading, 30)
             }
         }
+    }
+
+    private func primaryShortcutBothSidesBinding(index: Int) -> Binding<Bool> {
+        Binding(
+            get: {
+                guard self.primaryDictationShortcuts.indices.contains(index) else { return false }
+                return self.primaryDictationShortcuts[index].includeBothModifierSides
+            },
+            set: { newValue in
+                guard self.primaryDictationShortcuts.indices.contains(index) else { return }
+                var shortcuts = self.primaryDictationShortcuts
+                shortcuts[index].includeBothModifierSides = newValue
+                self.primaryDictationShortcuts = shortcuts
+            }
+        )
     }
 
     private func primaryDictationShortcutCaptureStatus(for target: ShortcutRecordingTarget) -> some View {

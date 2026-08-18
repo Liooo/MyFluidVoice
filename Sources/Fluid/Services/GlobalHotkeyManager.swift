@@ -84,15 +84,15 @@ struct ModifierOnlyShortcutFlagsDecision: Equatable {
         let expectedModifierKeyCodes = shortcut.normalizedModifierKeyCodes
 
         if !expectedModifierKeyCodes.isEmpty {
-            let pressedKeyCodes = HotkeyShortcut.normalizedModifierKeyCodes(from: Array(pressedModifierKeyCodes))
+            let pressedKeyCodes = Set(HotkeyShortcut.normalizedModifierKeyCodes(from: Array(pressedModifierKeyCodes)))
             // Only arm on the FIRST press of the configured modifier itself. The `activeModifierOnlyType == nil`
             // precondition prevents a mid-press re-arm: without it, releasing an unrelated modifier (e.g. Shift)
             // or pressing a sibling modifier while the configured modifier is held can shrink `pressedModifierKeyCodes`
             // back to the expected set and re-enter this block, erasing `otherKeyPressedDuringModifier` so the
             // subsequent release reads as a clean tap and falsely starts recording (#688).
             if activeModifierOnlyType == nil,
-               pressedKeyCodes == expectedModifierKeyCodes,
-               expectedModifierKeyCodes.contains(keyCode)
+               shortcut.matchesPressedModifierKeyCodes(pressedKeyCodes),
+               shortcut.acceptsModifierKeyCode(keyCode)
             {
                 return .init(
                     outcome: .start,
@@ -107,12 +107,15 @@ struct ModifierOnlyShortcutFlagsDecision: Equatable {
             let isLegacyModePress = activeModifierOnlyShortcut == nil && isModeKeyPressed
             var markInterrupted = false
             if isActiveModifierOnlyPress || isLegacyModePress {
-                let extraModifierKeyCodes = pressedKeyCodes.filter { !expectedModifierKeyCodes.contains($0) }
-                markInterrupted = !extraModifierKeyCodes.isEmpty
+                let extraPressedKeyCodes = pressedKeyCodes.filter { !shortcut.acceptsModifierKeyCode($0) }
+                let hasTooManyAcceptedModifiers = shortcut.includeBothModifierSides &&
+                    pressedKeyCodes.count > expectedModifierKeyCodes.count
+                markInterrupted = !pressedKeyCodes.isEmpty &&
+                    (!extraPressedKeyCodes.isEmpty || hasTooManyAcceptedModifiers)
             }
 
             guard isActiveModifierOnlyPress || isLegacyModePress,
-                  expectedModifierKeyCodes.contains(keyCode),
+                  shortcut.acceptsModifierKeyCode(keyCode),
                   !pressedKeyCodes.contains(keyCode)
             else {
                 return .init(
@@ -218,6 +221,7 @@ private final nonisolated class HotkeyState: @unchecked Sendable {
     var automaticPressWasTargetActive: [HotkeyHoldModeType: Bool] = [:]
     var automaticPressStartedTypes: Set<HotkeyHoldModeType> = []
     var activePrimaryShortcutPress: ActivePrimaryShortcutPress?
+    var doubleModifierTapState = DoubleModifierTapDecision.State()
 
     func withLock<T>(_ block: () -> T) -> T {
         self.lock.lock()
@@ -528,11 +532,13 @@ final class GlobalHotkeyManager: NSObject {
     }
 
     func updatePrimaryShortcuts(_ newShortcuts: [HotkeyShortcut]) {
+        self.resetDoubleModifierTapTracking()
         self.primaryShortcuts = newShortcuts
         DebugLogger.shared.info("Updated transcription hotkeys", source: "GlobalHotkeyManager")
     }
 
     func updateCommandModeShortcut(_ newShortcut: HotkeyShortcut?) {
+        self.resetDoubleModifierTapTracking()
         self.commandModeShortcut = newShortcut
         DebugLogger.shared.info("Updated command mode hotkey", source: "GlobalHotkeyManager")
     }
@@ -542,11 +548,13 @@ final class GlobalHotkeyManager: NSObject {
     }
 
     func updateRewriteModeShortcut(_ newShortcut: HotkeyShortcut) {
+        self.resetDoubleModifierTapTracking()
         self.rewriteModeShortcut = newShortcut
         DebugLogger.shared.info("Updated rewrite mode hotkey", source: "GlobalHotkeyManager")
     }
 
     func updateCommandModeShortcutEnabled(_ enabled: Bool) {
+        self.resetDoubleModifierTapTracking()
         self.commandModeShortcutEnabled = enabled
         if !enabled {
             self.isCommandModeKeyPressed = false
@@ -558,6 +566,7 @@ final class GlobalHotkeyManager: NSObject {
     }
 
     func updateRewriteModeShortcutEnabled(_ enabled: Bool) {
+        self.resetDoubleModifierTapTracking()
         self.rewriteModeShortcutEnabled = enabled
         if !enabled {
             self.isRewriteKeyPressed = false
@@ -573,11 +582,13 @@ final class GlobalHotkeyManager: NSObject {
     }
 
     func updatePromptModeShortcut(_ newShortcut: HotkeyShortcut) {
+        self.resetDoubleModifierTapTracking()
         self.promptModeShortcut = newShortcut
         DebugLogger.shared.info("Updated prompt mode hotkey", source: "GlobalHotkeyManager")
     }
 
     func updatePromptModeShortcutEnabled(_ enabled: Bool) {
+        self.resetDoubleModifierTapTracking()
         self.promptModeShortcutEnabled = enabled
         if !enabled {
             self.isPromptModeKeyPressed = false
@@ -589,6 +600,7 @@ final class GlobalHotkeyManager: NSObject {
     }
 
     func updatePromptShortcutAssignments(_ assignments: [(selection: SettingsStore.DictationPromptSelection, shortcut: HotkeyShortcut)]) {
+        self.resetDoubleModifierTapTracking()
         self.promptShortcutAssignments = assignments
         DebugLogger.shared.info("Updated prompt shortcut assignments", source: "GlobalHotkeyManager")
     }
@@ -695,6 +707,9 @@ final class GlobalHotkeyManager: NSObject {
 
         self.eventTap = nil
         self.runLoopSource = nil
+        self.state.withLock {
+            self.state.doubleModifierTapState = DoubleModifierTapDecision.State()
+        }
         self.clearPrimaryShortcutPressState()
     }
 
@@ -716,6 +731,22 @@ final class GlobalHotkeyManager: NSObject {
     private func markOtherInputDuringModifierOnly() {
         guard self.modifierOnlyKeyDown else { return }
         self.otherKeyPressedDuringModifier = true
+    }
+
+    private func interruptPendingDoubleModifierTap() {
+        self.state.withLock {
+            let decision = DoubleModifierTapDecision.interrupt(
+                pressedModifierKeyCodes: self.state.pressedModifierKeyCodes,
+                state: self.state.doubleModifierTapState
+            )
+            self.state.doubleModifierTapState = decision.state
+        }
+    }
+
+    private func resetDoubleModifierTapTracking() {
+        self.state.withLock {
+            self.state.doubleModifierTapState = DoubleModifierTapDecision.State()
+        }
     }
 
     private func mouseButton(from event: CGEvent) -> Int {
@@ -799,6 +830,7 @@ final class GlobalHotkeyManager: NSObject {
 
         switch type {
         case .keyDown:
+            self.interruptPendingDoubleModifierTap()
             self.markOtherInputDuringModifierOnly()
 
             // Observe post-transcription edits (do not consume the event).
@@ -1076,6 +1108,7 @@ final class GlobalHotkeyManager: NSObject {
             }
 
         case .leftMouseDown, .rightMouseDown, .otherMouseDown:
+            self.interruptPendingDoubleModifierTap()
             self.markOtherInputDuringModifierOnly()
             if self.handleMouseShortcutDown(event, modifiers: eventModifiers) {
                 return nil
@@ -1087,6 +1120,7 @@ final class GlobalHotkeyManager: NSObject {
             }
 
         case .flagsChanged:
+            let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
             if HotkeyShortcut.modifierFlag(forKeyCode: keyCode) != nil {
                 self.pressedModifierKeyCodes = self.synchronizedPressedModifierKeyCodes(
                     changedKeyCode: keyCode,
@@ -1098,13 +1132,22 @@ final class GlobalHotkeyManager: NSObject {
                 if self.handleModifierOnlyShortcutFlagsChanged(
                     behavior: self.primaryModifierOnlyBehavior(for: shortcut),
                     keyCode: keyCode,
-                    modifiers: eventModifiers
+                    modifiers: eventModifiers,
+                    isRepeat: isRepeat
                 ) { return nil }
             }
 
-            if self.handlePromptAssignmentFlagsChanged(keyCode: keyCode, modifiers: eventModifiers) { return nil }
+            if self.handlePromptAssignmentFlagsChanged(
+                keyCode: keyCode,
+                modifiers: eventModifiers,
+                isRepeat: isRepeat
+            ) { return nil }
 
-            if self.handlePromptModeFlagsChanged(keyCode: keyCode, modifiers: eventModifiers) { return nil }
+            if self.handlePromptModeFlagsChanged(
+                keyCode: keyCode,
+                modifiers: eventModifiers,
+                isRepeat: isRepeat
+            ) { return nil }
 
             if let commandModeShortcut = self.commandModeShortcut,
                self.handleModifierOnlyShortcutFlagsChanged(
@@ -1135,7 +1178,8 @@ final class GlobalHotkeyManager: NSObject {
                        isTargetModeActive: { self.isCommandRecordingProvider?() ?? false }
                    ),
                    keyCode: keyCode,
-                   modifiers: eventModifiers
+                   modifiers: eventModifiers,
+                   isRepeat: isRepeat
                )
             { return nil }
 
@@ -1167,7 +1211,8 @@ final class GlobalHotkeyManager: NSObject {
                     isTargetModeActive: { self.isRewriteRecordingProvider?() ?? false }
                 ),
                 keyCode: keyCode,
-                modifiers: eventModifiers
+                modifiers: eventModifiers,
+                isRepeat: isRepeat
             ) { return nil }
 
         default:
@@ -1527,8 +1572,10 @@ final class GlobalHotkeyManager: NSObject {
         self.pressedModifierKeyCodes = []
         self.modifierOnlyKeyDown = false
         self.activeModifierOnlyType = nil
+        self.activeModifierOnlyShortcut = nil
         self.otherKeyPressedDuringModifier = false
         self.modifierPressStartTime = nil
+        self.resetDoubleModifierTapTracking()
         self.clearAutomaticPressTracking()
         self.isKeyPressed = false
         self.isPromptModeKeyPressed = false
@@ -1616,7 +1663,11 @@ final class GlobalHotkeyManager: NSObject {
         return true
     }
 
-    private func handlePromptModeFlagsChanged(keyCode: UInt16, modifiers: NSEvent.ModifierFlags) -> Bool {
+    private func handlePromptModeFlagsChanged(
+        keyCode: UInt16,
+        modifiers: NSEvent.ModifierFlags,
+        isRepeat: Bool
+    ) -> Bool {
         self.handleModifierOnlyShortcutFlagsChanged(
             behavior: .init(
                 shortcut: self.promptModeShortcut,
@@ -1645,11 +1696,16 @@ final class GlobalHotkeyManager: NSObject {
                 isTargetModeActive: { self.isPromptModeRecordingProvider?() ?? false }
             ),
             keyCode: keyCode,
-            modifiers: modifiers
+            modifiers: modifiers,
+            isRepeat: isRepeat
         )
     }
 
-    private func handlePromptAssignmentFlagsChanged(keyCode: UInt16, modifiers: NSEvent.ModifierFlags) -> Bool {
+    private func handlePromptAssignmentFlagsChanged(
+        keyCode: UInt16,
+        modifiers: NSEvent.ModifierFlags,
+        isRepeat: Bool
+    ) -> Bool {
         for assignment in self.promptShortcutAssignments where assignment.shortcut.isModifierOnlyShortcut {
             let handled = self.handleModifierOnlyShortcutFlagsChanged(
                 behavior: .init(
@@ -1679,7 +1735,8 @@ final class GlobalHotkeyManager: NSObject {
                     isTargetModeActive: { self.isPromptModeRecordingProvider?() ?? false }
                 ),
                 keyCode: keyCode,
-                modifiers: modifiers
+                modifiers: modifiers,
+                isRepeat: isRepeat
             )
             if handled {
                 return true
@@ -1692,8 +1749,17 @@ final class GlobalHotkeyManager: NSObject {
     private func handleModifierOnlyShortcutFlagsChanged(
         behavior: ModifierOnlyShortcutBehavior,
         keyCode: UInt16,
-        modifiers: NSEvent.ModifierFlags
+        modifiers: NSEvent.ModifierFlags,
+        isRepeat: Bool = false
     ) -> Bool {
+        if behavior.shortcut.isDoubleModifierShortcut {
+            return self.handleDoubleModifierShortcutFlagsChanged(
+                behavior: behavior,
+                keyCode: keyCode,
+                isRepeat: isRepeat
+            )
+        }
+
         let decision = ModifierOnlyShortcutFlagsDecision.evaluate(
             shortcut: behavior.shortcut,
             holdModeType: behavior.holdModeType,
@@ -1732,6 +1798,49 @@ final class GlobalHotkeyManager: NSObject {
             self.modifierPressStartTime = nil
 
             self.finishModifierOnlyPress(for: behavior, wasCleanPress: wasCleanPress)
+            return true
+        }
+    }
+
+    private func handleDoubleModifierShortcutFlagsChanged(
+        behavior: ModifierOnlyShortcutBehavior,
+        keyCode: UInt16,
+        isRepeat: Bool
+    ) -> Bool {
+        guard behavior.isEnabled else { return false }
+
+        let decision = self.state.withLock { () -> DoubleModifierTapDecision in
+            let decision = DoubleModifierTapDecision.evaluate(
+                shortcut: behavior.shortcut,
+                holdModeType: behavior.holdModeType,
+                event: .modifierFlagsChanged(
+                    keyCode: keyCode,
+                    pressedModifierKeyCodes: self.state.pressedModifierKeyCodes,
+                    isRepeat: isRepeat,
+                    timestamp: ProcessInfo.processInfo.systemUptime
+                ),
+                state: self.state.doubleModifierTapState
+            )
+            self.state.doubleModifierTapState = decision.state
+            return decision
+        }
+
+        switch decision.outcome {
+        case .ignore:
+            return false
+        case .handled:
+            return true
+        case .secondPress:
+            if self.hotkeyMode == .toggle {
+                behavior.onToggleRelease()
+            } else {
+                self.scheduleModifierOnlyStart(for: behavior)
+            }
+            return true
+        case .secondRelease:
+            if self.hotkeyMode != .toggle {
+                self.finishModifierOnlyPress(for: behavior, wasCleanPress: true)
+            }
             return true
         }
     }
@@ -1875,6 +1984,7 @@ final class GlobalHotkeyManager: NSObject {
             && (self.isKeyPressed || self.isPromptModeKeyPressed || self.isCommandModeKeyPressed || self.isRewriteKeyPressed || self.isPromptAssignmentKeyPressed)
 
         self.hotkeyMode = mode
+        self.resetDoubleModifierTapTracking()
         self.clearAutomaticPressTracking()
         self.isKeyPressed = false
         self.isPromptModeKeyPressed = false

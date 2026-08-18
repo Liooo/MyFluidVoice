@@ -2,8 +2,13 @@ import AppKit
 import Carbon
 import Foundation
 
+nonisolated enum HotkeyGesture: String, Codable {
+    case single
+    case doubleTap
+}
+
 struct HotkeyShortcut: Codable, Equatable {
-    enum ShortcutKind: String, Codable {
+    nonisolated enum ShortcutKind: String, Codable {
         case keyboard
         case mouse
     }
@@ -12,14 +17,22 @@ struct HotkeyShortcut: Codable, Equatable {
     var keyCode: UInt16
     var modifierFlags: NSEvent.ModifierFlags
     var modifierKeyCodes: [UInt16]
+    var gesture: HotkeyGesture
+    var includeBothModifierSides: Bool
     private(set) var mouseButton: Int?
-    enum CodingKeys: String, CodingKey { case kind, keyCode, modifierFlagsRawValue, modifierKeyCodes, mouseButton }
+    enum CodingKeys: String, CodingKey {
+        case kind, keyCode, modifierFlagsRawValue, modifierKeyCodes, gesture, includeBothModifierSides, mouseButton
+    }
 
     var displayString: String {
         if self.isMouseShortcut, let mouseButton {
             var parts = Self.modifierDisplayParts(for: self.relevantModifierFlags)
             parts.append(Self.mouseButtonToString(mouseButton))
             return parts.joined(separator: " + ")
+        }
+
+        if self.isDoubleModifierShortcut, let triggerFlag = self.modifierTriggerFlag {
+            return "Double-tap \(Self.modifierFamilyName(for: triggerFlag))"
         }
 
         let modifierKeyCodes = self.normalizedModifierKeyCodes
@@ -81,6 +94,17 @@ struct HotkeyShortcut: Codable, Equatable {
         return parts
     }
 
+    private static func modifierFamilyName(for flag: NSEvent.ModifierFlags) -> String {
+        switch flag {
+        case .function: return "fn"
+        case .command: return "Command"
+        case .option: return "Option"
+        case .control: return "Control"
+        case .shift: return "Shift"
+        default: return "Modifier"
+        }
+    }
+
     /// US QWERTY names used when TIS layout data is unavailable (e.g. emoji/CJK input sources).
     private static let qwertyFallback: [UInt16: String] = [
         0: "A", 1: "S", 2: "D", 3: "F", 4: "H", 5: "G", 6: "Z", 7: "X",
@@ -127,9 +151,17 @@ struct HotkeyShortcut: Codable, Equatable {
         }
     }
 
-    init(keyCode: UInt16, modifierFlags: NSEvent.ModifierFlags, modifierKeyCodes: [UInt16] = []) {
+    nonisolated init(
+        keyCode: UInt16,
+        modifierFlags: NSEvent.ModifierFlags,
+        modifierKeyCodes: [UInt16] = [],
+        gesture: HotkeyGesture = .single,
+        includeBothModifierSides: Bool = false
+    ) {
         self.kind = .keyboard
         self.mouseButton = nil
+        self.gesture = gesture
+        self.includeBothModifierSides = includeBothModifierSides
         let normalizedModifierKeyCodes = Self.normalizedModifierKeyCodes(from: modifierKeyCodes)
         if !normalizedModifierKeyCodes.isEmpty {
             self.modifierKeyCodes = normalizedModifierKeyCodes
@@ -152,16 +184,18 @@ struct HotkeyShortcut: Codable, Equatable {
         }
     }
 
-    init(mouseButton: Int, modifierFlags: NSEvent.ModifierFlags) {
+    nonisolated init(mouseButton: Int, modifierFlags: NSEvent.ModifierFlags) {
         self.kind = .mouse
         self.keyCode = 0
         self.modifierFlags = modifierFlags.intersection(Self.relevantModifierMask)
         self.modifierKeyCodes = []
+        self.gesture = .single
+        self.includeBothModifierSides = false
         self.mouseButton = mouseButton
     }
 }
 
-extension HotkeyShortcut {
+nonisolated extension HotkeyShortcut {
     static let relevantModifierMask: NSEvent.ModifierFlags = [.function, .command, .option, .control, .shift]
 
     static func modifierFlag(forKeyCode keyCode: UInt16) -> NSEvent.ModifierFlags? {
@@ -178,6 +212,17 @@ extension HotkeyShortcut {
             return .shift
         default:
             return nil
+        }
+    }
+
+    static func modifierKeyCodes(for flag: NSEvent.ModifierFlags) -> Set<UInt16> {
+        switch flag {
+        case .function: return [63]
+        case .command: return [54, 55]
+        case .option: return [58, 61]
+        case .control: return [59, 62]
+        case .shift: return [56, 60]
+        default: return []
         }
     }
 
@@ -240,6 +285,14 @@ extension HotkeyShortcut {
     /// True when shortcut presses can race because one begins as the other's modifier prefix.
     func conflictsWith(_ other: HotkeyShortcut) -> Bool {
         if self.isModifierOnlyShortcut, other.isModifierOnlyShortcut {
+            if self.isDoubleModifierShortcut || other.isDoubleModifierShortcut ||
+                self.includeBothModifierSides || other.includeBothModifierSides,
+               let lhs = self.expectedModifierFlags,
+               let rhs = other.expectedModifierFlags
+            {
+                return lhs.isSubset(of: rhs) || rhs.isSubset(of: lhs)
+            }
+
             let lhs = Set(self.normalizedModifierKeyCodes)
             let rhs = Set(other.normalizedModifierKeyCodes)
 
@@ -272,9 +325,42 @@ extension HotkeyShortcut {
         self.modifierTriggerFlag != nil
     }
 
+    /// Double-tap is meaningful only for one modifier family, never for a modifier chord or a
+    /// normal keyboard/mouse shortcut.
+    var isDoubleModifierShortcut: Bool {
+        guard self.gesture == .doubleTap,
+              let triggerFlag = self.modifierTriggerFlag,
+              let expectedModifierFlags = self.expectedModifierFlags
+        else { return false }
+
+        return expectedModifierFlags == triggerFlag
+    }
+
     var expectedModifierFlags: NSEvent.ModifierFlags? {
         guard let triggerFlag = self.modifierTriggerFlag else { return nil }
         return self.relevantModifierFlags.union(triggerFlag)
+    }
+
+    func acceptsModifierKeyCode(_ keyCode: UInt16) -> Bool {
+        guard let keyFlag = Self.modifierFlag(forKeyCode: keyCode),
+              let triggerFlag = self.modifierTriggerFlag
+        else { return false }
+
+        if self.includeBothModifierSides {
+            return keyFlag == triggerFlag
+        }
+        return self.normalizedModifierKeyCodes.contains(keyCode)
+    }
+
+    func matchesPressedModifierKeyCodes(_ pressedKeyCodes: Set<UInt16>) -> Bool {
+        let expectedKeyCodes = Set(self.normalizedModifierKeyCodes)
+        guard !expectedKeyCodes.isEmpty else { return false }
+        guard self.includeBothModifierSides else { return pressedKeyCodes == expectedKeyCodes }
+        guard pressedKeyCodes.count == expectedKeyCodes.count else { return false }
+
+        let expectedFlags = Set(expectedKeyCodes.compactMap(Self.modifierFlag(forKeyCode:)).map(\.rawValue))
+        let pressedFlags = Set(pressedKeyCodes.compactMap(Self.modifierFlag(forKeyCode:)).map(\.rawValue))
+        return expectedFlags == pressedFlags
     }
 
     func matches(keyCode: UInt16, modifiers: NSEvent.ModifierFlags) -> Bool {
@@ -296,6 +382,10 @@ extension HotkeyShortcut {
             return lhs.mouseButton == rhs.mouseButton &&
                 lhs.relevantModifierFlags == rhs.relevantModifierFlags
         case .keyboard:
+            guard lhs.gesture == rhs.gesture,
+                  lhs.includeBothModifierSides == rhs.includeBothModifierSides
+            else { return false }
+
             let lhsModifierKeyCodes = lhs.normalizedModifierKeyCodes
             let rhsModifierKeyCodes = rhs.normalizedModifierKeyCodes
             if !lhsModifierKeyCodes.isEmpty, !rhsModifierKeyCodes.isEmpty {
@@ -306,26 +396,36 @@ extension HotkeyShortcut {
         }
     }
 
-    init(from decoder: Decoder) throws {
+    nonisolated init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let kind = try c.decodeIfPresent(ShortcutKind.self, forKey: .kind) ?? .keyboard
         let raw = try c.decodeIfPresent(UInt.self, forKey: .modifierFlagsRawValue) ?? 0
+        let gesture = try c.decodeIfPresent(HotkeyGesture.self, forKey: .gesture) ?? .single
+        let includeBothModifierSides = try c.decodeIfPresent(Bool.self, forKey: .includeBothModifierSides) ?? false
 
         switch kind {
         case .keyboard:
             let keyCode = try c.decode(UInt16.self, forKey: .keyCode)
             let modifierKeyCodes = try c.decodeIfPresent([UInt16].self, forKey: .modifierKeyCodes) ?? []
-            self.init(keyCode: keyCode, modifierFlags: NSEvent.ModifierFlags(rawValue: raw), modifierKeyCodes: modifierKeyCodes)
+            self.init(
+                keyCode: keyCode,
+                modifierFlags: NSEvent.ModifierFlags(rawValue: raw),
+                modifierKeyCodes: modifierKeyCodes,
+                gesture: gesture,
+                includeBothModifierSides: includeBothModifierSides
+            )
         case .mouse:
             let mouseButton = try c.decode(Int.self, forKey: .mouseButton)
             self.init(mouseButton: mouseButton, modifierFlags: NSEvent.ModifierFlags(rawValue: raw))
         }
     }
 
-    func encode(to encoder: Encoder) throws {
+    nonisolated func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(self.kind, forKey: .kind)
         try c.encode(self.modifierFlags.rawValue, forKey: .modifierFlagsRawValue)
+        try c.encode(self.gesture, forKey: .gesture)
+        try c.encode(self.includeBothModifierSides, forKey: .includeBothModifierSides)
         switch self.kind {
         case .keyboard:
             try c.encode(self.keyCode, forKey: .keyCode)

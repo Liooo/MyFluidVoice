@@ -125,6 +125,8 @@ final class SimpleUpdater {
     }
 
     static let shared = SimpleUpdater()
+    // MyFluidVoice is a fork; upstream releases must not replace local builds.
+    static let updatesEnabled = false
     private init() {}
 
     private let fileManager = FileManager.default
@@ -193,6 +195,8 @@ final class SimpleUpdater {
         limit: Int = 3,
         includePrerelease: Bool = false
     ) async throws -> [ReleaseBuildOption] {
+        guard Self.updatesEnabled else { return [] }
+
         let releases = try await self.fetchReleases(owner: owner, repo: repo)
         let count = max(1, limit)
         let candidates = self.sortedCandidateReleases(
@@ -302,6 +306,10 @@ final class SimpleUpdater {
         repo: String,
         includePrerelease: Bool = false
     ) async throws -> (hasUpdate: Bool, latestVersion: String) {
+        guard Self.updatesEnabled else {
+            return (false, self.currentAppVersion)
+        }
+
         guard !self.isUpdateInProgress else {
             throw SimpleUpdateError.updateAlreadyInProgress
         }
@@ -336,6 +344,8 @@ final class SimpleUpdater {
         repo: String,
         includePrerelease: Bool = false
     ) async throws {
+        guard Self.updatesEnabled else { return }
+
         guard self.updateOperationGate.begin() else {
             throw SimpleUpdateError.updateAlreadyInProgress
         }

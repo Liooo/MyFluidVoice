@@ -234,6 +234,8 @@ struct ContentView: View {
     @State private var pendingModifierFlags: NSEvent.ModifierFlags = []
     @State private var pendingModifierKeyCode: UInt16?
     @State private var pendingModifierOnly = false
+    @State private var shortcutModifierTapCaptureState = ShortcutModifierTapCaptureDecision.State()
+    @State private var shortcutModifierTapCommitTask: Task<Void, Never>?
     @State private var shortcutRecordingMessage: String? = nil
     @State private var shortcutCaptureMonitor: Any?
     @FocusState private var isTranscriptionFocused: Bool
@@ -403,6 +405,7 @@ struct ContentView: View {
                 // Stop accessibility polling
                 self.finishAccessibilityPermissionFlow()
                 self.removeShortcutCaptureMonitor()
+                self.resetShortcutModifierTapCapture()
             }
             .onChange(of: self.primaryDictationShortcuts) { _, newValue in
                 SettingsStore.shared.primaryDictationShortcuts = newValue
@@ -457,6 +460,7 @@ struct ContentView: View {
             }
             .onChange(of: self.activeShortcutRecordingTarget) { _, _ in
                 self.hotkeyManager?.resetModifierOnlyShortcutTracking()
+                self.resetShortcutModifierTapCapture()
             }
             .onChange(of: self.commandModeHotkeyShortcut) { _, newValue in
                 SettingsStore.shared.commandModeHotkeyShortcut = newValue
@@ -739,6 +743,7 @@ struct ContentView: View {
         isRecordingAnyShortcut: Bool,
         recordingTarget: ShortcutRecordingTarget?
     ) -> NSEvent? {
+        self.interruptShortcutModifierTapCapture()
         guard isRecordingAnyShortcut else {
             if self.cancelRecordingHotkeyShortcut.matches(keyCode: event.keyCode, modifiers: eventModifiers),
                self.handleCancelShortcut()
@@ -784,6 +789,7 @@ struct ContentView: View {
         isRecordingAnyShortcut: Bool,
         recordingTarget: ShortcutRecordingTarget?
     ) -> NSEvent? {
+        self.interruptShortcutModifierTapCapture()
         guard isRecordingAnyShortcut else {
             self.shortcutRecordingMessage = nil
             self.resetPendingShortcutState()
@@ -825,8 +831,64 @@ struct ContentView: View {
     ) -> NSEvent? {
         guard isRecordingAnyShortcut else {
             self.shortcutRecordingMessage = nil
+            self.resetShortcutModifierTapCapture()
             self.resetPendingShortcutState()
             return event
+        }
+
+        let previousPressedModifierKeyCodes = self.currentRecordingModifierKeyCodes
+        let nextPressedModifierKeyCodes = PressedModifierKeyCodesDecision.synchronize(
+            previous: previousPressedModifierKeyCodes,
+            changedKeyCode: event.keyCode,
+            modifiers: eventModifiers,
+            changedKeyIsPhysicallyPressed: CGEventSource.keyState(
+                .combinedSessionState,
+                key: CGKeyCode(event.keyCode)
+            )
+        )
+        self.currentRecordingModifierKeyCodes = nextPressedModifierKeyCodes
+
+        let tapDecision = ShortcutModifierTapCaptureDecision.evaluate(
+            event: .flagsChanged(
+                keyCode: event.keyCode,
+                pressedModifierKeyCodes: nextPressedModifierKeyCodes,
+                timestamp: event.timestamp
+            ),
+            state: self.shortcutModifierTapCaptureState
+        )
+        self.shortcutModifierTapCaptureState = tapDecision.state
+
+        switch tapDecision.outcome {
+        case .handled:
+            return nil
+        case let .waitForSecondPress(deadline):
+            self.resetPendingShortcutState()
+            self.scheduleSingleModifierShortcutCommit(
+                keyCode: event.keyCode,
+                deadline: deadline,
+                eventTimestamp: event.timestamp,
+                recordingTarget: recordingTarget
+            )
+            return nil
+        case let .recordSingle(keyCode):
+            self.finishCapturedModifierShortcut(
+                keyCode: keyCode,
+                gesture: .single,
+                recordingTarget: recordingTarget
+            )
+            return nil
+        case let .recordDouble(keyCode):
+            self.finishCapturedModifierShortcut(
+                keyCode: keyCode,
+                gesture: .doubleTap,
+                recordingTarget: recordingTarget
+            )
+            return nil
+        case .cancelCandidateAndObserveChord:
+            self.shortcutModifierTapCommitTask?.cancel()
+            self.shortcutModifierTapCommitTask = nil
+        case .observeChord:
+            break
         }
 
         let changedModifierFlag = HotkeyShortcut.modifierFlag(forKeyCode: event.keyCode)
@@ -864,12 +926,10 @@ struct ContentView: View {
         }
 
         if let changedModifierFlag {
-            let isRelease = self.currentRecordingModifierKeyCodes.contains(event.keyCode)
+            let isNewPress = !previousPressedModifierKeyCodes.contains(event.keyCode) &&
+                nextPressedModifierKeyCodes.contains(event.keyCode)
 
-            if isRelease {
-                self.currentRecordingModifierKeyCodes.remove(event.keyCode)
-            } else if eventModifiers.contains(changedModifierFlag) {
-                self.currentRecordingModifierKeyCodes.insert(event.keyCode)
+            if isNewPress, eventModifiers.contains(changedModifierFlag) {
                 self.pendingModifierKeyCodes.insert(event.keyCode)
                 self.pendingModifierFlags = self.pendingModifierFlags.union(eventModifiers)
                 self.pendingModifierKeyCode = event.keyCode
@@ -974,6 +1034,84 @@ struct ContentView: View {
         case .history:
             self.selectedSidebarItem = .history
         }
+    }
+
+    private func interruptShortcutModifierTapCapture() {
+        self.shortcutModifierTapCommitTask?.cancel()
+        self.shortcutModifierTapCommitTask = nil
+        let decision = ShortcutModifierTapCaptureDecision.evaluate(
+            event: .interrupt,
+            state: self.shortcutModifierTapCaptureState
+        )
+        self.shortcutModifierTapCaptureState = decision.state
+    }
+
+    private func resetShortcutModifierTapCapture() {
+        self.shortcutModifierTapCommitTask?.cancel()
+        self.shortcutModifierTapCommitTask = nil
+        let decision = ShortcutModifierTapCaptureDecision.evaluate(
+            event: .reset,
+            state: self.shortcutModifierTapCaptureState
+        )
+        self.shortcutModifierTapCaptureState = decision.state
+    }
+
+    private func scheduleSingleModifierShortcutCommit(
+        keyCode: UInt16,
+        deadline: TimeInterval,
+        eventTimestamp: TimeInterval,
+        recordingTarget: ShortcutRecordingTarget?
+    ) {
+        self.shortcutModifierTapCommitTask?.cancel()
+        let delayNanoseconds = UInt64(max(deadline - eventTimestamp, 0) * 1_000_000_000)
+        self.shortcutModifierTapCommitTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: delayNanoseconds)
+            guard !Task.isCancelled,
+                  self.activeShortcutRecordingTarget == recordingTarget
+            else { return }
+
+            let decision = ShortcutModifierTapCaptureDecision.evaluate(
+                event: .deadline(timestamp: deadline),
+                state: self.shortcutModifierTapCaptureState
+            )
+            self.shortcutModifierTapCaptureState = decision.state
+            guard case .recordSingle = decision.outcome else { return }
+            self.finishCapturedModifierShortcut(
+                keyCode: keyCode,
+                gesture: .single,
+                recordingTarget: recordingTarget
+            )
+        }
+    }
+
+    private func finishCapturedModifierShortcut(
+        keyCode: UInt16,
+        gesture: HotkeyGesture,
+        recordingTarget: ShortcutRecordingTarget?
+    ) {
+        self.shortcutModifierTapCommitTask?.cancel()
+        self.shortcutModifierTapCommitTask = nil
+        self.resetPendingShortcutState()
+
+        let shortcut = HotkeyShortcut(
+            keyCode: keyCode,
+            modifierFlags: [],
+            modifierKeyCodes: [keyCode],
+            gesture: gesture
+        )
+        guard let recordingTarget else {
+            self.resetShortcutModifierTapCapture()
+            return
+        }
+        if let conflictMessage = self.shortcutConflictMessage(for: shortcut, target: recordingTarget) {
+            self.shortcutRecordingMessage = conflictMessage
+            self.resetShortcutModifierTapCapture()
+            return
+        }
+
+        self.shortcutRecordingMessage = nil
+        self.assignRecordedShortcut(shortcut, to: recordingTarget)
+        self.resetShortcutModifierTapCapture()
     }
 
     private func resetPendingShortcutState() {
@@ -1147,6 +1285,7 @@ struct ContentView: View {
     private func clearShortcutRecordingMode() {
         self.activeShortcutRecordingTarget = nil
         self.shortcutRecordingMessage = nil
+        self.resetShortcutModifierTapCapture()
         self.resetPendingShortcutState()
     }
 
