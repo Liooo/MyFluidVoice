@@ -3,6 +3,7 @@ import SwiftUI
 struct StatsView: View {
     @ObservedObject private var historyStore = TranscriptionHistoryStore.shared
     @ObservedObject private var settings = SettingsStore.shared
+    @ObservedObject private var sonioxUsageStore = SonioxUsageStore.shared
     @Environment(\.theme) private var theme
 
     @State private var showResetConfirmation: Bool = false
@@ -21,6 +22,8 @@ struct StatsView: View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(spacing: 16) {
                 self.todayHeaderCard
+
+                self.sonioxUsageCard
 
                 Divider()
                     .opacity(0.4)
@@ -54,6 +57,124 @@ struct StatsView: View {
             }
             .padding(20)
         }
+        .onAppear {
+            Task { @MainActor in
+                await self.sonioxUsageStore.refreshIfNeeded()
+            }
+        }
+    }
+
+    // MARK: - Soniox Usage
+
+    private var sonioxUsageCard: some View {
+        ThemedCard(style: .standard, padding: 16, hoverEffect: false) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .firstTextBaseline) {
+                    Label("SONIOX API USAGE", systemImage: "chart.line.uptrend.xyaxis")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.secondary)
+
+                    Spacer()
+
+                    if self.sonioxUsageStore.isRefreshing {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else if self.sonioxUsageStore.isStale {
+                        Text("Stale")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(self.theme.palette.warning)
+                    }
+                }
+
+                if let snapshot = self.sonioxUsageStore.snapshot {
+                    HStack(spacing: 18) {
+                        self.sonioxUsageMetric(
+                            title: "This month",
+                            value: self.formattedSonioxCost(snapshot.totalCostUSD)
+                        )
+
+                        Divider()
+                            .frame(height: 34)
+
+                        self.sonioxUsageMetric(
+                            title: "Requests",
+                            value: self.formatNumber(snapshot.totalRequests)
+                        )
+
+                        Divider()
+                            .frame(height: 34)
+
+                        self.sonioxUsageMetric(
+                            title: "Audio",
+                            value: self.formattedSonioxAudio(snapshot.totalInputAudioDurationMilliseconds)
+                        )
+
+                        Spacer(minLength: 0)
+                    }
+
+                    HStack(spacing: 6) {
+                        Text("Updated " + self.formattedSonioxDate(snapshot.fetchedAt))
+
+                        if self.sonioxUsageStore.isStale,
+                           let errorMessage = self.sonioxUsageStore.errorMessage
+                        {
+                            Text("• " + errorMessage)
+                                .foregroundStyle(self.theme.palette.warning)
+                                .lineLimit(1)
+                        }
+                    }
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                } else if self.sonioxUsageStore.isRefreshing {
+                    Text("Loading this month's Soniox usage…")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text(self.sonioxUsageStore.errorMessage ?? "Configure Soniox to load usage.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func sonioxUsageMetric(title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(value)
+                .font(.system(size: 20, weight: .bold, design: .rounded))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+
+            Text(title)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func formattedSonioxCost(_ value: Decimal) -> String {
+        String(
+            format: "$%.4f",
+            locale: Locale(identifier: "en_US_POSIX"),
+            NSDecimalNumber(decimal: value).doubleValue
+        )
+    }
+
+    private func formattedSonioxAudio(_ milliseconds: Int64) -> String {
+        let seconds = Double(milliseconds) / 1_000
+        if seconds < 60 {
+            return String(format: "%.1f sec", locale: Locale(identifier: "en_US_POSIX"), seconds)
+        }
+        return String(format: "%.1f min", locale: Locale(identifier: "en_US_POSIX"), seconds / 60)
+    }
+
+    private func formattedSonioxDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .short
+        formatter.timeStyle = .short
+        return formatter.string(from: date)
     }
 
     // MARK: - Today Header

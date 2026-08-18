@@ -7,6 +7,33 @@ final class TranscriptionSoundSettingsTests: XCTestCase {
     private let enableTranscriptionSoundsKey = "EnableTranscriptionSounds"
     private let transcriptionStartSoundKey = "TranscriptionStartSound"
     private let transcriptionEndSoundKey = "TranscriptionEndSound"
+    private let transcriptionStartSystemSoundNameKey = "TranscriptionStartSystemSoundName"
+    private let transcriptionEndSystemSoundNameKey = "TranscriptionEndSystemSoundName"
+
+    func testMacOSSystemSoundCatalogReturnsSortedUniqueSoundNames() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        for filename in ["Tink.aiff", "Ping.AIFF", "Ping.wav", "notes.txt", ".hidden"] {
+            XCTAssertTrue(
+                FileManager.default.createFile(
+                    atPath: directory.appendingPathComponent(filename).path,
+                    contents: Data()
+                )
+            )
+        }
+        try FileManager.default.createDirectory(
+            at: directory.appendingPathComponent("Nested.aiff"),
+            withIntermediateDirectories: true
+        )
+
+        XCTAssertEqual(
+            MacOSSystemSoundCatalog.names(in: directory),
+            ["Ping", "Tink"]
+        )
+    }
 
     func testTranscriptionSoundNoneOptionsHaveNoFiles() {
         XCTAssertEqual(SettingsStore.TranscriptionStartSound.none.displayName, "None")
@@ -67,6 +94,39 @@ final class TranscriptionSoundSettingsTests: XCTestCase {
             XCTAssertEqual(SettingsStore.shared.transcriptionStartSound, .fluidSfx2)
             XCTAssertEqual(SettingsStore.shared.transcriptionEndSound, .fluidSfx1)
             XCTAssertEqual(SettingsStore.shared.transcriptionEndSound.soundFileName, "FV_end")
+        }
+    }
+
+    func testSystemSoundNamesPersistIndependently() {
+        self.withRestoredDefaults(keys: [
+            self.transcriptionStartSystemSoundNameKey,
+            self.transcriptionEndSystemSoundNameKey,
+        ]) {
+            SettingsStore.shared.transcriptionStartSystemSoundName = "Tink"
+            SettingsStore.shared.transcriptionEndSystemSoundName = "Ping"
+
+            XCTAssertEqual(SettingsStore.shared.transcriptionStartSystemSoundName, "Tink")
+            XCTAssertEqual(SettingsStore.shared.transcriptionEndSystemSoundName, "Ping")
+
+            SettingsStore.shared.transcriptionStartSystemSoundName = nil
+
+            XCTAssertNil(SettingsStore.shared.transcriptionStartSystemSoundName)
+            XCTAssertEqual(SettingsStore.shared.transcriptionEndSystemSoundName, "Ping")
+        }
+    }
+
+    func testBackupPayloadIncludesSystemSoundNames() {
+        self.withRestoredDefaults(keys: [
+            self.transcriptionStartSystemSoundNameKey,
+            self.transcriptionEndSystemSoundNameKey,
+        ]) {
+            SettingsStore.shared.transcriptionStartSystemSoundName = "Tink"
+            SettingsStore.shared.transcriptionEndSystemSoundName = "Ping"
+
+            let payload = SettingsStore.shared.makeBackupPayload()
+
+            XCTAssertEqual(payload.transcriptionStartSystemSoundName, "Tink")
+            XCTAssertEqual(payload.transcriptionEndSystemSoundName, "Ping")
         }
     }
 

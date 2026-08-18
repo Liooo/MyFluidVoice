@@ -41,6 +41,21 @@ final class LLMClientRequestBodyTests: XCTestCase {
         XCTAssertEqual(body["stream"] as? Bool, true)
     }
 
+    func testChatCompletionsBody_reasoningEffortNoneIsPreserved() {
+        let config = LLMClient.Config(
+            messages: [["role": "user", "content": "hello"]],
+            model: "qwen3.5:9b",
+            baseURL: "http://localhost:11434/v1",
+            apiKey: "",
+            streaming: false,
+            extraParameters: ["reasoning_effort": "none"]
+        )
+
+        let body = LLMClient.shared.buildChatCompletionsBody(config)
+
+        XCTAssertEqual(body["reasoning_effort"] as? String, "none")
+    }
+
     // MARK: - Responses endpoint
 
     func testResponsesBody_streamFalse_keyIsPresentAndFalse() {

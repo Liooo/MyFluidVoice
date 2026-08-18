@@ -2509,6 +2509,34 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    var transcriptionStartSystemSoundName: String? {
+        get {
+            self.defaults.string(forKey: Keys.transcriptionStartSystemSoundName)
+        }
+        set {
+            objectWillChange.send()
+            if let newValue {
+                self.defaults.set(newValue, forKey: Keys.transcriptionStartSystemSoundName)
+            } else {
+                self.defaults.removeObject(forKey: Keys.transcriptionStartSystemSoundName)
+            }
+        }
+    }
+
+    var transcriptionEndSystemSoundName: String? {
+        get {
+            self.defaults.string(forKey: Keys.transcriptionEndSystemSoundName)
+        }
+        set {
+            objectWillChange.send()
+            if let newValue {
+                self.defaults.set(newValue, forKey: Keys.transcriptionEndSystemSoundName)
+            } else {
+                self.defaults.removeObject(forKey: Keys.transcriptionEndSystemSoundName)
+            }
+        }
+    }
+
     var transcriptionStartSound: TranscriptionStartSound {
         get {
             guard let raw = self.defaults.string(forKey: Keys.transcriptionStartSound),
@@ -3379,6 +3407,8 @@ final class SettingsStore: ObservableObject {
             enableTranscriptionSounds: self.enableTranscriptionSounds,
             transcriptionStartSound: self.transcriptionStartSound,
             transcriptionEndSound: self.transcriptionEndSound,
+            transcriptionStartSystemSoundName: self.transcriptionStartSystemSoundName,
+            transcriptionEndSystemSoundName: self.transcriptionEndSystemSoundName,
             transcriptionSoundVolume: self.transcriptionSoundVolume,
             transcriptionSoundIndependentVolume: self.transcriptionSoundIndependentVolume,
             autoUpdateCheckEnabled: self.autoUpdateCheckEnabled,
@@ -3526,6 +3556,8 @@ final class SettingsStore: ObservableObject {
         if let transcriptionEndSound = payload.transcriptionEndSound {
             self.transcriptionEndSound = transcriptionEndSound
         }
+        self.transcriptionStartSystemSoundName = payload.transcriptionStartSystemSoundName
+        self.transcriptionEndSystemSoundName = payload.transcriptionEndSystemSoundName
         self.transcriptionSoundVolume = payload.transcriptionSoundVolume
         self.transcriptionSoundIndependentVolume = payload.transcriptionSoundIndependentVolume
         self.autoUpdateCheckEnabled = payload.autoUpdateCheckEnabled
@@ -5413,6 +5445,8 @@ private extension SettingsStore {
         static let enableTranscriptionSounds = "EnableTranscriptionSounds"
         static let transcriptionStartSound = "TranscriptionStartSound"
         static let transcriptionEndSound = "TranscriptionEndSound"
+        static let transcriptionStartSystemSoundName = "TranscriptionStartSystemSoundName"
+        static let transcriptionEndSystemSoundName = "TranscriptionEndSystemSoundName"
         static let transcriptionSoundVolume = "TranscriptionSoundVolume"
         static let transcriptionSoundIndependentVolume = "TranscriptionSoundIndependentVolume"
         static let pressAndHoldMode = "PressAndHoldMode"

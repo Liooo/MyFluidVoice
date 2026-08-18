@@ -10,6 +10,97 @@ import Combine
 import QuartzCore
 import SwiftUI
 
+struct ProcessingIndicatorText: View {
+    let text: String
+    let isProcessing: Bool
+    let maxWidth: CGFloat
+    let textFontSize: CGFloat
+    let truncatesToSingleLine: Bool
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    init(
+        text: String,
+        isProcessing: Bool,
+        maxWidth: CGFloat = .infinity,
+        textFontSize: CGFloat = 10,
+        truncatesToSingleLine: Bool = true
+    ) {
+        self.text = text
+        self.isProcessing = isProcessing
+        self.maxWidth = maxWidth
+        self.textFontSize = textFontSize
+        self.truncatesToSingleLine = truncatesToSingleLine
+    }
+
+    private static let indicatorFontSize: CGFloat = 9
+
+    private static func measuredWidth(_ text: String, font: NSFont) -> CGFloat {
+        (text as NSString).size(withAttributes: [.font: font]).width
+    }
+
+    private func visibleTail(for text: String, indicator: String) -> String {
+        guard self.truncatesToSingleLine else { return text }
+        guard self.maxWidth.isFinite, self.maxWidth > 0 else { return text }
+
+        let textFont = NSFont.systemFont(ofSize: self.textFontSize, weight: .medium)
+        let indicatorFont = NSFont.systemFont(ofSize: Self.indicatorFontSize, weight: .medium)
+        let availableWidth = max(
+            self.maxWidth - Self.measuredWidth(indicator, font: indicatorFont) - 2,
+            0
+        )
+
+        guard Self.measuredWidth(text, font: textFont) > availableWidth else {
+            return text
+        }
+
+        let characters = Array(text)
+        var lowerBound = 0
+        var upperBound = characters.count
+        while lowerBound < upperBound {
+            let candidateCount = (lowerBound + upperBound + 1) / 2
+            let candidate = String(characters.suffix(candidateCount))
+            if Self.measuredWidth(candidate, font: textFont) <= availableWidth {
+                lowerBound = candidateCount
+            } else {
+                upperBound = candidateCount - 1
+            }
+        }
+
+        return String(characters.suffix(lowerBound))
+    }
+
+    private func processingText(activeIndex: Int) -> Text {
+        let separator = self.text.isEmpty ? "" : " "
+        let indicator = separator + String(repeating: ".", count: activeIndex + 1)
+        let visibleText = self.visibleTail(for: self.text, indicator: indicator)
+
+        return Text(visibleText)
+            + Text(indicator)
+                .font(.system(size: Self.indicatorFontSize, weight: .medium))
+                .baselineOffset(1)
+    }
+
+    var body: some View {
+        Group {
+            if !self.isProcessing {
+                Text(self.text)
+            } else if self.reduceMotion {
+                self.processingText(activeIndex: 1)
+            } else {
+                TimelineView(.animation(minimumInterval: 1.0 / 12.0)) { timeline in
+                    let activeIndex = Int(
+                        (timeline.date.timeIntervalSinceReferenceDate / 0.36).rounded(.down)
+                    ) % 3
+                    self.processingText(activeIndex: activeIndex)
+                }
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(self.isProcessing ? "\(self.text) Processing" : self.text)
+    }
+}
+
 // MARK: - Observable state for notch content (Singleton)
 
 @MainActor
@@ -24,7 +115,7 @@ class NotchContentState: ObservableObject {
     @Published var isProcessing: Bool = false // AI processing state
     var overlayBackgroundColor: Color {
         self.isProcessing
-            ? Color(red: 0.13, green: 0.14, blue: 0.16)
+            ? Color(white: 0.09)
             : .black
     }
     @Published var isAIProcessingFailureVisible: Bool = false
@@ -435,41 +526,12 @@ struct NotchExpandedView: View {
         NotchOverlayManager.shared.currentNotchPresentationPolicy
     }
 
-    private var processingLabel: String {
-        switch self.contentState.mode {
-        case .dictation: return "Transcribing"
-        case .edit, .rewrite, .write: return "Thinking"
-        case .command: return "Working"
-        }
-    }
-
-    private static let transientOverlayStatusTexts: Set<String> = [
-        "Transcribing",
-        "Refining",
-        "Thinking",
-        "Working",
-        "Transcribing...",
-        "Refining...",
-        "Thinking...",
-        "Working...",
-    ]
-
-    /// ContentView writes transient status strings into transcriptionText while processing
-    /// (e.g. "Transcribing...", "Refining..."). Prefer that when present.
-    private var processingStatusText: String {
-        let t = self.contentState.transcriptionText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard Self.transientOverlayStatusTexts.contains(t) else { return self.processingLabel }
-        return t
-    }
-
     private var hasTranscription: Bool {
         !self.visiblePreviewText.isEmpty
     }
 
     private var visiblePreviewText: String {
-        let previewText = self.contentState.cachedPreviewText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !Self.transientOverlayStatusTexts.contains(previewText) else { return "" }
-        return previewText
+        self.contentState.cachedPreviewText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Check if there's command history that can be expanded
@@ -838,7 +900,7 @@ struct NotchExpandedView: View {
             )
             .shadow(color: .black.opacity(0.28), radius: 8, x: 0, y: 4)
             .shadow(color: .white.opacity(self.isHoveringPromptChip ? 0.06 : 0.03), radius: 0, x: 0, y: 1)
-            .opacity(self.isPromptSelectableMode ? (self.contentState.isProcessing ? 0.7 : 1.0) : 0.6)
+            .opacity(self.isPromptSelectableMode ? 1.0 : 0.6)
             .allowsHitTesting(self.isPromptSelectableMode && !self.contentState.isProcessing)
             .onHover { hovering in
                 self.handlePromptChipHover(hovering)
@@ -964,18 +1026,25 @@ struct NotchExpandedView: View {
                 .foregroundStyle(.white.opacity(0.9))
                 .frame(width: self.previewMaxWidth, alignment: .leading)
                 .transition(.opacity.combined(with: .scale(scale: 0.95)))
-            } else if self.presentationPolicy.showsStreamingPreview && self.hasTranscription && !self.contentState.isProcessing {
+            } else if self.presentationPolicy.showsStreamingPreview && self.hasTranscription {
                 let previewText = self.visiblePreviewText
                 if !previewText.isEmpty {
                     ScrollViewReader { proxy in
                         ScrollView(.vertical, showsIndicators: false) {
-                            Text(previewText)
+                            ProcessingIndicatorText(
+                                text: previewText,
+                                isProcessing: self.contentState.isProcessing,
+                                maxWidth: self.previewMaxWidth,
+                                textFontSize: 10,
+                                truncatesToSingleLine: false
+                            )
                                 .font(.system(size: 10, weight: .medium))
                                 .foregroundStyle(.white.opacity(0.75))
                                 .multilineTextAlignment(.leading)
                                 .lineLimit(nil)
+                                .truncationMode(.head)
                                 .fixedSize(horizontal: false, vertical: true)
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .frame(width: self.previewMaxWidth, alignment: .leading)
                             Color.clear.frame(height: 1).id("bottom")
                         }
                         .frame(width: self.previewMaxWidth, alignment: .leading)
@@ -995,6 +1064,17 @@ struct NotchExpandedView: View {
                     .frame(maxWidth: .infinity, alignment: .center)
                     .transition(.opacity.combined(with: .scale(scale: 0.95)))
                 }
+            } else if self.presentationPolicy.showsStreamingPreview && self.contentState.isProcessing {
+                ProcessingIndicatorText(
+                    text: "",
+                    isProcessing: true,
+                    maxWidth: self.previewMaxWidth,
+                    textFontSize: 10
+                )
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.75))
+                    .frame(width: self.previewMaxWidth, alignment: .leading)
+                    .transition(.opacity.combined(with: .scale(scale: 0.95)))
             }
         }
         .coordinateSpace(name: Self.notchContentCoordinateSpace)
@@ -1022,14 +1102,12 @@ struct NotchWaveformView: View {
     private let barSpacing: CGFloat = 2
     private let minHeight: CGFloat = 3
     private let maxHeight: CGFloat = 12
-    private let processingFlatHeight: CGFloat = 3
-
     private var currentGlowIntensity: CGFloat {
-        self.contentState.isProcessing ? 0.0 : 0.35
+        0.35
     }
 
     private var currentGlowRadius: CGFloat {
-        self.contentState.isProcessing ? 0.0 : 1.5
+        1.5
     }
 
     private var currentOuterGlowRadius: CGFloat {
@@ -1047,36 +1125,13 @@ struct NotchWaveformView: View {
             self.barsView(using: { index in
                 self.displayHeight(for: index)
             })
-            .foregroundStyle(self.color.opacity(self.contentState.isProcessing ? 0.16 : 1.0))
-
-            if self.contentState.isProcessing {
-                CompositorShimmerSweep(duration: 1.05, peakOpacity: 0.9)
-                    .mask {
-                        self.barsView(using: { index in
-                            self.displayHeight(for: index)
-                        })
-                    }
-                    .shadow(color: .white.opacity(0.28), radius: 2.5, x: 0, y: 0)
-            }
+            .foregroundStyle(self.color)
         }
         .onChange(of: self.data.audioLevel) { _, level in
-            if !self.contentState.isProcessing {
-                self.updateBars(level: level)
-            }
-        }
-        .onChange(of: self.contentState.isProcessing) { _, processing in
-            if processing {
-                self.resetBarsToBaseline(animated: false)
-            } else {
-                self.updateBars(level: self.data.audioLevel)
-            }
+            self.updateBars(level: level)
         }
         .onAppear {
-            if self.contentState.isProcessing {
-                self.resetBarsToBaseline(animated: false)
-            } else {
-                self.updateBars(level: self.data.audioLevel)
-            }
+            self.updateBars(level: self.data.audioLevel)
         }
         .onDisappear {
             // No timers to clean up.
@@ -1103,10 +1158,7 @@ struct NotchWaveformView: View {
     }
 
     private func displayHeight(for index: Int) -> CGFloat {
-        guard self.contentState.isProcessing else {
-            return self.barHeights[index]
-        }
-        return self.processingFlatHeight
+        self.barHeights[index]
     }
 
     private func resetBarsToBaseline(animated: Bool) {
@@ -1188,39 +1240,30 @@ struct NotchCompactBottomView: View {
 
     private let previewWidth: CGFloat = 250
     private let previewHeight: CGFloat = 20
-    private static let transientOverlayStatusTexts: Set<String> = [
-        "Transcribing",
-        "Refining",
-        "Thinking",
-        "Working",
-        "Transcribing...",
-        "Refining...",
-        "Thinking...",
-        "Working...",
-    ]
-
     private var compactPreviewText: String {
-        let source = self.contentState.isProcessing
-            ? self.contentState.transcriptionText
-            : self.contentState.cachedPreviewText
-        let trimmed = source.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !Self.transientOverlayStatusTexts.contains(trimmed) else { return "" }
-        return trimmed
+        self.contentState.cachedPreviewText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private var shouldShowPreview: Bool {
-        SettingsStore.shared.enableStreamingPreview && !self.compactPreviewText.isEmpty
+        SettingsStore.shared.enableStreamingPreview &&
+            (!self.compactPreviewText.isEmpty || self.contentState.isProcessing)
     }
 
     var body: some View {
         ZStack(alignment: .leading) {
-            Text(self.compactPreviewText)
+            ProcessingIndicatorText(
+                text: self.compactPreviewText,
+                isProcessing: self.contentState.isProcessing,
+                maxWidth: self.previewWidth,
+                textFontSize: 9
+            )
                 .font(.system(size: 9, weight: .medium))
                 .foregroundStyle(.white.opacity(0.82))
                 .lineLimit(1)
                 .truncationMode(.head)
-                .offset(y: self.shouldShowPreview ? 0 : -4)
-                .opacity(self.shouldShowPreview ? 1 : 0)
+                .frame(width: self.previewWidth, alignment: .leading)
+            .offset(y: self.shouldShowPreview ? 0 : -4)
+            .opacity(self.shouldShowPreview ? 1 : 0)
         }
         .frame(width: self.previewWidth, height: SettingsStore.shared.enableStreamingPreview ? self.previewHeight : 0, alignment: .leading)
         .padding(.horizontal, SettingsStore.shared.enableStreamingPreview ? 10 : 0)
@@ -1747,8 +1790,6 @@ struct CompactNotchWaveformView: View {
     private let minHeight: CGFloat = 3
     private let maxHeight: CGFloat = 15
     private let noiseThreshold: CGFloat = 0.05
-    private let processingFlatHeight: CGFloat = 3
-
     init(audioPublisher: AnyPublisher<CGFloat, Never>, color: Color) {
         self.audioPublisher = audioPublisher
         self.color = color
@@ -1760,36 +1801,13 @@ struct CompactNotchWaveformView: View {
             self.barsView(using: { index in
                 self.displayHeight(for: index)
             })
-            .foregroundStyle(self.color.opacity(self.contentState.isProcessing ? 0.16 : 1.0))
-
-            if self.contentState.isProcessing {
-                CompositorShimmerSweep(duration: 1.05, peakOpacity: 0.9)
-                    .mask {
-                        self.barsView(using: { index in
-                            self.displayHeight(for: index)
-                        })
-                    }
-                    .shadow(color: .white.opacity(0.28), radius: 2.5, x: 0, y: 0)
-            }
+            .foregroundStyle(self.color)
         }
         .onChange(of: self.data.audioLevel) { _, level in
-            if !self.contentState.isProcessing {
-                self.updateBars(level: level)
-            }
-        }
-        .onChange(of: self.contentState.isProcessing) { _, processing in
-            if processing {
-                self.resetBarsToBaseline(animated: false)
-            } else {
-                self.updateBars(level: self.data.audioLevel)
-            }
+            self.updateBars(level: level)
         }
         .onAppear {
-            if self.contentState.isProcessing {
-                self.resetBarsToBaseline(animated: false)
-            } else {
-                self.updateBars(level: self.data.audioLevel)
-            }
+            self.updateBars(level: self.data.audioLevel)
         }
     }
 
@@ -1804,11 +1822,7 @@ struct CompactNotchWaveformView: View {
     }
 
     private func displayHeight(for index: Int) -> CGFloat {
-        guard self.contentState.isProcessing else {
-            return self.barHeights[index]
-        }
-
-        return self.processingFlatHeight
+        self.barHeights[index]
     }
 
     private func updateBars(level: CGFloat) {

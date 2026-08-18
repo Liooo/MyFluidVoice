@@ -2175,6 +2175,18 @@ struct ContentView: View {
                 source: "ContentView"
             )
         }
+        if reasoningConfig == nil,
+           isDictationCall,
+           currentSelectedProviderID.caseInsensitiveCompare("ollama") == .orderedSame
+        {
+            // Ollama's OpenAI-compatible API uses reasoning_effort="none" as
+            // the request-level equivalent of `ollama run --think=false`.
+            extraParams["reasoning_effort"] = "none"
+            DebugLogger.shared.debug(
+                "Disabled Ollama thinking for dictation enhancement",
+                source: "ContentView"
+            )
+        }
 
         // Build messages array. For dictation enhancement the whole prompt +
         // transcript is folded into a single user message, so we omit the
@@ -2336,11 +2348,10 @@ struct ContentView: View {
 
         self.clearActiveRecordingMode()
 
-        DebugLogger.shared.debug("Showing transcription processing state", source: "ContentView")
-        self.appBench("processing_ui_request status=Transcribing")
+        DebugLogger.shared.debug("Keeping transcription overlay visible while finalizing", source: "ContentView")
+        self.appBench("processing_ui_request")
         self.menuBarManager.setProcessing(true)
-        NotchOverlayManager.shared.updateTranscriptionText("Transcribing")
-        self.appBench("processing_ui_requested status=Transcribing")
+        self.appBench("processing_ui_requested")
         await Task.yield()
 
         // Stop the ASR service and wait for transcription to complete
@@ -2374,14 +2385,15 @@ struct ContentView: View {
             source: "ContentView"
         )
 
-        // Reset the transcription text display after transcription completes
-        NotchOverlayManager.shared.updateTranscriptionText("")
-
         guard transcribedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
             DebugLogger.shared.debug("Transcription returned empty text", source: "ContentView")
             await self.finishProcessingAndHideOverlayIfCurrent(stopOverlayLifecycleID)
             return
         }
+
+        // The final ASR pass can contain words that were not present in the last
+        // streaming preview. Keep the overlay in sync before post-processing.
+        NotchOverlayManager.shared.updateTranscriptionText(transcribedText)
 
         // Prompt Test Mode: reroute dictation hotkey output into the prompt editor (no typing/clipboard/history).
         if promptTest.isActive {
@@ -2501,14 +2513,6 @@ struct ContentView: View {
             let postProcessingInputChars = normalizedTranscribedText.count
             let postProcessingStart = Date()
 
-            // Update overlay text to show we're now refining (processing already true)
-            self.appBench("processing_ui_request status=Refining")
-            NotchOverlayManager.shared.updateTranscriptionText("Refining")
-            self.appBench("processing_ui_requested status=Refining")
-
-            // Ensure the status label becomes visible immediately.
-            await Task.yield()
-
             let streamPreview = DictationAIStreamPreviewBuffer()
             let streamHandler: PrivateAIStreamHandler = { chunk in
                 Task { @MainActor in
@@ -2583,10 +2587,6 @@ struct ContentView: View {
                     "transcription_model": transcriptionModelInfo.model,
                 ]
             )
-
-            // Clear transient status text before leaving processing state to avoid
-            // a brief non-shimmer "Refining..." preview flash.
-            NotchOverlayManager.shared.updateTranscriptionText("")
 
         } else {
             finalText = normalizedTranscribedText
@@ -3278,7 +3278,6 @@ struct ContentView: View {
 
         self.setActiveRecordingMode(.dictate)
         self.menuBarManager.setProcessing(true)
-        NotchOverlayManager.shared.updateTranscriptionText("Reprocessing...")
         await Task.yield()
 
         var aiFallbackReason: String?
@@ -3312,8 +3311,6 @@ struct ContentView: View {
                 finalText = normalizedTranscribedText
             }
         }
-
-        NotchOverlayManager.shared.updateTranscriptionText("")
 
         finalText = ASRService.applyDictationLiteralFormatting(
             finalText,

@@ -11,6 +11,12 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct SettingsView: View {
+    private static let systemDefaultInputSelectionID = "__SYSTEM_DEFAULT_INPUT__"
+    private static let noneSoundSelectionID = "__NONE_SOUND__"
+    private static let fluidSoundSelectionPrefix = "__FLUID_SOUND__:"
+    private static let macOSSystemSoundSelectionPrefix = "__MACOS_SYSTEM_SOUND__:"
+    private static let macOSSystemSoundNames = MacOSSystemSoundCatalog.names()
+
     private struct ShortcutRowContent {
         let icon: String
         let iconColor: Color
@@ -284,15 +290,21 @@ struct SettingsView: View {
 
                                 Spacer()
 
-                                Picker("", selection: Binding(
-                                    get: { SettingsStore.shared.transcriptionStartSound },
-                                    set: { newValue in
-                                        SettingsStore.shared.transcriptionStartSound = newValue
-                                        TranscriptionSoundPlayer.shared.playPreview(sound: newValue)
+                                Picker("", selection: self.transcriptionStartSoundSelectionBinding) {
+                                    Text("None").tag(Self.noneSoundSelectionID)
+                                    Section("Fluid") {
+                                        ForEach(SettingsStore.TranscriptionStartSound.allCases) { option in
+                                            if option != .none {
+                                                Text(option.displayName)
+                                                    .tag(Self.fluidSoundSelectionID(option.rawValue))
+                                            }
+                                        }
                                     }
-                                )) {
-                                    ForEach(SettingsStore.TranscriptionStartSound.allCases) { option in
-                                        Text(option.displayName).tag(option)
+                                    Section("macOS System Sounds") {
+                                        ForEach(Self.macOSSystemSoundNames, id: \.self) { name in
+                                            Text(name)
+                                                .tag(Self.macOSSystemSoundSelectionID(name))
+                                        }
                                     }
                                 }
                                 .pickerStyle(.menu)
@@ -312,15 +324,21 @@ struct SettingsView: View {
 
                                 Spacer()
 
-                                Picker("", selection: Binding(
-                                    get: { SettingsStore.shared.transcriptionEndSound },
-                                    set: { newValue in
-                                        SettingsStore.shared.transcriptionEndSound = newValue
-                                        TranscriptionSoundPlayer.shared.playPreview(sound: newValue)
+                                Picker("", selection: self.transcriptionEndSoundSelectionBinding) {
+                                    Text("None").tag(Self.noneSoundSelectionID)
+                                    Section("Fluid") {
+                                        ForEach(SettingsStore.TranscriptionEndSound.allCases) { option in
+                                            if option != .none {
+                                                Text(option.displayName)
+                                                    .tag(Self.fluidSoundSelectionID(option.rawValue))
+                                            }
+                                        }
                                     }
-                                )) {
-                                    ForEach(SettingsStore.TranscriptionEndSound.allCases) { option in
-                                        Text(option.displayName).tag(option)
+                                    Section("macOS System Sounds") {
+                                        ForEach(Self.macOSSystemSoundNames, id: \.self) { name in
+                                            Text(name)
+                                                .tag(Self.macOSSystemSoundSelectionID(name))
+                                        }
                                     }
                                 }
                                 .pickerStyle(.menu)
@@ -330,7 +348,9 @@ struct SettingsView: View {
 
                             if SettingsStore.shared.enableTranscriptionSounds,
                                SettingsStore.shared.transcriptionStartSound != .none ||
-                               SettingsStore.shared.transcriptionEndSound != .none
+                               SettingsStore.shared.transcriptionEndSound != .none ||
+                               SettingsStore.shared.transcriptionStartSystemSoundName != nil ||
+                               SettingsStore.shared.transcriptionEndSystemSoundName != nil
                             {
                                 HStack {
                                     VStack(alignment: .leading, spacing: 2) {
@@ -926,6 +946,29 @@ struct SettingsView: View {
                         }
 
                         VStack(alignment: .leading, spacing: 12) {
+                            HStack {
+                                Text("Input Device")
+                                    .font(self.theme.typography.bodyStrong)
+                                    .foregroundStyle(self.settingsTitleText)
+                                Spacer()
+                                Picker("", selection: self.inputDeviceSelectionBinding) {
+                                    Text("System Default")
+                                        .tag(Self.systemDefaultInputSelectionID)
+                                    ForEach(self.inputDevices, id: \.uid) { device in
+                                        Text(device.name)
+                                            .tag(device.uid)
+                                    }
+                                }
+                                .pickerStyle(.menu)
+                                .frame(width: 240)
+                                .disabled(self.isMicrophonePriorityEditingDisabled)
+                            }
+
+                            Text("System Default follows macOS Sound > Input. A selected device applies only to MyFluidVoice.")
+                                .font(self.theme.typography.bodySmall)
+                                .foregroundStyle(self.settingsSecondaryText)
+                                .fixedSize(horizontal: false, vertical: true)
+
                             self.microphonePrioritySection
                                 .onChange(of: self.inputDevices) { _, newDevices in
                                     let defaultInput = AudioDevice.getDefaultInputDevice()
@@ -2016,6 +2059,141 @@ struct SettingsView: View {
 }
 
 private extension SettingsView {
+    var transcriptionStartSoundSelectionBinding: Binding<String> {
+        Binding(
+            get: {
+                self.soundSelectionID(
+                    systemSoundName: self.settings.transcriptionStartSystemSoundName,
+                    fluidSoundRawValue: self.settings.transcriptionStartSound.rawValue
+                )
+            },
+            set: { selection in
+                self.selectStartSound(selection)
+            }
+        )
+    }
+
+    var transcriptionEndSoundSelectionBinding: Binding<String> {
+        Binding(
+            get: {
+                self.soundSelectionID(
+                    systemSoundName: self.settings.transcriptionEndSystemSoundName,
+                    fluidSoundRawValue: self.settings.transcriptionEndSound.rawValue
+                )
+            },
+            set: { selection in
+                self.selectEndSound(selection)
+            }
+        )
+    }
+
+    func soundSelectionID(systemSoundName: String?, fluidSoundRawValue: String) -> String {
+        if let systemSoundName,
+           Self.macOSSystemSoundNames.contains(systemSoundName)
+        {
+            return Self.macOSSystemSoundSelectionID(systemSoundName)
+        }
+        if fluidSoundRawValue == SettingsStore.TranscriptionStartSound.none.rawValue
+            || fluidSoundRawValue == SettingsStore.TranscriptionEndSound.none.rawValue
+        {
+            return Self.noneSoundSelectionID
+        }
+        return Self.fluidSoundSelectionID(fluidSoundRawValue)
+    }
+
+    func selectStartSound(_ selection: String) {
+        if selection == Self.noneSoundSelectionID {
+            self.settings.transcriptionStartSystemSoundName = nil
+            self.settings.transcriptionStartSound = .none
+            return
+        }
+        if let systemSoundName = Self.macOSSystemSoundName(from: selection) {
+            self.settings.transcriptionStartSystemSoundName = systemSoundName
+            self.settings.transcriptionStartSound = .none
+            TranscriptionSoundPlayer.shared.playPreview(systemSoundName: systemSoundName)
+            return
+        }
+        guard let rawValue = Self.fluidSoundRawValue(from: selection),
+              let sound = SettingsStore.TranscriptionStartSound(rawValue: rawValue)
+        else { return }
+        self.settings.transcriptionStartSystemSoundName = nil
+        self.settings.transcriptionStartSound = sound
+        TranscriptionSoundPlayer.shared.playPreview(sound: sound)
+    }
+
+    func selectEndSound(_ selection: String) {
+        if selection == Self.noneSoundSelectionID {
+            self.settings.transcriptionEndSystemSoundName = nil
+            self.settings.transcriptionEndSound = .none
+            return
+        }
+        if let systemSoundName = Self.macOSSystemSoundName(from: selection) {
+            self.settings.transcriptionEndSystemSoundName = systemSoundName
+            self.settings.transcriptionEndSound = .none
+            TranscriptionSoundPlayer.shared.playPreview(systemSoundName: systemSoundName)
+            return
+        }
+        guard let rawValue = Self.fluidSoundRawValue(from: selection),
+              let sound = SettingsStore.TranscriptionEndSound(rawValue: rawValue)
+        else { return }
+        self.settings.transcriptionEndSystemSoundName = nil
+        self.settings.transcriptionEndSound = sound
+        TranscriptionSoundPlayer.shared.playPreview(sound: sound)
+    }
+
+    static func fluidSoundSelectionID(_ rawValue: String) -> String {
+        Self.fluidSoundSelectionPrefix + rawValue
+    }
+
+    static func macOSSystemSoundSelectionID(_ name: String) -> String {
+        Self.macOSSystemSoundSelectionPrefix + name
+    }
+
+    static func fluidSoundRawValue(from selection: String) -> String? {
+        guard selection.hasPrefix(Self.fluidSoundSelectionPrefix) else { return nil }
+        return String(selection.dropFirst(Self.fluidSoundSelectionPrefix.count))
+    }
+
+    static func macOSSystemSoundName(from selection: String) -> String? {
+        guard selection.hasPrefix(Self.macOSSystemSoundSelectionPrefix) else { return nil }
+        return String(selection.dropFirst(Self.macOSSystemSoundSelectionPrefix.count))
+    }
+
+    var inputDeviceSelectionBinding: Binding<String> {
+        Binding(
+            get: {
+                if self.settings.microphoneSelectionMode == .system {
+                    return Self.systemDefaultInputSelectionID
+                }
+                if self.selectedInputUID.isEmpty == false {
+                    return self.selectedInputUID
+                }
+                return self.settings.microphonePriority.first?.uid ?? ""
+            },
+            set: { newSelection in
+                self.selectInputDevice(newSelection)
+            }
+        )
+    }
+
+    func selectInputDevice(_ selection: String) {
+        guard self.isMicrophonePriorityEditingDisabled == false else { return }
+
+        if selection == Self.systemDefaultInputSelectionID {
+            self.settings.microphoneSelectionMode = .system
+            if self.cachedDefaultInputUID.isEmpty == false {
+                self.selectedInputUID = self.cachedDefaultInputUID
+            }
+        } else if let device = self.inputDevices.first(where: { $0.uid == selection }) {
+            self.settings.recordInputDeviceSelection(device.uid, name: device.name)
+            self.selectedInputUID = device.uid
+        } else {
+            return
+        }
+
+        self.refreshActiveInputSelection()
+    }
+
     var microphonePrioritySection: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {

@@ -353,6 +353,13 @@ final class MicrophonePreferenceCoordinator: ObservableObject {
         }
         guard usableInputs.isEmpty == false else { return nil }
 
+        if self.settings.microphoneSelectionMode == .system {
+            if let defaultInput = self.device(uid: defaultInputUID, in: usableInputs) {
+                return defaultInput
+            }
+            return self.fallbackInput(from: usableInputs, defaultInputUID: defaultInputUID)
+        }
+
         for entry in self.settings.microphonePriority {
             if let input = usableInputs.first(where: { $0.uid == entry.uid }) {
                 return input

@@ -21,6 +21,8 @@ final class MenuBarManager: NSObject, ObservableObject, NSMenuDelegate {
     private var microphoneMenuItem: NSMenuItem?
     private var microphoneSubmenu: NSMenu?
     private var rollbackMenuItem: NSMenuItem?
+    private var sonioxUsageMenuItem: NSMenuItem?
+    private var sonioxUsageSubmenu: NSMenu?
 
     // References to app state
     private weak var asrService: ASRService?
@@ -64,6 +66,13 @@ final class MenuBarManager: NSObject, ObservableObject, NSMenuDelegate {
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
                 self?.openMicrophoneSettingsFromUI()
+            }
+            .store(in: &self.cancellables)
+
+        SonioxUsageStore.shared.objectWillChange
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                self?.refreshSonioxUsageMenu()
             }
             .store(in: &self.cancellables)
     }
@@ -531,6 +540,14 @@ final class MenuBarManager: NSObject, ObservableObject, NSMenuDelegate {
         self.microphoneMenuItem = microphoneMenuItem
         self.microphoneSubmenu = microphoneSubmenu
 
+        let sonioxUsageSubmenu = NSMenu(title: "Credits")
+        let sonioxUsageMenuItem = NSMenuItem(title: "Credits", action: nil, keyEquivalent: "")
+        sonioxUsageMenuItem.submenu = sonioxUsageSubmenu
+        menu.addItem(sonioxUsageMenuItem)
+        self.sonioxUsageMenuItem = sonioxUsageMenuItem
+        self.sonioxUsageSubmenu = sonioxUsageSubmenu
+        self.refreshSonioxUsageMenu()
+
         menu.addItem(.separator())
 
         let rollbackMenuItem = NSMenuItem(
@@ -583,7 +600,117 @@ final class MenuBarManager: NSObject, ObservableObject, NSMenuDelegate {
         if menu === self.menu {
             self.updateMenuItemsText()
             self.refreshMicrophoneMenu()
+            self.refreshSonioxUsageMenu()
+            Task { @MainActor [weak self] in
+                await SonioxUsageStore.shared.refreshIfNeeded()
+                self?.refreshSonioxUsageMenu()
+            }
         }
+    }
+
+    private func refreshSonioxUsageMenu() {
+        guard let submenu = self.sonioxUsageSubmenu else { return }
+
+        submenu.removeAllItems()
+        let usageStore = SonioxUsageStore.shared
+
+        if let snapshot = usageStore.snapshot {
+            self.addSonioxUsageMenuItem(
+                "This month: " + self.formattedSonioxCost(snapshot.totalCostUSD),
+                to: submenu
+            )
+            self.addSonioxUsageMenuItem(self.formattedSonioxPeriod(snapshot), to: submenu)
+            self.addSonioxUsageMenuItem("Requests: " + String(snapshot.totalRequests), to: submenu)
+            self.addSonioxUsageMenuItem(
+                "Audio: " + self.formattedSonioxAudioDuration(snapshot.totalInputAudioDurationMilliseconds),
+                to: submenu
+            )
+            self.addSonioxUsageMenuItem(
+                "Updated: " + self.formattedSonioxDate(snapshot.fetchedAt),
+                to: submenu
+            )
+
+            if usageStore.isStale, let errorMessage = usageStore.errorMessage {
+                self.addSonioxUsageMenuItem("Stale — " + errorMessage, to: submenu)
+            }
+        } else if usageStore.isRefreshing {
+            self.addSonioxUsageMenuItem("Loading Soniox usage...", to: submenu)
+        } else if let errorMessage = usageStore.errorMessage {
+            self.addSonioxUsageMenuItem(errorMessage, to: submenu)
+        } else {
+            self.addSonioxUsageMenuItem("Configure Soniox to load usage.", to: submenu)
+        }
+
+        submenu.addItem(.separator())
+
+        let refreshItem = NSMenuItem(
+            title: usageStore.isRefreshing ? "Updating..." : "Refresh",
+            action: #selector(refreshSonioxUsage(_:)),
+            keyEquivalent: ""
+        )
+        refreshItem.target = self
+        refreshItem.isEnabled = !usageStore.isRefreshing
+        submenu.addItem(refreshItem)
+
+        let consoleItem = NSMenuItem(
+            title: "Open Soniox Console",
+            action: #selector(openSonioxConsole(_:)),
+            keyEquivalent: ""
+        )
+        consoleItem.target = self
+        submenu.addItem(consoleItem)
+    }
+
+    private func addSonioxUsageMenuItem(_ title: String, to submenu: NSMenu) {
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        item.isEnabled = false
+        submenu.addItem(item)
+    }
+
+    private func formattedSonioxCost(_ value: Decimal) -> String {
+        String(
+            format: "$%.4f",
+            locale: Locale(identifier: "en_US_POSIX"),
+            NSDecimalNumber(decimal: value).doubleValue
+        )
+    }
+
+    private func formattedSonioxPeriod(_ snapshot: SonioxUsageSnapshot) -> String {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .none
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        return "Period: " + formatter.string(from: snapshot.periodStart)
+            + " – " + formatter.string(from: snapshot.periodEnd) + " UTC"
+    }
+
+    private func formattedSonioxAudioDuration(_ milliseconds: Int64) -> String {
+        let seconds = Double(milliseconds) / 1_000
+        if seconds < 60 {
+            return String(format: "%.1f sec", locale: Locale(identifier: "en_US_POSIX"), seconds)
+        }
+        return String(format: "%.1f min", locale: Locale(identifier: "en_US_POSIX"), seconds / 60)
+    }
+
+    private func formattedSonioxDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .short
+        formatter.timeStyle = .short
+        return formatter.string(from: date)
+    }
+
+    @objc private func refreshSonioxUsage(_ sender: Any?) {
+        _ = sender
+        Task { @MainActor [weak self] in
+            await SonioxUsageStore.shared.refreshIfNeeded(force: true)
+            self?.refreshSonioxUsageMenu()
+        }
+    }
+
+    @objc private func openSonioxConsole(_ sender: Any?) {
+        _ = sender
+        guard let url = URL(string: "https://console.soniox.com") else { return }
+        NSWorkspace.shared.open(url)
     }
 
     private func refreshMicrophoneMenu() {

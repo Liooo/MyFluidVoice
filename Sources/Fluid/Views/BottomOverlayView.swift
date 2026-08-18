@@ -1971,8 +1971,6 @@ struct BottomOverlayView: View {
     @State private var dynamicPreviewMeasuredHeight: CGFloat = 0
     @State private var frozenDynamicPreviewHeight: CGFloat?
     @State private var dynamicPreviewResizeBucket: Int = 0
-    @State private var processingStatusVisible = false
-    @State private var processingStatusCycleID = 0
     @State private var lastResolvedAppIcon: NSImage?
     @State private var borderAnimationStartedAt: Date?
 
@@ -2185,33 +2183,6 @@ struct BottomOverlayView: View {
         }
     }
 
-    private var processingLabel: String {
-        switch self.contentState.mode {
-        case .dictation: return "Refining..."
-        case .edit, .rewrite, .write: return "Thinking..."
-        case .command: return "Working..."
-        }
-    }
-
-    private static let transientOverlayStatusTexts: Set<String> = [
-        "Transcribing",
-        "Refining",
-        "Thinking",
-        "Working",
-        "Transcribing...",
-        "Refining...",
-        "Thinking...",
-        "Working...",
-    ]
-
-    /// ContentView writes transient status strings into transcriptionText while processing
-    /// (e.g. "Transcribing...", "Refining..."). Prefer that when present.
-    private var processingStatusText: String {
-        let t = self.contentState.transcriptionText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard Self.transientOverlayStatusTexts.contains(t) else { return self.processingLabel }
-        return t
-    }
-
     private var hasTranscription: Bool {
         !self.transcriptionPreviewText.isEmpty
     }
@@ -2372,32 +2343,18 @@ struct BottomOverlayView: View {
 
     private var currentPreviewSizingText: String {
         guard self.shouldReservePreviewArea else { return "" }
-        if self.shouldShowProcessingPreview {
-            return self.processingPreviewText
-        }
-        return self.shouldShowProcessingStatus ? self.processingStatusText : self.transcriptionPreviewText
-    }
-
-    private var shouldShowProcessingStatus: Bool {
-        self.shouldReservePreviewArea && self.contentState.isProcessing && self.processingStatusVisible
+        return self.transcriptionPreviewText
     }
 
     private var shouldShowAIProcessingFailure: Bool {
         self.shouldReservePreviewArea && self.contentState.isAIProcessingFailureVisible && !self.contentState.isProcessing
     }
 
-    private var shouldSuppressPreviewDuringRelease: Bool {
-        if self.shouldShowProcessingPreview {
-            return false
-        }
-        return self.contentState.isBottomOverlayReleaseTransitioning || self.contentState.isBottomOverlayDismissing
-    }
-
     private func previewResizeBucket(for previewText: String) -> Int {
         guard self.shouldReservePreviewArea else { return 0 }
         if self.shouldShowAIProcessingFailure { return 1 }
         let trimmed = previewText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return self.shouldShowProcessingStatus ? 1 : 0 }
+        guard !trimmed.isEmpty else { return 0 }
 
         if self.settings.overlaySize == .small {
             return 1
@@ -2425,26 +2382,7 @@ struct BottomOverlayView: View {
     }
 
     private var transcriptionPreviewText: String {
-        let preview = self.contentState.cachedPreviewText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !self.contentState.isProcessing else { return self.contentState.cachedPreviewText }
-        guard Self.transientOverlayStatusTexts.contains(preview) else { return self.contentState.cachedPreviewText }
-        return ""
-    }
-
-    private var processingPreviewText: String {
-        guard self.contentState.isProcessing else { return "" }
-        let preview = self.transcriptionPreviewText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !Self.transientOverlayStatusTexts.contains(preview) else { return "" }
-        return self.transcriptionPreviewText
-    }
-
-    private var shouldShowProcessingPreview: Bool {
-        !self.processingPreviewText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    private func richPreviewText(_ previewText: String) -> Text {
-        Text(previewText)
-            .foregroundColor(.white.opacity(0.9))
+        self.contentState.cachedPreviewText
     }
 
     private var overlayBorderLineWidth: CGFloat {
@@ -2861,49 +2799,6 @@ struct BottomOverlayView: View {
         .frame(maxWidth: self.previewMaxWidth, alignment: .leading)
     }
 
-    private func scrollablePreviewText(_ previewText: String) -> some View {
-        ScrollViewReader { proxy in
-            ScrollView(.vertical, showsIndicators: false) {
-                self.richPreviewText(previewText)
-                    .font(.system(size: self.layout.transFontSize, weight: .medium))
-                    .multilineTextAlignment(.leading)
-                    .lineLimit(nil)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                Color.clear.frame(height: 1).id("bottom")
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .clipped()
-            .onChange(of: previewText) { _, _ in
-                DispatchQueue.main.async {
-                    proxy.scrollTo("bottom", anchor: .bottom)
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func dynamicPreviewText(_ previewText: String) -> some View {
-        if self.settings.overlaySize == .small {
-            self.richPreviewText(previewText)
-                .font(.system(size: self.layout.transFontSize, weight: .medium))
-                .multilineTextAlignment(.leading)
-                .lineLimit(1)
-                .truncationMode(.head)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.vertical, max(2, self.transcriptionVerticalPadding - 1))
-        } else {
-            self.richPreviewText(previewText)
-                .font(.system(size: self.layout.transFontSize, weight: .medium))
-                .multilineTextAlignment(.leading)
-                .lineLimit(Int(self.previewMaxHeight / max(self.estimatedPreviewLineHeight, 1)))
-                .truncationMode(.head)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(width: self.previewMaxWidth, alignment: .leading)
-                .padding(.vertical, self.transcriptionVerticalPadding)
-        }
-    }
-
     var body: some View {
         VStack(spacing: max(4, self.layout.vPadding / 2)) {
             if self.layout.showsTopControls {
@@ -2925,34 +2820,25 @@ struct BottomOverlayView: View {
                     if self.layout.usesFixedCanvas {
                         // Transcription text area (fixed-height in large mode)
                         Group {
-                            if self.shouldSuppressPreviewDuringRelease {
-                                Color.clear
-                            } else if self.shouldShowAIProcessingFailure {
+                            if self.shouldShowAIProcessingFailure {
                                 self.aiProcessingFailureView
-                            } else if self.shouldShowProcessingPreview {
-                                self.scrollablePreviewText(self.processingPreviewText)
-                            } else if self.shouldShowProcessingStatus {
-                                // Temporarily hidden; the waveform sweep carries processing state.
-                                // ShimmerText(
-                                //     text: self.processingStatusText,
-                                //     color: self.modeColor,
-                                //     font: .system(size: self.layout.transFontSize, weight: .medium)
-                                // )
-                                // .id(self.processingStatusCycleID)
-                                // .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-                                Color.clear
-                            } else if self.contentState.isProcessing {
-                                Color.clear
                             } else if self.hasTranscription {
                                 let previewText = self.transcriptionPreviewText
                                 if !previewText.isEmpty {
                                     ScrollViewReader { proxy in
                                         ScrollView(.vertical, showsIndicators: false) {
-                                            Text(previewText)
+                                            ProcessingIndicatorText(
+                                                text: previewText,
+                                                isProcessing: self.contentState.isProcessing,
+                                                maxWidth: self.previewMaxWidth,
+                                                textFontSize: self.layout.transFontSize,
+                                                truncatesToSingleLine: false
+                                            )
                                                 .font(.system(size: self.layout.transFontSize, weight: .medium))
                                                 .foregroundStyle(.white.opacity(0.9))
                                                 .multilineTextAlignment(.leading)
                                                 .lineLimit(nil)
+                                                .truncationMode(.head)
                                                 .fixedSize(horizontal: false, vertical: true)
                                                 .frame(maxWidth: .infinity, alignment: .leading)
                                             Color.clear.frame(height: 1).id("bottom")
@@ -2971,6 +2857,16 @@ struct BottomOverlayView: View {
                                         }
                                     }
                                 }
+                            } else if self.contentState.isProcessing {
+                                ProcessingIndicatorText(
+                                    text: "",
+                                    isProcessing: true,
+                                    maxWidth: self.previewMaxWidth,
+                                    textFontSize: self.layout.transFontSize
+                                )
+                                    .font(.system(size: self.layout.transFontSize, weight: .medium))
+                                    .foregroundStyle(.white.opacity(0.9))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
                             } else {
                                 Color.clear
                             }
@@ -2985,17 +2881,18 @@ struct BottomOverlayView: View {
                     } else {
                         // Original dynamic preview behavior for small/medium
                         Group {
-                            if self.shouldSuppressPreviewDuringRelease {
-                                Color.clear
-                            } else if self.shouldShowAIProcessingFailure {
+                            if self.shouldShowAIProcessingFailure {
                                 self.aiProcessingFailureView
-                            } else if self.shouldShowProcessingPreview {
-                                self.dynamicPreviewText(self.processingPreviewText)
-                            } else if self.hasTranscription && !self.contentState.isProcessing {
+                            } else if self.hasTranscription {
                                 let previewText = self.transcriptionPreviewText
                                 if !previewText.isEmpty {
                                     if self.settings.overlaySize == .small {
-                                        Text(previewText)
+                                        ProcessingIndicatorText(
+                                            text: previewText,
+                                            isProcessing: self.contentState.isProcessing,
+                                            maxWidth: self.previewMaxWidth,
+                                            textFontSize: self.layout.transFontSize
+                                        )
                                             .font(.system(size: self.layout.transFontSize, weight: .medium))
                                             .foregroundStyle(.white.opacity(0.9))
                                             .multilineTextAlignment(.leading)
@@ -3004,28 +2901,38 @@ struct BottomOverlayView: View {
                                             .frame(maxWidth: .infinity, alignment: .leading)
                                             .padding(.vertical, max(2, self.transcriptionVerticalPadding - 1))
                                     } else {
-                                        Text(previewText)
+                                        ProcessingIndicatorText(
+                                            text: previewText,
+                                            isProcessing: self.contentState.isProcessing,
+                                            maxWidth: self.previewMaxWidth,
+                                            textFontSize: self.layout.transFontSize,
+                                            truncatesToSingleLine: false
+                                        )
                                             .font(.system(size: self.layout.transFontSize, weight: .medium))
                                             .foregroundStyle(.white.opacity(0.9))
                                             .multilineTextAlignment(.leading)
-                                            .lineLimit(Int(self.previewMaxHeight / max(self.estimatedPreviewLineHeight, 1)))
+                                            .lineLimit(
+                                                Int(self.previewMaxHeight / max(self.estimatedPreviewLineHeight, 1))
+                                            )
                                             .truncationMode(.head)
                                             .fixedSize(horizontal: false, vertical: true)
                                             .frame(width: self.previewMaxWidth, alignment: .leading)
                                             .padding(.vertical, self.transcriptionVerticalPadding)
                                     }
                                 }
-                            } else if self.shouldShowProcessingStatus {
-                                // Temporarily hidden; the waveform sweep carries processing state.
-                                // ShimmerText(
-                                //     text: self.processingStatusText,
-                                //     color: self.modeColor,
-                                //     font: .system(size: self.layout.transFontSize, weight: .medium)
-                                // )
-                                // .id(self.processingStatusCycleID)
-                                Color.clear
                             } else if self.contentState.isProcessing {
-                                Color.clear
+                                ProcessingIndicatorText(
+                                    text: "",
+                                    isProcessing: true,
+                                    maxWidth: self.previewMaxWidth,
+                                    textFontSize: self.layout.transFontSize
+                                )
+                                    .font(.system(size: self.layout.transFontSize, weight: .medium))
+                                    .foregroundStyle(.white.opacity(0.9))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.vertical, self.settings.overlaySize == .small
+                                        ? max(2, self.transcriptionVerticalPadding - 1)
+                                        : self.transcriptionVerticalPadding)
                             } else {
                                 Color.clear
                             }
@@ -3163,11 +3070,6 @@ struct BottomOverlayView: View {
                 }
             )
             .frame(maxWidth: .infinity, alignment: .top)
-            .transaction { transaction in
-                if self.shouldSuppressPreviewDuringRelease {
-                    transaction.animation = nil
-                }
-            }
         }
         .frame(
             width: self.layout.usesFixedCanvas ? self.layout.overlayWidth : self.layout.containerWidth,
@@ -3219,9 +3121,7 @@ struct BottomOverlayView: View {
             }
         }
         .onChange(of: self.contentState.isProcessing) { _, processing in
-            self.processingStatusVisible = processing
             if processing {
-                self.processingStatusCycleID &+= 1
                 self.closePromptMenu()
                 self.closeModeMenu()
                 self.closeActionsMenu()
@@ -3235,10 +3135,6 @@ struct BottomOverlayView: View {
             }
         }
         .onChange(of: self.contentState.isAIProcessingFailureVisible) { _, _ in
-            guard !self.layout.usesFixedCanvas else { return }
-            self.refreshDynamicPreviewSizeIfNeeded(for: self.currentPreviewSizingText)
-        }
-        .onChange(of: self.processingStatusVisible) { _, _ in
             guard !self.layout.usesFixedCanvas else { return }
             self.refreshDynamicPreviewSizeIfNeeded(for: self.currentPreviewSizingText)
         }
@@ -3324,33 +3220,25 @@ struct BottomWaveformView: View {
         !self.layout.showsModeLabel
     }
 
-    private var isProcessingVisualActive: Bool {
-        self.contentState.isProcessing || self.isReleaseAnimationActive
-    }
-
     private var currentGlowIntensity: CGFloat {
         if self.isPillStyle {
             return 0.0
         }
-        return self.isProcessingVisualActive ? 0.0 : 0.5
+        return 0.5
     }
 
     private var currentGlowRadius: CGFloat {
         if self.isPillStyle {
             return 0.0
         }
-        return self.isProcessingVisualActive ? 0.0 : 4
+        return 4
     }
 
     private var barFillColor: Color {
         if self.isPillStyle {
-            return Color.white.opacity(self.isProcessingVisualActive ? 0.32 : 0.88)
+            return Color.white.opacity(0.88)
         }
-        return self.color.opacity(self.isProcessingVisualActive ? 0.16 : 1.0)
-    }
-
-    private var isReleaseAnimationActive: Bool {
-        self.contentState.isBottomOverlayReleaseTransitioning || self.contentState.isBottomOverlayDismissing
+        return self.color
     }
 
     /// Safe accessor for bar heights to prevent index-out-of-range crashes
@@ -3365,29 +3253,9 @@ struct BottomWaveformView: View {
         ZStack {
             self.barsView
                 .foregroundStyle(self.barFillColor)
-
-            if self.isProcessingVisualActive {
-                CompositorShimmerSweep(duration: 1.05, peakOpacity: 0.9)
-                    .mask {
-                        self.barsView
-                    }
-                    .shadow(color: .white.opacity(0.28), radius: 2.5, x: 0, y: 0)
-            }
         }
         .onChange(of: self.contentState.bottomOverlayAudioLevel) { _, level in
-            guard !self.isReleaseAnimationActive else { return }
-            if !self.contentState.isProcessing {
-                self.updateBars(level: level)
-            }
-        }
-        .onChange(of: self.contentState.isProcessing) { _, processing in
-            guard !self.isReleaseAnimationActive else { return }
-            if processing {
-                self.setFlatProcessingBars()
-            } else {
-                // Resume from silence; next audio tick will animate up.
-                self.updateBars(level: 0)
-            }
+            self.updateBars(level: level)
         }
         .onChange(of: self.layout.barCount) { _, newCount in
             self.barHeights = Array(repeating: self.minHeight, count: newCount)
@@ -3397,13 +3265,7 @@ struct BottomWaveformView: View {
             if self.barHeights.count != self.barCount {
                 self.barHeights = Array(repeating: self.minHeight, count: self.barCount)
             }
-            if self.isReleaseAnimationActive {
-                self.barHeights = Array(repeating: self.minHeight, count: self.barCount)
-            } else if self.contentState.isProcessing {
-                self.setFlatProcessingBars()
-            } else {
-                self.updateBars(level: 0)
-            }
+            self.updateBars(level: self.contentState.bottomOverlayAudioLevel)
         }
         .onDisappear {
             // No timers to clean up.
@@ -3423,8 +3285,8 @@ struct BottomWaveformView: View {
                 RoundedRectangle(cornerRadius: self.barWidth / 2)
                     .frame(width: self.barWidth, height: self.displayHeight(at: index))
                     .shadow(
-                        color: self.color.opacity(self.isReleaseAnimationActive ? 0 : self.currentGlowIntensity),
-                        radius: self.isReleaseAnimationActive ? 0 : self.currentGlowRadius,
+                        color: self.color.opacity(self.currentGlowIntensity),
+                        radius: self.currentGlowRadius,
                         x: 0,
                         y: 0
                     )
@@ -3433,9 +3295,6 @@ struct BottomWaveformView: View {
     }
 
     private func displayHeight(at index: Int) -> CGFloat {
-        if self.isReleaseAnimationActive || self.contentState.isProcessing {
-            return self.minHeight
-        }
         return self.safeBarHeight(at: index)
     }
 
@@ -3445,18 +3304,6 @@ struct BottomWaveformView: View {
         let normalizedDistance = min(centerDistance / maxDistance, 1)
         let factor = max(0.18, 0.96 - normalizedDistance * 0.78)
         return self.minHeight + (self.maxHeight - self.minHeight) * factor
-    }
-
-    private func setFlatProcessingBars() {
-        // Ensure array is properly sized before modifying
-        guard self.barHeights.count >= self.barCount else { return }
-
-        // During AI processing we want the visualizer to settle to silence (flat).
-        withAnimation(.easeOut(duration: 0.18)) {
-            for i in 0..<self.barCount {
-                self.barHeights[i] = self.minHeight
-            }
-        }
     }
 
     private func updateBars(level: CGFloat) {

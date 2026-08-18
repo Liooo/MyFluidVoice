@@ -58,6 +58,14 @@ extension SettingsStore {
             )
         }
 
+        var usageSummaryURL: URL {
+            self.makeURL(
+                scheme: "https",
+                host: self == .global ? "api.soniox.com" : "api.jp.soniox.com",
+                path: "/v1/usage/summary"
+            )
+        }
+
         var webSocketURL: URL {
             self.makeURL(
                 scheme: "wss",

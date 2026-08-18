@@ -56,6 +56,8 @@ struct SettingsBackupPayload: Codable, Equatable {
     let enableTranscriptionSounds: Bool?
     let transcriptionStartSound: SettingsStore.TranscriptionStartSound
     let transcriptionEndSound: SettingsStore.TranscriptionEndSound?
+    let transcriptionStartSystemSoundName: String?
+    let transcriptionEndSystemSoundName: String?
     let transcriptionSoundVolume: Float
     let transcriptionSoundIndependentVolume: Bool
     let autoUpdateCheckEnabled: Bool

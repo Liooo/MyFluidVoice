@@ -27,6 +27,7 @@
 		A5B10C0D0000000000000002 /* SonioxProviderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5B10C0D0000000000000001 /* SonioxProviderTests.swift */; };
 		A5B10C0D0000000000000004 /* SonioxCredentialSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5B10C0D0000000000000003 /* SonioxCredentialSettingsTests.swift */; };
 		A5B10C0D0000000000000006 /* SonioxScopeRoutingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5B10C0D0000000000000005 /* SonioxScopeRoutingTests.swift */; };
+		B1A7D0C40000000000000002 /* SonioxUsageStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1A7D0C40000000000000001 /* SonioxUsageStoreTests.swift */; };
 		7C4E4F544943450000000002 /* THIRD_PARTY_NOTICES.txt in Resources */ = {isa = PBXBuildFile; fileRef = 7C4E4F544943450000000001 /* THIRD_PARTY_NOTICES.txt */; };
 		7CDB0A2F2F3C4D5600FB7CAD /* dictation_fixture.wav in Resources */ = {isa = PBXBuildFile; fileRef = 7CDB0A2B2F3C4D5600FB7CAD /* dictation_fixture.wav */; };
 		7CDB0A302F3C4D5600FB7CAD /* XCTest.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7CDB0A2C2F3C4D5600FB7CAD /* XCTest.framework */; };
@@ -77,6 +78,7 @@
 		A5B10C0D0000000000000001 /* SonioxProviderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SonioxProviderTests.swift; sourceTree = "<group>"; };
 		A5B10C0D0000000000000003 /* SonioxCredentialSettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SonioxCredentialSettingsTests.swift; sourceTree = "<group>"; };
 		A5B10C0D0000000000000005 /* SonioxScopeRoutingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SonioxScopeRoutingTests.swift; sourceTree = "<group>"; };
+		B1A7D0C40000000000000001 /* SonioxUsageStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SonioxUsageStoreTests.swift; sourceTree = "<group>"; };
 		7C4E4F544943450000000001 /* THIRD_PARTY_NOTICES.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = Sources/Fluid/Resources/THIRD_PARTY_NOTICES.txt; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
@@ -169,6 +171,7 @@
 				A5B10C0D0000000000000001 /* SonioxProviderTests.swift */,
 				A5B10C0D0000000000000003 /* SonioxCredentialSettingsTests.swift */,
 				A5B10C0D0000000000000005 /* SonioxScopeRoutingTests.swift */,
+				B1A7D0C40000000000000001 /* SonioxUsageStoreTests.swift */,
 			);
 			path = FluidDictationIntegrationTests;
 			sourceTree = "<group>";
@@ -335,6 +338,7 @@
 				A5B10C0D0000000000000002 /* SonioxProviderTests.swift in Sources */,
 				A5B10C0D0000000000000004 /* SonioxCredentialSettingsTests.swift in Sources */,
 				A5B10C0D0000000000000006 /* SonioxScopeRoutingTests.swift in Sources */,
+				B1A7D0C40000000000000002 /* SonioxUsageStoreTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
