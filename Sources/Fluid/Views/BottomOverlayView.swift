@@ -2298,7 +2298,9 @@ struct BottomOverlayView: View {
     }
 
     private var previewMaxHeight: CGFloat {
-        self.layout.usesFixedCanvas ? self.layout.previewBoxHeight : self.layout.transFontSize * 4.2
+        guard !self.layout.usesFixedCanvas else { return self.layout.previewBoxHeight }
+        let lineCount = max(self.settings.transcriptionPreviewMaxLines, 1)
+        return self.estimatedPreviewLineHeight * CGFloat(lineCount) + self.layout.transFontSize * 0.45
     }
 
     private var shouldReservePreviewArea: Bool {
@@ -2912,7 +2914,7 @@ struct BottomOverlayView: View {
                                             .foregroundStyle(.white.opacity(0.9))
                                             .multilineTextAlignment(.leading)
                                             .lineLimit(
-                                                Int(self.previewMaxHeight / max(self.estimatedPreviewLineHeight, 1))
+                                                self.settings.transcriptionPreviewMaxLines
                                             )
                                             .truncationMode(.head)
                                             .fixedSize(horizontal: false, vertical: true)
@@ -3097,6 +3099,11 @@ struct BottomOverlayView: View {
         .animation(.timingCurve(0.22, 0.0, 0.2, 1.0, duration: 0.02), value: self.contentState.isBottomOverlayDismissing)
         .animation(.easeInOut(duration: 0.25), value: self.contentState.isProcessing)
         .onChange(of: self.settings.overlaySize) { _, _ in
+            self.dynamicPreviewResizeBucket = self.previewResizeBucket(for: self.currentPreviewSizingText)
+            self.frozenDynamicPreviewHeight = nil
+            BottomOverlayWindowController.shared.refreshSizeForContent()
+        }
+        .onChange(of: self.settings.transcriptionPreviewMaxLines) { _, _ in
             self.dynamicPreviewResizeBucket = self.previewResizeBucket(for: self.currentPreviewSizingText)
             self.frozenDynamicPreviewHeight = nil
             BottomOverlayWindowController.shared.refreshSizeForContent()

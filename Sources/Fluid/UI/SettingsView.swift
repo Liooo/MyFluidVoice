@@ -1164,6 +1164,29 @@ struct SettingsView: View {
                                 }
                             }
 
+                            if self.settings.overlayPosition == .bottom {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("Maximum Live Preview Lines")
+                                            .font(self.theme.typography.bodyStrong)
+                                            .foregroundStyle(self.settingsTitleText)
+                                        Text("How many lines the bottom overlay can show")
+                                            .font(self.theme.typography.bodySmall)
+                                            .foregroundStyle(self.settingsSecondaryText)
+                                    }
+
+                                    Spacer()
+
+                                    Picker("", selection: self.$settings.transcriptionPreviewMaxLines) {
+                                        ForEach(SettingsStore.transcriptionPreviewMaxLinesRange, id: \.self) { lineCount in
+                                            Text("\(lineCount) lines").tag(lineCount)
+                                        }
+                                    }
+                                    .pickerStyle(.menu)
+                                    .frame(width: 170, alignment: .trailing)
+                                }
+                            }
+
                             Divider().padding(.vertical, 4)
 
                             HStack {

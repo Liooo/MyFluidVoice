@@ -17,6 +17,8 @@ final class SettingsStore: ObservableObject {
     static let transcriptionPreviewCharLimitRange: ClosedRange<Int> = 50...800
     static let transcriptionPreviewCharLimitStep = 50
     static let defaultTranscriptionPreviewCharLimit = 150
+    static let transcriptionPreviewMaxLinesRange: ClosedRange<Int> = 1...30
+    static let defaultTranscriptionPreviewMaxLines = 3
     static let privateAIContextTokenLimitRange: ClosedRange<Int> = 2048...8192
     static let privateAIContextTokenLimitStep = 512
     static let defaultPrivateAIContextTokenLimit = 4096
@@ -2321,6 +2323,31 @@ final class SettingsStore: ObservableObject {
         return max(range.lowerBound, min(range.upperBound, range.lowerBound + snappedOffset))
     }
 
+    /// Maximum number of lines shown in the dynamic bottom overlay preview (default: 3)
+    var transcriptionPreviewMaxLines: Int {
+        get {
+            let stored = self.defaults.object(forKey: Keys.transcriptionPreviewMaxLines) as? NSNumber
+            let value = stored?.intValue ?? Self.defaultTranscriptionPreviewMaxLines
+            return Self.normalizedTranscriptionPreviewMaxLines(value)
+        }
+        set {
+            let clamped = Self.normalizedTranscriptionPreviewMaxLines(newValue)
+            guard clamped != self.transcriptionPreviewMaxLines else { return }
+
+            objectWillChange.send()
+            self.defaults.set(clamped, forKey: Keys.transcriptionPreviewMaxLines)
+            NotificationCenter.default.post(
+                name: NSNotification.Name("TranscriptionPreviewMaxLinesChanged"),
+                object: nil
+            )
+        }
+    }
+
+    private static func normalizedTranscriptionPreviewMaxLines(_ value: Int) -> Int {
+        let range = Self.transcriptionPreviewMaxLinesRange
+        return max(range.lowerBound, min(range.upperBound, value))
+    }
+
     // MARK: - Preferences Settings
 
     enum AccentColorOption: String, CaseIterable, Identifiable, Codable {
@@ -3437,6 +3464,7 @@ final class SettingsStore: ObservableObject {
             overlayBottomOffset: self.overlayBottomOffset,
             overlaySize: self.overlaySize,
             transcriptionPreviewCharLimit: self.transcriptionPreviewCharLimit,
+            transcriptionPreviewMaxLines: self.transcriptionPreviewMaxLines,
             userTypingWPM: self.userTypingWPM,
             saveTranscriptionHistory: self.saveTranscriptionHistory,
             saveAudioWithTranscriptionHistory: self.saveAudioWithTranscriptionHistory,
@@ -3603,6 +3631,7 @@ final class SettingsStore: ObservableObject {
         self.overlayBottomOffset = payload.overlayBottomOffset
         self.overlaySize = payload.overlaySize
         self.transcriptionPreviewCharLimit = payload.transcriptionPreviewCharLimit
+        self.transcriptionPreviewMaxLines = payload.transcriptionPreviewMaxLines ?? Self.defaultTranscriptionPreviewMaxLines
         self.userTypingWPM = payload.userTypingWPM
         self.saveTranscriptionHistory = payload.saveTranscriptionHistory
         if let saveAudioWithTranscriptionHistory = payload.saveAudioWithTranscriptionHistory {
@@ -5560,6 +5589,7 @@ private extension SettingsStore {
         static let overlayBottomOffsetMigratedTo50 = "OverlayBottomOffsetMigratedTo50"
         static let overlaySize = "OverlaySize"
         static let transcriptionPreviewCharLimit = "TranscriptionPreviewCharLimit"
+        static let transcriptionPreviewMaxLines = "TranscriptionPreviewMaxLines"
 
         /// Media Playback Control
         static let pauseMediaDuringTranscription = "PauseMediaDuringTranscription"

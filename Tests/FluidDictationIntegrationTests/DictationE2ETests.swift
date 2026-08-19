@@ -2964,6 +2964,7 @@ final class WorkflowSettingsTests: XCTestCase {
     private let escapeExitActionKey = "EscapeExitAction"
     private let outsideClickExitActionKey = "OutsideClickExitAction"
     private let copyWhenNoWritableInputFocusedKey = "CopyWhenNoWritableInputFocused"
+    private let transcriptionPreviewMaxLinesKey = "TranscriptionPreviewMaxLines"
     private let sonioxLanguageModeKey = "SonioxLanguageMode"
     private let sonioxRegionKey = "SonioxRegion"
     private let sonioxReceiptKey = "SonioxVerificationReceipt"
@@ -3053,6 +3054,21 @@ final class WorkflowSettingsTests: XCTestCase {
         }
     }
 
+    func testTranscriptionPreviewMaxLinesClampsAndPersists() {
+        self.withRestoredDefaults(keys: [self.transcriptionPreviewMaxLinesKey]) {
+            let settings = SettingsStore.shared
+            UserDefaults.standard.removeObject(forKey: self.transcriptionPreviewMaxLinesKey)
+
+            XCTAssertEqual(settings.transcriptionPreviewMaxLines, SettingsStore.defaultTranscriptionPreviewMaxLines)
+
+            settings.transcriptionPreviewMaxLines = 0
+            XCTAssertEqual(settings.transcriptionPreviewMaxLines, SettingsStore.transcriptionPreviewMaxLinesRange.lowerBound)
+
+            settings.transcriptionPreviewMaxLines = 99
+            XCTAssertEqual(settings.transcriptionPreviewMaxLines, SettingsStore.transcriptionPreviewMaxLinesRange.upperBound)
+        }
+    }
+
     func testWorkflowSettingsAreIncludedInBackupPayload() {
         self.withRestoredDefaults(keys: [
             self.modelAssignmentsKey,
@@ -3109,6 +3125,19 @@ final class WorkflowSettingsTests: XCTestCase {
 
         XCTAssertNil(decoded.sonioxLanguageModeID)
         XCTAssertNil(decoded.sonioxRegionID)
+    }
+
+    func testLegacyBackupWithoutPreviewLineLimitStillDecodes() throws {
+        let encoded = try JSONEncoder().encode(SettingsStore.shared.makeBackupPayload())
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        object.removeValue(forKey: "transcriptionPreviewMaxLines")
+
+        let decoded = try JSONDecoder().decode(
+            SettingsBackupPayload.self,
+            from: JSONSerialization.data(withJSONObject: object)
+        )
+
+        XCTAssertNil(decoded.transcriptionPreviewMaxLines)
     }
 
     func testBackupIncludesOnlyNonSecretSonioxModeAndRegion() throws {

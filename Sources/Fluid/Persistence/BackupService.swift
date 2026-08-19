@@ -89,6 +89,8 @@ struct SettingsBackupPayload: Codable, Equatable {
     let overlayBottomOffset: Double
     let overlaySize: SettingsStore.OverlaySize
     let transcriptionPreviewCharLimit: Int
+    // Optional so backups created before configurable preview line limits still decode.
+    let transcriptionPreviewMaxLines: Int?
     let userTypingWPM: Int
     let saveTranscriptionHistory: Bool
     let saveAudioWithTranscriptionHistory: Bool?
