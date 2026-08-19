@@ -2964,8 +2964,20 @@ struct BottomOverlayView: View {
                         .frame(width: self.layout.waveformWidth, height: self.layout.waveformHeight)
 
                     if let inputSourceBadge, !inputSourceBadge.isEmpty {
-                        self.inputSourceBadgeView(inputSourceBadge)
-                            .padding(.leading, self.layout.hPadding / 3)
+                        HStack(spacing: max(2, self.layout.hPadding / 4)) {
+                            self.inputSourceBadgeView(inputSourceBadge)
+                                .grayscale(self.contentState.isInputSourceSwitching ? 1 : 0)
+                                .opacity(self.contentState.isInputSourceSwitching ? 0.58 : 1)
+
+                            if self.contentState.isInputSourceSwitching {
+                                ProgressView()
+                                    .controlSize(.mini)
+                                    .tint(.white.opacity(0.72))
+                                    .accessibilityLabel("Switching input source")
+                            }
+                        }
+                        .fixedSize(horizontal: true, vertical: false)
+                        .padding(.leading, self.layout.hPadding / 3)
                     }
 
                     // Mode label + model load hint
