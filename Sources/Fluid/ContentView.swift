@@ -245,6 +245,7 @@ struct ContentView: View {
     @StateObject private var rewriteModeService = RewriteModeService()
     @EnvironmentObject private var menuBarManager: MenuBarManager
     @ObservedObject private var settings = SettingsStore.shared
+    @StateObject private var inputSourceChangeMonitor = KeyboardInputSourceChangeMonitor()
 
     /// Computed properties to access shared services from AppServices container
     /// This maintains backward compatibility with the existing code while
@@ -288,6 +289,8 @@ struct ContentView: View {
     @State private var pendingModifierOnly = false
     @State private var recordingFinalizationTask: Task<Void, Never>?
     @State private var recordingFinalizationID: UUID?
+    @State private var inputSourceSwitchTask: Task<Void, Never>?
+    @State private var inputSourceSwitchQueue = RecordingSpeechConfigurationSwitchQueue()
     @State private var shortcutModifierTapCaptureState = ShortcutModifierTapCaptureDecision.State()
     @State private var shortcutModifierTapCommitTask: Task<Void, Never>?
     @State private var shortcutRecordingMessage: String? = nil
@@ -448,9 +451,16 @@ struct ContentView: View {
             .onChange(of: self.audioObserver.inputAvailabilityTick) { _, _ in
                 self.refreshInputDevices()
             }
+            .onChange(of: self.inputSourceChangeMonitor.changeTick) { _, _ in
+                self.handleInputSourceChange(for: self.inputSourceChangeMonitor.sourceSnapshot)
+            }
             .onDisappear {
                 Task { await self.cancelActiveRecordingWithoutTranscription() }
                 self.cancelPrewarmDictationIfNeeded()
+                self.inputSourceSwitchTask?.cancel()
+                self.inputSourceSwitchTask = nil
+                self.inputSourceSwitchQueue = RecordingSpeechConfigurationSwitchQueue()
+                NotchContentState.shared.isInputSourceSwitching = false
                 // Note: Overlay lifecycle is now managed by MenuBarManager
                 // Note: NotchContentState handlers capture self (a struct value copy) and are
                 // intentionally kept alive so the overlay remains fully functional when the
@@ -1881,6 +1891,139 @@ struct ContentView: View {
         NotchContentState.shared.recordingInputSourceBadge = KeyboardInputSourceService.currentInputSourceBadge()
     }
 
+    private func resolvedDictationSpeechConfiguration(
+        for inputSource: KeyboardInputSourceSnapshot?
+    ) -> RecordingSpeechConfiguration {
+        let assignedModel = inputSource.flatMap {
+            SettingsStore.shared.speechModelAssignment(forInputSourceID: $0.id)
+        }
+        let fallback = RecordingSpeechConfigurationResolver.globalFallbackConfiguration(
+            model: SettingsStore.shared.selectedSpeechModel,
+            selectedLanguageID: SettingsStore.shared.onboardingSelectedLanguageID,
+            appleLocaleIdentifier: SettingsStore.shared.selectedAppleSpeechLocale.identifier,
+            cohereLanguage: SettingsStore.shared.selectedCohereLanguage,
+            nemotronLanguage: SettingsStore.shared.selectedNemotronLanguage,
+            sonioxLanguageMode: SettingsStore.shared.sonioxLanguageMode,
+            sonioxRegion: SettingsStore.shared.sonioxRegion
+        ) ?? RecordingSpeechConfigurationResolver.currentLocalFallbackConfiguration()
+        return RecordingSpeechConfigurationResolver.resolve(
+            inputSource: inputSource,
+            assignedModel: assignedModel,
+            globalFallback: fallback,
+            sonioxLanguageMode: SettingsStore.shared.sonioxLanguageMode,
+            sonioxRegion: SettingsStore.shared.sonioxRegion
+        )
+    }
+
+    private func handleInputSourceChange(for inputSource: KeyboardInputSourceSnapshot?) {
+        guard let session = self.dictationSessionCoordinator.currentSession else {
+            DebugLogger.shared.debug(
+                "Input-source change ignored: no active dictation session",
+                source: "ContentView"
+            )
+            return
+        }
+        guard self.dictationSessionCoordinator.isCapturing(session.id), self.asr.isRunning else {
+            DebugLogger.shared.debug(
+                "Input-source change ignored: session is not capturing or ASR is stopped",
+                source: "ContentView"
+            )
+            return
+        }
+        guard let inputSource else {
+            DebugLogger.shared.warning(
+                "Input-source change ignored: current input source could not be resolved",
+                source: "ContentView"
+            )
+            return
+        }
+
+        let configuration = self.resolvedDictationSpeechConfiguration(for: inputSource)
+        DebugLogger.shared.info(
+            "Input-source change while recording: source=\(inputSource.id) locale=\(configuration.localeIdentifier) model=\(configuration.model.id) previousLocale=\(session.speechConfiguration.localeIdentifier) previousModel=\(session.speechConfiguration.model.id)",
+            source: "ContentView"
+        )
+
+        // The session configuration is updated only after the in-flight ASR
+        // boundary finishes. Keep the exact latest configuration instead of a
+        // boolean and a later TIS re-read: rapid input-source changes can make
+        // that re-read observe the wrong side of the transition.
+        if self.inputSourceSwitchTask != nil {
+            self.inputSourceSwitchQueue.replace(with: configuration)
+            NotchContentState.shared.isInputSourceSwitching = true
+            self.captureRecordingInputSourceBadge()
+            DebugLogger.shared.info(
+                "Input-source change queued while switch is in flight: locale=\(configuration.localeIdentifier) model=\(configuration.model.id)",
+                source: "ContentView"
+            )
+            return
+        }
+
+        guard configuration != session.speechConfiguration else {
+            DebugLogger.shared.debug(
+                "Input-source change produced the same speech configuration",
+                source: "ContentView"
+            )
+            return
+        }
+
+        // The visual badge follows the OS shortcut immediately, while ASR
+        // finalizes the old audio segment in the background.
+        NotchContentState.shared.isInputSourceSwitching = true
+        self.captureRecordingInputSourceBadge()
+        self.startInputSourceSwitch(
+            sessionID: session.id,
+            configuration: configuration
+        )
+    }
+
+    private func startInputSourceSwitch(
+        sessionID: RecordingSessionID,
+        configuration: RecordingSpeechConfiguration
+    ) {
+        let switchTask = Task { @MainActor in
+            let didSwitch = await self.asr.switchRecordingSpeechConfiguration(
+                sessionID: sessionID,
+                speechConfiguration: configuration
+            )
+            DebugLogger.shared.info(
+                "Input-source ASR switch completed: success=\(didSwitch) model=\(configuration.model.id) locale=\(configuration.localeIdentifier)",
+                source: "ContentView"
+            )
+            if didSwitch,
+               self.dictationSessionCoordinator.isCapturing(sessionID)
+            {
+                _ = self.dictationSessionCoordinator.updateSpeechConfiguration(
+                    configuration,
+                    for: sessionID
+                )
+            }
+
+            self.inputSourceSwitchTask = nil
+            guard didSwitch else {
+                _ = self.inputSourceSwitchQueue.take()
+                NotchContentState.shared.isInputSourceSwitching = false
+                return
+            }
+            guard let pendingConfiguration = self.inputSourceSwitchQueue.take(),
+                  self.dictationSessionCoordinator.isCapturing(sessionID),
+                  self.asr.isRunning,
+                  let currentSession = self.dictationSessionCoordinator.currentSession,
+                  pendingConfiguration != currentSession.speechConfiguration
+            else {
+                NotchContentState.shared.isInputSourceSwitching = false
+                return
+            }
+
+            NotchContentState.shared.isInputSourceSwitching = true
+            self.startInputSourceSwitch(
+                sessionID: sessionID,
+                configuration: pendingConfiguration
+            )
+        }
+        self.inputSourceSwitchTask = switchTask
+    }
+
     private func resolveTypingTargetPID() -> (pid: pid_t?, shouldRestoreOriginalFocus: Bool) {
         let originalPID = NotchContentState.shared.recordingTargetPID
         let currentFocusedPID = TypingService.currentSystemFocusedPID()
@@ -2273,6 +2416,9 @@ struct ContentView: View {
     // MARK: - Stop and Process Transcription
 
     private func runStopAndProcessTranscription(route: DictationOutputRoute = .normal) async {
+        while let inputSourceSwitchTask = self.inputSourceSwitchTask {
+            await inputSourceSwitchTask.value
+        }
         if let recordingFinalizationTask {
             await recordingFinalizationTask.value
             return
@@ -4357,31 +4503,13 @@ extension ContentView {
     }
 
     private func beginDictationSession(
+        inputSource: KeyboardInputSourceSnapshot? = nil,
         activationStyleOverride: DictationActivationStyle? = nil,
         exitPoliciesEnabled: Bool = true
     ) -> DictationSessionCoordinator.Session {
-        let inputSource = KeyboardInputSourceService.currentInputSource()
-        let assignedModel = inputSource.flatMap {
-            SettingsStore.shared.speechModelAssignment(forInputSourceID: $0.id)
-        }
-        let sonioxLanguageMode = SettingsStore.shared.sonioxLanguageMode
-        let sonioxRegion = SettingsStore.shared.sonioxRegion
-        let fallback = RecordingSpeechConfigurationResolver.globalFallbackConfiguration(
-            model: SettingsStore.shared.selectedSpeechModel,
-            selectedLanguageID: SettingsStore.shared.onboardingSelectedLanguageID,
-            appleLocaleIdentifier: SettingsStore.shared.selectedAppleSpeechLocale.identifier,
-            cohereLanguage: SettingsStore.shared.selectedCohereLanguage,
-            nemotronLanguage: SettingsStore.shared.selectedNemotronLanguage,
-            sonioxLanguageMode: sonioxLanguageMode,
-            sonioxRegion: sonioxRegion
-        ) ?? RecordingSpeechConfigurationResolver.currentLocalFallbackConfiguration()
-        let configuration = RecordingSpeechConfigurationResolver.resolve(
-            inputSource: inputSource,
-            assignedModel: assignedModel,
-            globalFallback: fallback,
-            sonioxLanguageMode: sonioxLanguageMode,
-            sonioxRegion: sonioxRegion
-        )
+        let inputSource = inputSource ?? KeyboardInputSourceService.currentInputSource()
+        self.inputSourceChangeMonitor.synchronize(to: inputSource)
+        let configuration = self.resolvedDictationSpeechConfiguration(for: inputSource)
         let activationStyle: DictationActivationStyle = activationStyleOverride ?? (
             self.hotkeyMode == .toggle ? .toggle : .pushToTalk
         )
@@ -4481,6 +4609,7 @@ extension ContentView {
             self.appBench("asr_start_skipped reason=already_running_or_starting")
             return
         }
+        let inputSource = KeyboardInputSourceService.currentInputSource()
         // Capture focus before overlay/session UI can become the frontmost target.
         self.captureRecordingContext()
         self.captureRecordingInputSourceBadge()
@@ -4494,7 +4623,10 @@ extension ContentView {
         self.applyDictationShortcutSelectionContext(for: slot)
         self.setActiveRecordingMode(mode)
         self.rewriteModeService.clearState()
-        let session = self.beginDictationSession(activationStyleOverride: activationStyleOverride)
+        let session = self.beginDictationSession(
+            inputSource: inputSource,
+            activationStyleOverride: activationStyleOverride
+        )
         self.advanceOverlayLifecycle()
         if self.asr.micStatus == .authorized {
             self.appBench("overlay_mode_request mode=Dictation")

@@ -4074,11 +4074,19 @@ final class LiveInputSourceSwitchTests: XCTestCase {
             ))
         ))
         var pending = RecordingSpeechConfigurationSwitchQueue()
+        let presentationState = NotchContentState.shared
+        let originalPresentationState = presentationState.isInputSourceSwitching
+        defer { presentationState.isInputSourceSwitching = originalPresentationState }
 
+        presentationState.isInputSourceSwitching = true
         pending.replace(with: english)
         pending.replace(with: japanese)
 
+        XCTAssertTrue(presentationState.isInputSourceSwitching)
         XCTAssertEqual(pending.take(), japanese)
+
+        presentationState.isInputSourceSwitching = false
+        XCTAssertFalse(presentationState.isInputSourceSwitching)
         XCTAssertNil(pending.take())
     }
 #endif
