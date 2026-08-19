@@ -55,4 +55,18 @@ final nonisolated class ThreadSafeAudioBuffer {
         defer { lock.unlock() }
         return self.buffer
     }
+
+    /// Atomically removes and returns a prefix. Samples appended by the audio
+    /// callback after the boundary remain in the buffer for the next segment.
+    func drainPrefix(_ length: Int) -> [Float] {
+        self.lock.lock()
+        defer { lock.unlock() }
+
+        let safeLength = min(max(length, 0), self.buffer.count)
+        guard safeLength > 0 else { return [] }
+
+        let drained = Array(self.buffer.prefix(safeLength))
+        self.buffer.removeFirst(safeLength)
+        return drained
+    }
 }

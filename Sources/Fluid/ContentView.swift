@@ -457,6 +457,7 @@ struct ContentView: View {
             .onDisappear {
                 Task { await self.cancelActiveRecordingWithoutTranscription() }
                 self.cancelPrewarmDictationIfNeeded()
+                self.inputSourceChangeMonitor.endRecordingObservation()
                 self.inputSourceSwitchTask?.cancel()
                 self.inputSourceSwitchTask = nil
                 self.inputSourceSwitchQueue = RecordingSpeechConfigurationSwitchQueue()
@@ -3629,6 +3630,7 @@ struct ContentView: View {
     }
 
     private func clearActiveRecordingMode() {
+        self.inputSourceChangeMonitor.endRecordingObservation()
         self.setActiveRecordingMode(.none)
     }
 
@@ -3799,14 +3801,18 @@ struct ContentView: View {
             if startOutcome == .started {
                 switch self.dictationSessionCoordinator.state(for: session.id) {
                 case .capturing:
+                    self.inputSourceChangeMonitor.beginRecordingObservation()
                     self.preloadSpeechModel(for: session.id)
                 case .cancelled, .completed, .none:
+                    self.inputSourceChangeMonitor.endRecordingObservation()
                     await self.asr.stopWithoutTranscription(sessionID: session.id)
                     self.menuBarManager.hideRecordingOverlayImmediately(reason: "dictation_cancelled_during_start")
                 case .finalizing, .delivering:
+                    self.inputSourceChangeMonitor.endRecordingObservation()
                     break
                 }
             } else {
+                self.inputSourceChangeMonitor.endRecordingObservation()
                 if self.dictationSessionCoordinator.cancel(for: session.id) {
                     self.menuBarManager.hideRecordingOverlayImmediately(reason: "asr_start_failed")
                 }
@@ -4296,6 +4302,7 @@ struct ContentView: View {
     }
 
     private func cancelActiveRecordingWithoutTranscription() async {
+        self.inputSourceChangeMonitor.endRecordingObservation()
         if let session = self.dictationSessionCoordinator.currentSession,
            self.dictationSessionCoordinator.cancel(for: session.id)
         {
@@ -4573,16 +4580,20 @@ extension ContentView {
             if startOutcome == .started {
                 switch self.dictationSessionCoordinator.state(for: session.id) {
                 case .capturing:
+                    self.inputSourceChangeMonitor.beginRecordingObservation()
                     self.preloadSpeechModel(for: session.id)
                 case .cancelled, .completed, .none:
+                    self.inputSourceChangeMonitor.endRecordingObservation()
                     await self.asr.stopWithoutTranscription(sessionID: session.id)
                     self.menuBarManager.hideRecordingOverlayImmediately(
                         reason: "\(mode.rawValue)_cancelled_during_start"
                     )
                 case .finalizing, .delivering:
+                    self.inputSourceChangeMonitor.endRecordingObservation()
                     break
                 }
             } else {
+                self.inputSourceChangeMonitor.endRecordingObservation()
                 if self.dictationSessionCoordinator.cancel(for: session.id) {
                     self.menuBarManager.hideRecordingOverlayImmediately(
                         reason: "\(mode.rawValue)_asr_start_failed"
@@ -4653,14 +4664,18 @@ extension ContentView {
             if startOutcome == .started {
                 switch self.dictationSessionCoordinator.state(for: session.id) {
                 case .capturing:
+                    self.inputSourceChangeMonitor.beginRecordingObservation()
                     self.preloadSpeechModel(for: session.id)
                 case .cancelled, .completed, .none:
+                    self.inputSourceChangeMonitor.endRecordingObservation()
                     await self.asr.stopWithoutTranscription(sessionID: session.id)
                     self.menuBarManager.hideRecordingOverlayImmediately(reason: "dictation_cancelled_during_start")
                 case .finalizing, .delivering:
+                    self.inputSourceChangeMonitor.endRecordingObservation()
                     break
                 }
             } else {
+                self.inputSourceChangeMonitor.endRecordingObservation()
                 if self.dictationSessionCoordinator.cancel(for: session.id) {
                     self.menuBarManager.hideRecordingOverlayImmediately(reason: "asr_start_failed")
                 }

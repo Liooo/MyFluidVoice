@@ -28,6 +28,11 @@ final class FluidAudioProvider: TranscriptionProvider {
 
     let name = "FluidAudio (Apple Silicon Optimized)"
 
+    /// Parakeet's final decoder expects at least one second of 16 kHz audio.
+    /// Live IME switches can create shorter segments at the boundary, so the
+    /// ASR service pads them before calling the final transcription pass.
+    let minimumFinalAudioSampleCount = 16_000
+
     /// Whether this provider is supported on the current system.
     /// FluidAudio is optimized for Apple Silicon, but may still function on Intel.
     var isAvailable: Bool {

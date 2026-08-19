@@ -352,6 +352,22 @@ struct RecordingSpeechSessionSelectionState {
     }
 
     @discardableResult
+    mutating func switchConfiguration(
+        matching sessionID: RecordingSessionID,
+        configuration: RecordingSpeechConfiguration
+    ) -> RecordingSpeechSessionSelection? {
+        guard self.activeSelection?.sessionID == sessionID,
+              let selection = RecordingSpeechSessionSelection(
+                  sessionID: sessionID,
+                  configuration: configuration
+              )
+        else { return nil }
+
+        self.activeSelection = selection
+        return selection
+    }
+
+    @discardableResult
     mutating func clear(matching sessionID: RecordingSessionID) -> Bool {
         guard self.activeSelection?.sessionID == sessionID else { return false }
         self.activeSelection = nil
@@ -1135,11 +1151,15 @@ final class ASRService: ObservableObject {
             self.hasPendingProviderReset = false
             self.resetTranscriptionProvider()
         }
+        self.committedRecordingSegmentTexts.removeAll(keepingCapacity: false)
+        self.committedRecordingAudioSamples.removeAll(keepingCapacity: false)
         self.objectWillChange.send()
         return true
     }
 
     private func clearVolatileRecordingState() {
+        self.committedRecordingSegmentTexts.removeAll(keepingCapacity: false)
+        self.committedRecordingAudioSamples.removeAll(keepingCapacity: false)
         self.partialTranscription.removeAll()
         self.previousFullTranscription.removeAll()
         self.lastProcessedSampleCount = 0
@@ -2040,6 +2060,8 @@ final class ASRService: ObservableObject {
     private let audioBuffer = ThreadSafeAudioBuffer()
     private var lastCompletedAudioSnapshot: DictationAudioSnapshot?
     private var lastCompletedAudioSnapshotSessionID: RecordingSessionID?
+    private var committedRecordingSegmentTexts: [String] = []
+    private var committedRecordingAudioSamples: [Float] = []
 
     // Streaming transcription state (no VAD)
     private var streamingTask: Task<Void, Never>?
@@ -2108,6 +2130,10 @@ final class ASRService: ObservableObject {
 
     func dictionaryTrainingAudioChunk(at offset: Int, count: Int) -> [Float] {
         self.audioBuffer.getRange(startingAt: offset, count: count)
+    }
+
+    func appendTestingCapturedSamples(_ samples: [Float]) {
+        self.audioBuffer.append(samples)
     }
 
     private var streamingChunkDurationSeconds: Double {
@@ -2819,6 +2845,8 @@ final class ASRService: ObservableObject {
         self.audioBuffer.clear(keepingCapacity: true) // specific optimization for restart
         self.lastCompletedAudioSnapshot = nil
         self.lastCompletedAudioSnapshotSessionID = nil
+        self.committedRecordingSegmentTexts.removeAll(keepingCapacity: true)
+        self.committedRecordingAudioSamples.removeAll(keepingCapacity: true)
         self.partialTranscription.removeAll()
         self.previousFullTranscription.removeAll()
         self.streamingStopRequestedSessionID = nil
@@ -3134,6 +3162,189 @@ final class ASRService: ObservableObject {
                 continuation.resume()
             }
         }
+    }
+
+    /// Switches the active speech configuration at a live input-source
+    /// boundary. Audio capture stays enabled: samples already in the buffer
+    /// belong to the old provider, while samples arriving after the boundary
+    /// remain available for the new provider.
+    @discardableResult
+    func switchRecordingSpeechConfiguration(
+        sessionID: RecordingSessionID,
+        speechConfiguration: RecordingSpeechConfiguration
+    ) async -> Bool {
+        DebugLogger.shared.info(
+            "Live input-source switch requested: session=\(sessionID.rawValue.uuidString) targetModel=\(speechConfiguration.model.id) targetLocale=\(speechConfiguration.localeIdentifier)",
+            source: "ASRService"
+        )
+        guard self.isRunning,
+              let currentSelection = self.activeRecordingSelection,
+              currentSelection.sessionID == sessionID,
+              let recordingOwner = self.recordingOwner,
+              self.isRecordingOwnerCurrent(recordingOwner),
+              let newSelection = RecordingSpeechSessionSelection(
+                  sessionID: sessionID,
+                  configuration: speechConfiguration
+              )
+        else {
+            DebugLogger.shared.warning(
+                "Live input-source switch rejected: recording ownership/state no longer matches",
+                source: "ASRService"
+            )
+            return false
+        }
+
+        guard currentSelection.configuration != speechConfiguration else {
+            DebugLogger.shared.debug(
+                "Live input-source switch skipped: configuration is unchanged",
+                source: "ASRService"
+            )
+            return true
+        }
+
+        DebugLogger.shared.info(
+            "Live input-source switch boundary: oldModel=\(currentSelection.configuration.model.id) oldLocale=\(currentSelection.configuration.localeIdentifier) newModel=\(speechConfiguration.model.id) newLocale=\(speechConfiguration.localeIdentifier)",
+            source: "ASRService"
+        )
+
+        // Automatic models do not need a provider restart, but the active
+        // session still tracks the latest input source for routing/history.
+        if currentSelection.providerKey == newSelection.providerKey {
+            return self.recordingSpeechSessionState.switchConfiguration(
+                matching: sessionID,
+                configuration: speechConfiguration
+            ) != nil
+        }
+
+        let newProvider: TranscriptionProvider
+        do {
+            // Resolve credentials/provider construction before quiescing the
+            // old stream, so a setup error leaves the current segment intact.
+            newProvider = try self.makeRecordingProvider(for: newSelection)
+        } catch {
+            if speechConfiguration.model == .sonioxV5 {
+                self.emitRecordingSetupFailure(error, sessionID: sessionID)
+            }
+            DebugLogger.shared.warning(
+                "Input-source switch could not create a provider: \(error)",
+                source: "ASRService"
+            )
+            return false
+        }
+
+        let oldProvider = self.activeRecordingProvider
+        let oldProviderKey = self.activeRecordingProviderKey
+        let oldStreamingOwner = self.streamingOwner
+        let segmentBoundary = self.audioBuffer.count
+        let streamingPreviewFallback = self.previousFullTranscription
+
+        guard let oldProvider,
+              oldProviderKey == currentSelection.providerKey,
+              await self.quiesceStreamingForFinalization(
+                  provider: oldProvider,
+                  sessionID: sessionID,
+                  recordingOwner: recordingOwner
+              )
+        else {
+            DebugLogger.shared.warning(
+                "Live input-source switch stopped before finalizing old segment",
+                source: "ASRService"
+            )
+            return false
+        }
+        await self.finishStreamingSegmentBoundary(oldStreamingOwner)
+        guard self.isRunning,
+              self.activeRecordingSelection == currentSelection,
+              self.activeRecordingProviderKey == oldProviderKey,
+              self.isRecordingOwnerCurrent(recordingOwner)
+        else {
+            return false
+        }
+
+        let segmentSamples = self.audioBuffer.drainPrefix(segmentBoundary)
+        let finalizedSegmentText = await self.finalizeRecordingSegment(
+            provider: oldProvider,
+            samples: segmentSamples,
+            fallbackText: streamingPreviewFallback,
+            sessionID: sessionID
+        )
+        DebugLogger.shared.info(
+            "Live input-source old segment finalized: samples=\(segmentSamples.count) textChars=\(finalizedSegmentText.count)",
+            source: "ASRService"
+        )
+        if segmentSamples.isEmpty == false {
+            self.committedRecordingAudioSamples.append(contentsOf: segmentSamples)
+        }
+        if finalizedSegmentText.isEmpty == false {
+            self.committedRecordingSegmentTexts.append(finalizedSegmentText)
+        }
+        self.partialTranscription = DictationTranscriptComposer.combine(
+            self.committedRecordingSegmentTexts
+        )
+
+        guard self.isRunning,
+              self.activeRecordingSelection == currentSelection,
+              self.activeRecordingProviderKey == oldProviderKey
+        else {
+            return false
+        }
+        guard self.recordingSpeechSessionState.switchConfiguration(
+            matching: sessionID,
+            configuration: speechConfiguration
+        ) != nil
+        else {
+            return false
+        }
+
+        self.activeRecordingProvider = newProvider
+        self.activeRecordingProviderKey = newSelection.providerKey
+        self.recordingOwner = RecordingTaskOwner(
+            sessionID: sessionID,
+            providerKey: newSelection.providerKey
+        )
+        self.readyProviderKey = nil
+        self.isAsrReady = false
+        self.lastProcessedSampleCount = 0
+        self.benchmarkLastChunkSampleCount = 0
+        self.isProcessingChunk = false
+        self.skipNextChunk = false
+        self.previousFullTranscription.removeAll()
+        self.streamingStopRequestedSessionID = nil
+        self.streamingFailureSessionIDs.remove(sessionID)
+        self.emittedRecordingFailureSessionIDs.remove(sessionID)
+
+        do {
+            try await self.ensureAsrReady(sessionID: sessionID)
+            DebugLogger.shared.info(
+                "Live input-source new provider ready: provider=\(newSelection.providerKey)",
+                source: "ASRService"
+            )
+        } catch {
+            DebugLogger.shared.warning(
+                "Input-source switch provider preparation failed: \(error)",
+                source: "ASRService"
+            )
+            guard Task.isCancelled == false else { return false }
+        }
+
+        guard self.isRunning,
+              let activeSelection = self.activeRecordingSelection,
+              activeSelection.sessionID == sessionID,
+              self.activeRecordingProviderKey == newSelection.providerKey
+        else {
+            return false
+        }
+        if activeSelection.configuration.model.supportsStreaming,
+           self.isAsrReady,
+           self.streamingOwner == nil
+        {
+            self.startStreamingTranscription(sessionID: sessionID)
+        }
+        DebugLogger.shared.info(
+            "Live input-source switch ready for new audio: provider=\(newSelection.providerKey) streaming=\(self.streamingOwner != nil)",
+            source: "ASRService"
+        )
+        return true
     }
 
     private func prepareAudioCaptureStartRetry(
@@ -3459,6 +3670,10 @@ final class ASRService: ObservableObject {
         var pcm = self.audioBuffer.getAll()
         self.audioBuffer.clear()
         let capturedPCM = pcm
+        let committedTranscript = DictationTranscriptComposer.combine(
+            self.committedRecordingSegmentTexts
+        )
+        let capturedAudioForHistory = self.committedRecordingAudioSamples + capturedPCM
         self.benchmarkLog("stop_audio_drained samples=\(pcm.count) audioMs=\(Int((Double(pcm.count) / 16_000.0 * 1000).rounded()))")
 
         // Drop recordings with no audio at all — nothing to transcribe.
@@ -3468,7 +3683,7 @@ final class ASRService: ObservableObject {
                 source: "ASRService"
             )
             DebugLogger.shared.info(
-                "Final ASR result | provider=\(provider.name) | samples=0 | textChars=0 | confidence=nil | reason=no_audio",
+                "Final ASR result | provider=\(provider.name) | samples=0 | textChars=\(committedTranscript.count) | confidence=nil | reason=no_audio",
                 source: "ASRService"
             )
             await self.cancelModelPreparationAndAwait(
@@ -3487,8 +3702,21 @@ final class ASRService: ObservableObject {
                 guard self.isRecordingOwnerCurrent(recordingOwner) else { return "" }
                 DebugLogger.shared.info("🎵 Resumed system media after empty audio", source: "ASRService")
             }
-            self.benchmarkLog("stop_end result=empty totalMs=\(self.elapsedMilliseconds(since: stopStartedAt)) reason=no_audio")
-            return ""
+            if !useDictionaryTrainingPath,
+               SettingsStore.shared.saveTranscriptionHistory,
+               SettingsStore.shared.saveAudioWithTranscriptionHistory,
+               capturedAudioForHistory.isEmpty == false
+            {
+                self.lastCompletedAudioSnapshot = DictationAudioSnapshot(
+                    samples: capturedAudioForHistory,
+                    sampleRate: 16_000,
+                    channels: 1
+                )
+                self.lastCompletedAudioSnapshotSessionID = ownedSessionID
+            }
+            self.partialTranscription = committedTranscript
+            self.benchmarkLog("stop_end result=\(committedTranscript.isEmpty ? "empty" : "success") totalMs=\(self.elapsedMilliseconds(since: stopStartedAt)) reason=no_audio")
+            return committedTranscript
         }
 
         let hasRecognizedStreamingPreview = !self.partialTranscription
@@ -3665,17 +3893,23 @@ final class ASRService: ObservableObject {
             if !useDictionaryTrainingPath {
                 self.recordWordBoostHitIfAny(transcribedText: outputText)
             }
+            let completeOutputText = useDictionaryTrainingPath
+                ? outputText
+                : DictationTranscriptComposer.combine(
+                    self.committedRecordingSegmentTexts + [outputText]
+                )
+            self.partialTranscription = completeOutputText
             if provider.allowsTranscriptLogging {
                 DebugLogger.shared.debug("After post-processing: '\(outputText)'", source: "ASRService")
             }
-            self.benchmarkLog("stop_end result=success totalMs=\(self.elapsedMilliseconds(since: stopStartedAt)) recordingAgeMs=\(self.elapsedMilliseconds(since: self.benchmarkRecordingStartedAt)) cleanedChars=\(outputText.count)")
+            self.benchmarkLog("stop_end result=success totalMs=\(self.elapsedMilliseconds(since: stopStartedAt)) recordingAgeMs=\(self.elapsedMilliseconds(since: self.benchmarkRecordingStartedAt)) cleanedChars=\(completeOutputText.count)")
             if !useDictionaryTrainingPath,
                SettingsStore.shared.saveTranscriptionHistory,
                SettingsStore.shared.saveAudioWithTranscriptionHistory,
-               !capturedPCM.isEmpty
+               capturedAudioForHistory.isEmpty == false
             {
                 self.lastCompletedAudioSnapshot = DictationAudioSnapshot(
-                    samples: capturedPCM,
+                    samples: capturedAudioForHistory,
                     sampleRate: 16_000,
                     channels: 1
                 )
@@ -3689,7 +3923,7 @@ final class ASRService: ObservableObject {
                 DebugLogger.shared.info("🎵 Resumed system media after transcription", source: "ASRService")
             }
 
-            return outputText
+            return completeOutputText
         } catch {
             guard self.isRecordingOwnerCurrent(recordingOwner) else { return "" }
             if let failure = self.recordingFailure(from: error, sessionID: ownedSessionID) {
@@ -6175,7 +6409,9 @@ final class ASRService: ObservableObject {
             if !newText.isEmpty {
                 // Smart diff: only show truly new words
                 let updatedText = self.smartDiffUpdate(previous: self.previousFullTranscription, current: newText)
-                self.partialTranscription = updatedText
+                self.partialTranscription = DictationTranscriptComposer.combine(
+                    self.committedRecordingSegmentTexts + [updatedText]
+                )
                 self.previousFullTranscription = newText
 
                 if provider.allowsTranscriptLogging {
@@ -6586,6 +6822,71 @@ private extension SettingsStore.SpeechModel {
 }
 
 private extension ASRService {
+    func finishStreamingSegmentBoundary(_ owner: StreamingTaskOwner?) async {
+        guard let owner else {
+            self.streamingStopRequestedSessionID = nil
+            return
+        }
+
+        let completionMonitor = self.streamingCompletionMonitorOwner == owner
+            ? self.streamingCompletionMonitorTask
+            : nil
+        await completionMonitor?.value
+
+        guard self.streamingOwner == owner else { return }
+        if self.streamingCompletionMonitorOwner == owner {
+            self.streamingCompletionMonitorTask = nil
+            self.streamingCompletionMonitorOwner = nil
+        }
+        if self.streamingIntervalOwner == owner {
+            self.streamingIntervalTask = nil
+            self.streamingIntervalOwner = nil
+        }
+        self.streamingWorkerTask = nil
+        self.streamingTask = nil
+        self.streamingOwner = nil
+        self.streamingStopRequestedSessionID = nil
+    }
+
+    func finalizeRecordingSegment(
+        provider: TranscriptionProvider,
+        samples: [Float],
+        fallbackText: String,
+        sessionID: RecordingSessionID
+    ) async -> String {
+        let fallback = fallbackText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard samples.isEmpty == false else { return fallback }
+
+        let finalSamples = Self.finalAudioSamples(
+            samples,
+            minimumSampleCount: provider.minimumFinalAudioSampleCount
+        )
+        do {
+            let result = try await self.transcriptionExecutor.run {
+                try await provider.transcribeFinal(finalSamples)
+            }
+            guard self.recordingSpeechSessionState.selection(matching: sessionID) != nil else {
+                return fallback
+            }
+
+            let cleanedText = ASRService.applySpokenPunctuationFormatting(
+                ASRService.applyCustomDictionary(
+                    ASRService.removeFillerWords(result.text)
+                )
+            )
+            if cleanedText.isEmpty == false {
+                self.recordWordBoostHitIfAny(transcribedText: cleanedText)
+                return cleanedText
+            }
+        } catch {
+            DebugLogger.shared.warning(
+                "Live input-source segment finalization failed: \(error)",
+                source: "ASRService"
+            )
+        }
+        return fallback
+    }
+
     func finishStreamingFailureCleanupIfNeeded(
         sessionID: RecordingSessionID,
         owner: StreamingTaskOwner?,

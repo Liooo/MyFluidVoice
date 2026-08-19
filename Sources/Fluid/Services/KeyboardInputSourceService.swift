@@ -1,11 +1,30 @@
 import AppKit
 import Carbon
+import Combine
 import Foundation
 
 nonisolated struct KeyboardInputSourceSnapshot: Identifiable, Equatable, Hashable, Sendable {
     let id: String
     let localizedName: String
     let languages: [String]
+}
+
+nonisolated struct KeyboardInputSourceObservationState: Equatable {
+    private(set) var sourceID: String?
+
+    init(sourceID: String? = nil) {
+        self.sourceID = sourceID
+    }
+
+    mutating func synchronize(to inputSource: KeyboardInputSourceSnapshot?) {
+        self.sourceID = inputSource?.id
+    }
+
+    mutating func shouldPublish(_ inputSource: KeyboardInputSourceSnapshot?) -> Bool {
+        guard inputSource?.id != self.sourceID else { return false }
+        self.sourceID = inputSource?.id
+        return true
+    }
 }
 
 nonisolated struct KeyboardInputSourceBadge: @unchecked Sendable {
@@ -133,6 +152,126 @@ enum KeyboardInputSourceService {
         guard let pointer = TISGetInputSourceProperty(source, key) else { return nil }
         let value = Unmanaged<CFBoolean>.fromOpaque(pointer).takeUnretainedValue()
         return CFBooleanGetValue(value)
+    }
+}
+
+/// Resolves the input-source changes that macOS emits for its standard
+/// input-source shortcut (for example, Control-Space or the user's custom
+/// equivalent). TIS can publish the notification before the selected source
+/// has settled, so a short coalesced observation window is used after each
+/// notification.
+@MainActor
+final class KeyboardInputSourceChangeMonitor: ObservableObject {
+    @Published private(set) var changeTick: UInt64 = 0
+    @Published private(set) var sourceSnapshot: KeyboardInputSourceSnapshot?
+
+    private var observer: NSObjectProtocol?
+    private var sourceObservationTask: Task<Void, Never>?
+    private var recordingObservationTask: Task<Void, Never>?
+    private var sourceObservationDeadlineNanoseconds: UInt64 = 0
+    private var observationState: KeyboardInputSourceObservationState
+    private let sourceObservationWindowNanoseconds: UInt64 = 2_000_000_000
+    private let sourceObservationIntervalNanoseconds: UInt64 = 20_000_000
+    private let recordingObservationIntervalNanoseconds: UInt64 = 100_000_000
+
+    init() {
+        let initialSource = KeyboardInputSourceService.currentInputSource()
+        self.sourceSnapshot = initialSource
+        self.observationState = KeyboardInputSourceObservationState(sourceID: initialSource?.id)
+
+        let notificationName = Notification.Name(
+            rawValue: kTISNotifySelectedKeyboardInputSourceChanged as String
+        )
+        self.observer = DistributedNotificationCenter.default.addObserver(
+            forName: notificationName,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            DebugLogger.shared.info(
+                "Selected keyboard input source notification received",
+                source: "KeyboardInputSourceChangeMonitor"
+            )
+            Task { @MainActor [weak self] in
+                self?.observeSourceAfterNotification()
+            }
+        }
+    }
+
+    deinit {
+        self.sourceObservationTask?.cancel()
+        self.recordingObservationTask?.cancel()
+        if let observer {
+            DistributedNotificationCenter.default.removeObserver(observer)
+        }
+    }
+
+    func beginRecordingObservation() {
+        self.recordingObservationTask?.cancel()
+        self.recordingObservationTask = Task { @MainActor [weak self] in
+            while Task.isCancelled == false {
+                guard let self else { return }
+
+                // TIS notifications are occasionally missed while a global
+                // shortcut is being handled. Polling only during recording
+                // closes that gap without adding an idle-time timer.
+                self.publishCurrentSourceIfChanged(KeyboardInputSourceService.currentInputSource())
+
+                do {
+                    try await Task.sleep(nanoseconds: self.recordingObservationIntervalNanoseconds)
+                } catch {
+                    return
+                }
+            }
+        }
+    }
+
+    func endRecordingObservation() {
+        self.recordingObservationTask?.cancel()
+        self.recordingObservationTask = nil
+    }
+
+    private func observeSourceAfterNotification() {
+        let now = DispatchTime.now().uptimeNanoseconds
+        self.sourceObservationDeadlineNanoseconds = max(
+            self.sourceObservationDeadlineNanoseconds,
+            now + self.sourceObservationWindowNanoseconds
+        )
+        guard self.sourceObservationTask == nil else { return }
+
+        self.sourceObservationTask = Task { @MainActor [weak self] in
+            while Task.isCancelled == false {
+                guard let self else { return }
+
+                self.publishCurrentSourceIfChanged(KeyboardInputSourceService.currentInputSource())
+
+                guard DispatchTime.now().uptimeNanoseconds < self.sourceObservationDeadlineNanoseconds else {
+                    self.sourceObservationTask = nil
+                    return
+                }
+
+                do {
+                    try await Task.sleep(nanoseconds: self.sourceObservationIntervalNanoseconds)
+                } catch {
+                    return
+                }
+            }
+        }
+    }
+
+    func synchronize(to inputSource: KeyboardInputSourceSnapshot?) {
+        self.observationState.synchronize(to: inputSource)
+        self.sourceSnapshot = inputSource
+    }
+
+    private func publishCurrentSourceIfChanged(_ currentSource: KeyboardInputSourceSnapshot?) {
+        guard self.observationState.shouldPublish(currentSource) else { return }
+
+        self.sourceSnapshot = currentSource
+        self.changeTick &+= 1
+        DebugLogger.shared.info(
+            "Selected keyboard input source resolved: \(currentSource?.id ?? "none")",
+            source: "KeyboardInputSourceChangeMonitor"
+        )
     }
 }
 

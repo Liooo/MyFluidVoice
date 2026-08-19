@@ -69,9 +69,71 @@ struct RecordingSpeechConfiguration: Equatable {
     }
 }
 
+/// Holds the latest speech configuration requested while an earlier provider
+/// boundary is still being finalized. Intermediate requests can be skipped;
+/// the newest configuration is the one that matches the current keyboard
+/// input source and must be applied next.
+struct RecordingSpeechConfigurationSwitchQueue {
+    private(set) var pendingConfiguration: RecordingSpeechConfiguration?
+
+    mutating func replace(with configuration: RecordingSpeechConfiguration) {
+        self.pendingConfiguration = configuration
+    }
+
+    mutating func take() -> RecordingSpeechConfiguration? {
+        defer { self.pendingConfiguration = nil }
+        return self.pendingConfiguration
+    }
+}
+
 enum DictationActivationStyle: Equatable {
     case toggle
     case pushToTalk
+}
+
+/// Joins transcript segments produced before and after an input-source change.
+/// Speech providers commonly trim segment boundaries, so joining is centralized
+/// here instead of letting each caller accidentally drop or duplicate text.
+nonisolated enum DictationTranscriptComposer {
+    static func combine(_ segments: [String]) -> String {
+        segments.reduce(into: "") { result, segment in
+            self.append(segment, to: &result)
+        }
+    }
+
+    static func append(_ segment: String, to result: inout String) {
+        let trimmedSegment = segment.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmedSegment.isEmpty == false else { return }
+
+        let trimmedResult = result.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmedResult.isEmpty == false else {
+            result = trimmedSegment
+            return
+        }
+
+        let left = trimmedResult.last
+        let right = trimmedSegment.first
+        let hasSeparator = left?.isWhitespace == true || right?.isWhitespace == true
+        let rightIsPunctuation = right?.isPunctuation == true
+        let bothAreCJK = left.map(self.isCJK) == true && right.map(self.isCJK) == true
+        let separator = hasSeparator || rightIsPunctuation || bothAreCJK ? "" : " "
+        result = trimmedResult + separator + trimmedSegment
+    }
+
+    private static func isCJK(_ character: Character) -> Bool {
+        character.unicodeScalars.contains { scalar in
+            switch scalar.value {
+            case 0x3040...0x30FF, // Hiragana and Katakana
+                 0x3400...0x4DBF, // CJK Extension A
+                 0x4E00...0x9FFF, // CJK Unified Ideographs
+                 0xAC00...0xD7AF, // Hangul syllables
+                 0xF900...0xFAFF: // CJK compatibility ideographs
+                return true
+            default:
+                return false
+            }
+        }
+    }
 }
 
 final nonisolated class DictationDeliveryGate: @unchecked Sendable {
@@ -233,6 +295,26 @@ final class DictationSessionCoordinator {
             id: activeSession.session.id,
             activationStyle: activationStyle,
             speechConfiguration: activeSession.session.speechConfiguration,
+            exitPoliciesEnabled: activeSession.session.exitPoliciesEnabled
+        )
+        self.activeSession = activeSession
+        return true
+    }
+
+    @discardableResult
+    func updateSpeechConfiguration(
+        _ speechConfiguration: RecordingSpeechConfiguration,
+        for id: RecordingSessionID
+    ) -> Bool {
+        guard var activeSession = self.activeSession,
+              activeSession.session.id == id,
+              activeSession.state == .capturing
+        else { return false }
+
+        activeSession.session = Session(
+            id: activeSession.session.id,
+            activationStyle: activeSession.session.activationStyle,
+            speechConfiguration: speechConfiguration,
             exitPoliciesEnabled: activeSession.session.exitPoliciesEnabled
         )
         self.activeSession = activeSession
