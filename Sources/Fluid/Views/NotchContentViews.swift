@@ -135,6 +135,9 @@ class NotchContentState: ObservableObject {
     /// Input source badge captured for the active dictation session.
     @Published var recordingInputSourceBadge: KeyboardInputSourceBadge?
 
+    /// True while a live input-source change is preparing its new speech provider.
+    @Published var isInputSourceSwitching: Bool = false
+
     /// The PID of the app we should restore focus to after interacting with overlays.
     /// Captured at recording start to keep the target stable for the session.
     @Published var recordingTargetPID: pid_t? = nil
@@ -311,6 +314,7 @@ class NotchContentState: ObservableObject {
     func clearRecordingPresentationContext() {
         self.targetAppIcon = nil
         self.recordingInputSourceBadge = nil
+        self.isInputSourceSwitching = false
     }
 
     // MARK: - Command Output Methods

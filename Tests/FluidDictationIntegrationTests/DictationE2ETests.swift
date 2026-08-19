@@ -2702,6 +2702,42 @@ final class DictationSessionCoordinatorTests: XCTestCase {
         XCTAssertTrue(coordinator.isCapturing(session.id))
     }
 
+    func testCapturingSessionCanUpdateSpeechConfigurationForLiveInputSourceSwitch() throws {
+        let coordinator = DictationSessionCoordinator()
+        let session = coordinator.begin(
+            activationStyle: .toggle,
+            speechConfiguration: self.englishConfiguration
+        )
+        let japaneseConfiguration = try XCTUnwrap(RecordingSpeechConfiguration(
+            inputSourceID: "com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese",
+            localeIdentifier: "ja-JP",
+            model: .appleSpeech,
+            languageBinding: .appleSpeech(localeIdentifier: "ja-JP")
+        ))
+
+        XCTAssertTrue(coordinator.updateSpeechConfiguration(japaneseConfiguration, for: session.id))
+        XCTAssertEqual(coordinator.currentSession?.speechConfiguration, japaneseConfiguration)
+        XCTAssertTrue(coordinator.isCapturing(session.id))
+    }
+
+    func testSpeechConfigurationCannotChangeAfterFinalizationStarts() throws {
+        let coordinator = DictationSessionCoordinator()
+        let session = coordinator.begin(
+            activationStyle: .toggle,
+            speechConfiguration: self.englishConfiguration
+        )
+        let japaneseConfiguration = try XCTUnwrap(RecordingSpeechConfiguration(
+            inputSourceID: "com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese",
+            localeIdentifier: "ja-JP",
+            model: .appleSpeech,
+            languageBinding: .appleSpeech(localeIdentifier: "ja-JP")
+        ))
+
+        XCTAssertTrue(coordinator.beginFinalization(for: session.id))
+        XCTAssertFalse(coordinator.updateSpeechConfiguration(japaneseConfiguration, for: session.id))
+        XCTAssertEqual(coordinator.currentSession?.speechConfiguration, self.englishConfiguration)
+    }
+
     func testAutomaticTapCanResolveCapturingSessionToToggle() {
         let coordinator = DictationSessionCoordinator()
         let session = coordinator.begin(
@@ -3422,6 +3458,21 @@ final class ForkIdentityTests: XCTestCase {
 final class KeyboardInputSourceRoutingTests: XCTestCase {
     private let sonioxAvailableModels: [SettingsStore.SpeechModel] = [.appleSpeech, .sonioxV5]
 
+    func testInputSourceObservationSuppressesStaleDuplicateAndPublishesTransitions() {
+        let english = self.source(id: "com.apple.keylayout.ABC")
+        let japanese = self.source(id: "com.google.inputmethod.Japanese.base")
+        var state = KeyboardInputSourceObservationState(sourceID: english.id)
+
+        XCTAssertFalse(state.shouldPublish(english))
+        XCTAssertTrue(state.shouldPublish(japanese))
+        XCTAssertFalse(state.shouldPublish(japanese))
+        XCTAssertTrue(state.shouldPublish(english))
+
+        state.synchronize(to: japanese)
+        XCTAssertFalse(state.shouldPublish(japanese))
+        XCTAssertTrue(state.shouldPublish(english))
+    }
+
     func testInstalledInputSourcesExposeStableUniqueIdentities() {
         let inputSources = KeyboardInputSourceService.installedInputSources()
 
@@ -3959,6 +4010,130 @@ final class KeyboardInputSourceRoutingTests: XCTestCase {
     }
 }
 
+final class DictationTranscriptComposerTests: XCTestCase {
+    func testCombinesEnglishSegmentsWithASpace() {
+        XCTAssertEqual(
+            DictationTranscriptComposer.combine(["hello", "world"]),
+            "hello world"
+        )
+    }
+
+    func testKeepsJapaneseSegmentsInlineWithoutInventingSpaces() {
+        XCTAssertEqual(
+            DictationTranscriptComposer.combine(["こんにちは", "世界"]),
+            "こんにちは世界"
+        )
+    }
+
+    func testDoesNotAddSpaceBeforePunctuation() {
+        XCTAssertEqual(
+            DictationTranscriptComposer.combine(["hello", ", world"]),
+            "hello, world"
+        )
+    }
+
+    func testIgnoresEmptySegmentsWithoutDroppingExistingText() {
+        XCTAssertEqual(
+            DictationTranscriptComposer.combine(["first", "   ", "second"]),
+            "first second"
+        )
+    }
+}
+
+@MainActor
+final class LiveInputSourceSwitchTests: XCTestCase {
+    func testInputSourceSwitchingPresentationStateCanStartAndReset() {
+        let state = NotchContentState.shared
+        let originalValue = state.isInputSourceSwitching
+        defer { state.isInputSourceSwitching = originalValue }
+
+        state.isInputSourceSwitching = false
+        XCTAssertFalse(state.isInputSourceSwitching)
+        state.isInputSourceSwitching = true
+        XCTAssertTrue(state.isInputSourceSwitching)
+        state.clearRecordingPresentationContext()
+        XCTAssertFalse(state.isInputSourceSwitching)
+    }
+
+#if arch(arm64)
+    func testRapidInputSourceSwitchesKeepTheLatestPendingConfiguration() throws {
+        let english = try XCTUnwrap(RecordingSpeechConfiguration(
+            inputSourceID: "com.apple.keylayout.ABC",
+            localeIdentifier: "en-US",
+            model: .parakeetTDTv2,
+            languageBinding: .automatic
+        ))
+        let japanese = try XCTUnwrap(RecordingSpeechConfiguration(
+            inputSourceID: "com.google.inputmethod.Japanese.base",
+            localeIdentifier: "ja-JP",
+            model: .sonioxV5,
+            languageBinding: .soniox(.init(
+                languageCode: "ja",
+                isStrict: false,
+                region: .global
+            ))
+        ))
+        var pending = RecordingSpeechConfigurationSwitchQueue()
+
+        pending.replace(with: english)
+        pending.replace(with: japanese)
+
+        XCTAssertEqual(pending.take(), japanese)
+        XCTAssertNil(pending.take())
+    }
+#endif
+
+#if arch(arm64)
+    func testFluidAudioDeclaresMinimumFinalAudioLengthForLiveSwitchBoundaries() {
+        let provider = FluidAudioProvider()
+
+        XCTAssertEqual(provider.minimumFinalAudioSampleCount, 16_000)
+    }
+#endif
+
+    func testSwitchKeepsCommittedTextAndAppendsTheNextSegment() async throws {
+        let english = try XCTUnwrap(RecordingSpeechConfiguration(
+            inputSourceID: "com.apple.keylayout.US",
+            localeIdentifier: "en-US",
+            model: .whisperBase,
+            languageBinding: .whisper(languageCode: "en")
+        ))
+        let japanese = try XCTUnwrap(RecordingSpeechConfiguration(
+            inputSourceID: "com.apple.inputmethod.Kotoeri.RomajiTyping.Japanese",
+            localeIdentifier: "ja-JP",
+            model: .whisperBase,
+            languageBinding: .whisper(languageCode: "ja")
+        ))
+        let asr = ASRService(localProviderFactory: { configuration in
+            SegmentTranscriptProvider(text: configuration.localeIdentifier == "ja-JP" ? "世界" : "hello")
+        })
+        let sessionID = RecordingSessionID()
+        let oldProvider = SegmentTranscriptProvider(
+            text: "hello",
+            minimumFinalAudioSampleCount: 16_000
+        )
+        _ = asr.installTestingRecordingSession(
+            sessionID: sessionID,
+            configuration: english,
+            provider: oldProvider,
+            isRunning: true,
+            capturedSamples: Array(repeating: 0.1, count: 8_000)
+        )
+
+        let didSwitch = await asr.switchRecordingSpeechConfiguration(
+            sessionID: sessionID,
+            speechConfiguration: japanese
+        )
+        XCTAssertTrue(didSwitch)
+        XCTAssertEqual(oldProvider.lastFinalSampleCount, 16_000)
+        XCTAssertEqual(asr.partialTranscription, "hello")
+
+        asr.appendTestingCapturedSamples(Array(repeating: 0.1, count: 16_000))
+        let finalTranscript = await asr.stop(sessionID: sessionID)
+        XCTAssertEqual(finalTranscript, "hello 世界")
+    }
+}
+
 @MainActor
 final class RecordingSpeechSessionSelectionTests: XCTestCase {
     func testSelectionKeepsConfigurationSnapshotAndBlocksReplacement() throws {
@@ -4091,5 +4266,35 @@ final class RecordingSpeechSessionSelectionTests: XCTestCase {
         try RecordingSessionID(
             rawValue: XCTUnwrap(UUID(uuidString: rawValue), file: file, line: line)
         )
+    }
+}
+
+@MainActor
+private final class SegmentTranscriptProvider: TranscriptionProvider {
+    let name = "Segment transcript test provider"
+    let isAvailable = true
+    private(set) var isReady = true
+    private let text: String
+    let minimumFinalAudioSampleCount: Int
+    private(set) var lastFinalSampleCount: Int?
+
+    init(text: String, minimumFinalAudioSampleCount: Int = 0) {
+        self.text = text
+        self.minimumFinalAudioSampleCount = minimumFinalAudioSampleCount
+    }
+
+    func prepare(progressHandler: ((ModelPreparationProgress) -> Void)?) async throws {
+        _ = progressHandler
+        self.isReady = true
+    }
+
+    func transcribe(_ samples: [Float]) async throws -> ASRTranscriptionResult {
+        _ = samples
+        return ASRTranscriptionResult(text: self.text)
+    }
+
+    func transcribeFinal(_ samples: [Float]) async throws -> ASRTranscriptionResult {
+        self.lastFinalSampleCount = samples.count
+        return ASRTranscriptionResult(text: self.text)
     }
 }
