@@ -4288,11 +4288,13 @@ final class RecordingSpeechSessionSelectionTests: XCTestCase {
             nativeIcon: nil,
             fallbackText: "🇯🇵"
         )
+        state.recordingActivationStyle = .pushToTalk
 
         state.clearRecordingPresentationContext()
 
         XCTAssertNil(state.targetAppIcon)
         XCTAssertNil(state.recordingInputSourceBadge)
+        XCTAssertNil(state.recordingActivationStyle)
     }
 
     private func sessionID(

@@ -4150,7 +4150,11 @@ struct ContentView: View {
                     ownsAutomaticPress = self.activeRecordingMode == .edit
                 }
                 guard ownsAutomaticPress else { return false }
-                return self.dictationSessionCoordinator.resolveActivationStyle(.toggle, for: session.id)
+                guard self.dictationSessionCoordinator.resolveActivationStyle(.toggle, for: session.id) else {
+                    return false
+                }
+                self.publishRecordingActivationStyle(for: session.id)
+                return true
             },
             isDictateRecordingProvider: {
                 self.activeRecordingMode == .dictate
@@ -4525,6 +4529,7 @@ extension ContentView {
             speechConfiguration: configuration,
             exitPoliciesEnabled: exitPoliciesEnabled
         )
+        self.publishRecordingActivationStyle(for: session.id)
         self.installRecordingFailureHandler()
         DebugLogger.shared.info(
             "Dictation session started id=\(session.id.rawValue.uuidString) " +
@@ -4534,6 +4539,13 @@ extension ContentView {
             source: "ContentView"
         )
         return session
+    }
+
+    private func publishRecordingActivationStyle(for sessionID: RecordingSessionID) {
+        guard let session = self.dictationSessionCoordinator.currentSession,
+              session.id == sessionID
+        else { return }
+        NotchContentState.shared.recordingActivationStyle = session.activationStyle
     }
 
     private func installRecordingFailureHandler() {

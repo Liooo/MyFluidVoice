@@ -2123,6 +2123,61 @@ struct BottomOverlayView: View {
         }
     }
 
+    private var recordingModeLabel: String? {
+        switch self.contentState.mode {
+        case .dictation: return nil
+        case .edit, .rewrite, .write: return "Edit"
+        case .command: return "Command"
+        }
+    }
+
+    @ViewBuilder
+    private var recordingActivationHintView: some View {
+        if let activationStyle = self.contentState.recordingActivationStyle {
+            let isToggle = activationStyle == .toggle
+            let iconName = isToggle ? "arrow.2.circlepath" : "hand.raised.fill"
+            let actionLabel = isToggle ? "TAP" : "HOLD"
+            let accessibilityLabel = isToggle ? "Tap to stop" : "Hold to talk"
+            let accentColor = isToggle
+                ? Color(red: 0.22, green: 0.78, blue: 0.95)
+                : Color(red: 1.0, green: 0.67, blue: 0.22)
+
+            HStack(spacing: self.isPillSize ? 0 : 3) {
+                Image(systemName: iconName)
+
+                if !self.isPillSize {
+                    Text(actionLabel)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                }
+            }
+            .font(.system(size: max(self.layout.modeFontSize - 1, 9), weight: .semibold))
+            .foregroundStyle(accentColor)
+            .frame(
+                minWidth: self.isPillSize ? 16 : 48,
+                minHeight: self.isPillSize ? 16 : 18,
+                alignment: .center
+            )
+            .frame(
+                width: self.isPillSize ? 16 : nil,
+                height: self.isPillSize ? 16 : nil,
+                alignment: .center
+            )
+            .padding(.horizontal, self.isPillSize ? 0 : 6)
+            .padding(.vertical, self.isPillSize ? 0 : 3)
+            .background(
+                Capsule()
+                    .fill(accentColor.opacity(self.isPillSize ? 0.24 : 0.22))
+            )
+            .overlay(
+                Capsule()
+                    .stroke(accentColor.opacity(self.isPillSize ? 0.58 : 0.52), lineWidth: 0.8)
+            )
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(accessibilityLabel)
+        }
+    }
+
     private var displayedAppIcon: NSImage? {
         self.contentState.targetAppIcon ?? self.activeAppMonitor.activeAppIcon ?? self.lastResolvedAppIcon
     }
@@ -2961,9 +3016,18 @@ struct BottomOverlayView: View {
                         .padding(.trailing, self.layout.hPadding / 1.5)
                         .opacity(self.shouldShowTargetAppIconGroup ? 1 : 0)
 
-                    // Waveform visualization
-                    BottomWaveformView(color: self.modeColor, layout: self.layout)
+                    if self.isPillSize {
+                        ZStack(alignment: .topTrailing) {
+                            BottomWaveformView(color: self.modeColor, layout: self.layout)
+                            self.recordingActivationHintView
+                                .offset(y: -4)
+                        }
                         .frame(width: self.layout.waveformWidth, height: self.layout.waveformHeight)
+                    } else {
+                        // Waveform visualization
+                        BottomWaveformView(color: self.modeColor, layout: self.layout)
+                            .frame(width: self.layout.waveformWidth, height: self.layout.waveformHeight)
+                    }
 
                     if let inputSourceBadge, !inputSourceBadge.isEmpty {
                         HStack(spacing: max(2, self.layout.hPadding / 4)) {
@@ -2985,11 +3049,17 @@ struct BottomOverlayView: View {
                     // Mode label + model load hint
                     if self.layout.showsModeLabel {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(self.modeLabel)
-                                .font(.system(size: self.layout.modeFontSize, weight: .semibold))
-                                .foregroundStyle(self.modeColor)
-                                .lineLimit(1)
-                                .fixedSize(horizontal: true, vertical: false)
+                            HStack(spacing: 6) {
+                                if let recordingModeLabel = self.recordingModeLabel {
+                                    Text(recordingModeLabel)
+                                        .font(.system(size: self.layout.modeFontSize, weight: .semibold))
+                                        .foregroundStyle(self.modeColor)
+                                        .lineLimit(1)
+                                        .fixedSize(horizontal: true, vertical: false)
+                                }
+
+                                self.recordingActivationHintView
+                            }
 
                             if !self.appServices.asr.isAsrReady &&
                                 (self.appServices.asr.isLoadingModel || self.appServices.asr.isDownloadingModel)

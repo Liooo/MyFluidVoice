@@ -135,6 +135,9 @@ class NotchContentState: ObservableObject {
     /// Input source badge captured for the active dictation session.
     @Published var recordingInputSourceBadge: KeyboardInputSourceBadge?
 
+    /// The activation behavior resolved for the active recording session.
+    @Published var recordingActivationStyle: DictationActivationStyle?
+
     /// True while a live input-source change is preparing its new speech provider.
     @Published var isInputSourceSwitching: Bool = false
 
@@ -314,6 +317,7 @@ class NotchContentState: ObservableObject {
     func clearRecordingPresentationContext() {
         self.targetAppIcon = nil
         self.recordingInputSourceBadge = nil
+        self.recordingActivationStyle = nil
         self.isInputSourceSwitching = false
     }
 
