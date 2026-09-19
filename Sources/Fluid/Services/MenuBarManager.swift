@@ -403,6 +403,20 @@ final class MenuBarManager: NSObject, ObservableObject, NSMenuDelegate {
         }
     }
 
+    /// Cancelling must release recording/processing ownership even when the
+    /// finalization task exits without running its normal overlay cleanup.
+    func cancelRecordingOverlay() {
+        self.cancelPendingProcessingCompletionOperations()
+        self.isProcessingActive = false
+        self.overlayVisible = false
+        self.expandedModeAudioSubscription?.cancel()
+        self.expandedModeAudioSubscription = nil
+        NotchContentState.shared.setRecordingInExpandedMode(false)
+        NotchOverlayManager.shared.setProcessing(false)
+        self.overlayBench("cancel_hide_request")
+        NotchOverlayManager.shared.hide()
+    }
+
     /// Ends processing and waits for the recording overlay's exit transition.
     /// Output paths normally call this asynchronously after insertion dispatch
     /// so the exit animation cannot delay text delivery.

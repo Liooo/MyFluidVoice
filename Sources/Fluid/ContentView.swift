@@ -4254,7 +4254,7 @@ struct ContentView: View {
 
         if NotchOverlayManager.shared.isBottomOverlayVisible || NotchOverlayManager.shared.isOverlayVisible {
             DebugLogger.shared.debug("Cancel shortcut: hiding recording overlay", source: "ContentView")
-            NotchOverlayManager.shared.hide()
+            self.menuBarManager.cancelRecordingOverlay()
             handled = true
         }
 

@@ -215,6 +215,38 @@ final class HotkeyShortcutTests: XCTestCase {
     }
 
     @MainActor
+    func testCancelledProcessingOverlayCanBeShownAndHiddenForNextRecording() async throws {
+        let previousPosition = SettingsStore.shared.overlayPosition
+        SettingsStore.shared.overlayPosition = .bottom
+        defer { SettingsStore.shared.overlayPosition = previousPosition }
+
+        let asr = ASRService()
+        let manager = MenuBarManager()
+        manager.configure(asrService: asr)
+        // Drain the initial idle recording-state notification before showing.
+        await Task.yield()
+        manager.showRecordingOverlayImmediately()
+        XCTAssertTrue(NotchOverlayManager.shared.isBottomOverlayVisible)
+
+        manager.setProcessing(true)
+        manager.cancelRecordingOverlay()
+        _ = await NotchOverlayManager.shared.hideAndWait()
+        XCTAssertFalse(NotchOverlayManager.shared.isBottomOverlayVisible)
+        XCTAssertFalse(NotchContentState.shared.isProcessing)
+
+        manager.showRecordingOverlayImmediately()
+        XCTAssertTrue(NotchOverlayManager.shared.isBottomOverlayVisible)
+        // A stale processing flag would also prevent the next normal hide.
+        manager.hideRecordingOverlayImmediately(reason: "test_recording_stopped")
+        for _ in 0..<100 where NotchOverlayManager.shared.isBottomOverlayVisible {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertFalse(NotchContentState.shared.isProcessing)
+        XCTAssertFalse(NotchOverlayManager.shared.isBottomOverlayVisible)
+        _ = await NotchOverlayManager.shared.hideAndWait()
+    }
+
+    @MainActor
     func testBottomOverlayRapidStopStartStopDoesNotDropFinalHide() async {
         let audioPublisher = Just(CGFloat.zero).eraseToAnyPublisher()
         let controller = BottomOverlayWindowController.shared
