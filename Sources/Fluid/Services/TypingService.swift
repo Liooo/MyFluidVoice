@@ -283,30 +283,48 @@ final class TypingService {
         return Self.isCurrentlyFocusedElement(element, expectedPID: pid)
     }
 
-    /// Returns whether the current or captured target is a writable text input.
+    /// Returns whether the target currently has a writable text input.
     /// This prevents dictation output from being synthesized into an arbitrary
     /// focused control or window when no editor owns keyboard focus.
     static func hasWritableFocusedInput(preferredTargetPID: pid_t?) -> Bool {
-        guard AXIsProcessTrusted(), !IsSecureEventInputEnabled() else { return false }
-
-        if let preferredTargetPID,
-           let snapshot = self.loadFocusSnapshot(),
-           snapshot.pid == preferredTargetPID,
-           let element = snapshot.element
-        {
-            return self.focusedInputAssessment(for: element).isWritable
+        guard AXIsProcessTrusted() else {
+            return false
         }
-
+        // Secure Event Input describes global keyboard monitoring, not whether
+        // this target is writable. It can remain enabled by another process.
+        // Inspect live focus so an old writable snapshot cannot override a
+        // disabled or non-editable control selected since recording began.
         let systemWideElement = AXUIElementCreateSystemWide()
-        guard let element = self.copyAXElementAttribute(
+        let systemFocusedElement = self.copyAXElementAttribute(
             from: systemWideElement,
             attribute: kAXFocusedUIElementAttribute as CFString
-        ) else { return false }
-
+        )
+        let element: AXUIElement
         if let preferredTargetPID {
+            guard preferredTargetPID > 0 else { return false }
             var focusedPID: pid_t = 0
-            AXUIElementGetPid(element, &focusedPID)
-            guard focusedPID == preferredTargetPID else { return false }
+            if let systemFocusedElement {
+                AXUIElementGetPid(systemFocusedElement, &focusedPID)
+            }
+            if let systemFocusedElement, focusedPID == preferredTargetPID {
+                element = systemFocusedElement
+            } else if let targetFocusedElement = self.copyAXElementAttribute(
+                from: AXUIElementCreateApplication(preferredTargetPID),
+                attribute: kAXFocusedUIElementAttribute as CFString
+            ) {
+                // A Fluid overlay may own system focus. Ask the target app for
+                // its current field instead of trusting the captured snapshot.
+                var targetElementPID: pid_t = 0
+                AXUIElementGetPid(targetFocusedElement, &targetElementPID)
+                guard targetElementPID == preferredTargetPID else { return false }
+                element = targetFocusedElement
+            } else {
+                return false
+            }
+        } else if let systemFocusedElement {
+            element = systemFocusedElement
+        } else {
+            return false
         }
 
         return self.focusedInputAssessment(for: element).isWritable

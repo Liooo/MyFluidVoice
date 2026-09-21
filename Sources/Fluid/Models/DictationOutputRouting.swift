@@ -56,14 +56,11 @@ struct FocusedInputAssessment: Equatable {
     let isEditable: Bool?
     let isValueSettable: Bool
     let isSelectedTextSettable: Bool
+    /// Diagnostic only: another process can enable this global monitoring flag.
     let isSecureInputEnabled: Bool
 
     var isWritable: Bool {
-        guard self.isEnabled, !self.isSecureInputEnabled else { return false }
-        guard !Self.secureRoles.contains(self.role ?? ""),
-              !Self.secureRoles.contains(self.subrole ?? "")
-        else { return false }
-
+        guard self.isEnabled else { return false }
         if self.isValueSettable || self.isSelectedTextSettable {
             return true
         }
@@ -79,14 +76,11 @@ struct FocusedInputAssessment: Equatable {
         return Self.inherentlyWritableRoles.contains(self.role ?? "")
     }
 
-    private static let secureRoles: Set<String> = [
-        "AXSecureTextField",
-        "AXSecureTextArea",
-    ]
-
     private static let inherentlyWritableRoles: Set<String> = [
         "AXTextField",
         "AXTextArea",
+        "AXSecureTextField",
+        "AXSecureTextArea",
         "AXSearchField",
         "AXComboBox",
     ]

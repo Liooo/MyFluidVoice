@@ -1,4 +1,5 @@
 import AppKit
+import Carbon.HIToolbox
 @testable import FluidVoice_Debug
 import Foundation
 import XCTest
@@ -3205,6 +3206,61 @@ final class WorkflowSettingsTests: XCTestCase {
 
 @MainActor
 final class DictationOutputRoutingTests: XCTestCase {
+    func testLiveInputRemainsWritableDuringSecureEventInputIncludingPasswordFocus() async throws {
+        guard AXIsProcessTrusted() else { throw XCTSkip("Requires Accessibility permission for live AX focus") }
+        let previousApp = NSWorkspace.shared.frontmostApplication
+        let window = NSWindow(
+            contentRect: NSRect(x: 100, y: 100, width: 400, height: 150),
+            styleMask: [.titled], backing: .buffered, defer: false
+        )
+        window.isReleasedWhenClosed = false
+        let ordinaryField = NSTextField(frame: NSRect(x: 20, y: 90, width: 360, height: 25))
+        let passwordField = NSSecureTextField(frame: NSRect(x: 20, y: 40, width: 360, height: 25))
+        window.contentView?.addSubview(ordinaryField)
+        window.contentView?.addSubview(passwordField)
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeFirstResponder(ordinaryField)
+        defer {
+            window.close()
+            previousApp?.activate()
+        }
+        try await Task.sleep(for: .milliseconds(100))
+        let pid = ProcessInfo.processInfo.processIdentifier
+        XCTAssertEqual(TypingService.captureSystemFocusedPID(), pid)
+        let enabled = EnableSecureEventInput()
+        guard enabled == noErr else { return XCTFail("Could not enable secure input: \(enabled)") }
+        defer { DisableSecureEventInput() }
+        XCTAssertTrue(IsSecureEventInputEnabled())
+        XCTAssertTrue(TypingService.hasWritableFocusedInput(preferredTargetPID: pid))
+
+        let previousMode = SettingsStore.shared.textInsertionMode
+        SettingsStore.shared.textInsertionMode = .standard
+        defer { SettingsStore.shared.textInsertionMode = previousMode }
+        let typing = TypingService()
+        let outcome = await typing.typeOutputPlanAndWait(
+            .plain("Fluid insertion probe"), preferredTargetPID: pid, textReadyAt: nil,
+            commitBeforeInsertion: { true }
+        )
+        XCTAssertEqual(outcome, .inserted)
+        for _ in 0..<100 where ordinaryField.stringValue != "Fluid insertion probe" {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(ordinaryField.stringValue, "Fluid insertion probe")
+
+        // Password fields follow the same writable-input policy as other fields.
+        window.makeFirstResponder(passwordField)
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertTrue(TypingService.hasWritableFocusedInput(preferredTargetPID: pid))
+
+        // A captured writable field must not override a currently non-editable control.
+        let button = NSButton(frame: NSRect(x: 20, y: 5, width: 100, height: 25))
+        window.contentView?.addSubview(button)
+        window.makeFirstResponder(button)
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertFalse(TypingService.hasWritableFocusedInput(preferredTargetPID: pid))
+    }
+
     func testWritableExternalInputTypesWithoutPersistentClipboardMutation() {
         let decision = DictationOutputRoutingDecision.resolve(
             shouldPersistOutputs: true,
@@ -3280,8 +3336,8 @@ final class DictationOutputRoutingTests: XCTestCase {
         XCTAssertFalse(decision.shouldCopyToClipboard)
     }
 
-    func testWritableInputAssessmentRejectsSecureDisabledAndStaticTargets() {
-        XCTAssertFalse(FocusedInputAssessment(
+    func testWritableInputAssessmentAllowsEditablePasswordFields() {
+        XCTAssertTrue(FocusedInputAssessment(
             role: "AXTextField",
             subrole: "AXSecureTextField",
             isEnabled: true,
@@ -3290,6 +3346,14 @@ final class DictationOutputRoutingTests: XCTestCase {
             isSelectedTextSettable: true,
             isSecureInputEnabled: false
         ).isWritable)
+        XCTAssertTrue(FocusedInputAssessment(
+            role: "AXSecureTextField", subrole: nil, isEnabled: true,
+            isEditable: nil, isValueSettable: false, isSelectedTextSettable: false,
+            isSecureInputEnabled: true
+        ).isWritable)
+    }
+
+    func testWritableInputAssessmentRejectsDisabledAndStaticTargets() {
         XCTAssertFalse(FocusedInputAssessment(
             role: "AXTextArea",
             subrole: nil,
@@ -3317,9 +3381,21 @@ final class DictationOutputRoutingTests: XCTestCase {
             isSelectedTextSettable: false,
             isSecureInputEnabled: false
         ).isWritable)
-        XCTAssertFalse(FocusedInputAssessment(
+    }
+
+    func testGlobalSecureInputDoesNotRejectAnOrdinaryWritableField() {
+        XCTAssertTrue(FocusedInputAssessment(
             role: "AXTextField",
             subrole: nil,
+            isEnabled: true,
+            isEditable: true,
+            isValueSettable: true,
+            isSelectedTextSettable: true,
+            isSecureInputEnabled: true
+        ).isWritable)
+        XCTAssertTrue(FocusedInputAssessment(
+            role: "AXTextField",
+            subrole: "AXSecureTextField",
             isEnabled: true,
             isEditable: true,
             isValueSettable: true,
