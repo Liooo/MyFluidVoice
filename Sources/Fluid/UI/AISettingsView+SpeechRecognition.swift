@@ -183,6 +183,15 @@ extension VoiceEngineSettingsView {
                 .font(self.theme.typography.bodySmall)
                 .foregroundStyle(self.voiceEngineSecondaryText)
 
+            Link(destination: URL(string: "https://console.soniox.com")!) {
+                Label("Get an API key in Soniox Console", systemImage: "arrow.up.right.square")
+            }
+            .font(self.theme.typography.bodySmall)
+
+            Text("Open your project, then choose API Keys.")
+                .font(self.theme.typography.bodySmall)
+                .foregroundStyle(self.voiceEngineSecondaryText)
+
             SecureField("Soniox API key", text: self.$viewModel.sonioxAPIKeyDraft)
                 .textFieldStyle(.roundedBorder)
                 .disabled(self.viewModel.sonioxCredentialMutationBlocked)
@@ -247,7 +256,6 @@ extension VoiceEngineSettingsView {
                 .foregroundStyle(self.voiceEngineSecondaryText)
 
             HStack(spacing: 12) {
-                Link("Soniox Console", destination: URL(string: "https://console.soniox.com")!)
                 Link("Privacy", destination: URL(string: "https://soniox.com/privacy")!)
                 Link("Data residency", destination: URL(string: "https://soniox.com/docs/data-residency")!)
             }
