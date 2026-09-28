@@ -16,6 +16,7 @@ struct ProcessingIndicatorText: View {
     let maxWidth: CGFloat
     let textFontSize: CGFloat
     let truncatesToSingleLine: Bool
+    let statusNote: String?
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -24,13 +25,15 @@ struct ProcessingIndicatorText: View {
         isProcessing: Bool,
         maxWidth: CGFloat = .infinity,
         textFontSize: CGFloat = 10,
-        truncatesToSingleLine: Bool = true
+        truncatesToSingleLine: Bool = true,
+        statusNote: String? = nil
     ) {
         self.text = text
         self.isProcessing = isProcessing
         self.maxWidth = maxWidth
         self.textFontSize = textFontSize
         self.truncatesToSingleLine = truncatesToSingleLine
+        self.statusNote = statusNote
     }
 
     private static let indicatorFontSize: CGFloat = 9
@@ -72,13 +75,31 @@ struct ProcessingIndicatorText: View {
 
     private func processingText(activeIndex: Int) -> Text {
         let separator = self.text.isEmpty ? "" : " "
-        let indicator = separator + String(repeating: ".", count: activeIndex + 1)
-        let visibleText = self.visibleTail(for: self.text, indicator: indicator)
+        let dots = String(repeating: ".", count: activeIndex + 1)
+        let noteSuffix: String
+        if let statusNote, !statusNote.isEmpty {
+            noteSuffix = " " + statusNote
+        } else {
+            noteSuffix = ""
+        }
+        let indicator = separator + dots
+        let visibleText = self.visibleTail(
+            for: self.text,
+            indicator: indicator + noteSuffix
+        )
 
-        return Text(visibleText)
+        var result = Text(visibleText)
             + Text(indicator)
                 .font(.system(size: Self.indicatorFontSize, weight: .medium))
                 .baselineOffset(1)
+        if !noteSuffix.isEmpty {
+            result = result
+                + Text(noteSuffix)
+                    .font(.system(size: Self.indicatorFontSize, weight: .medium))
+                    .baselineOffset(1)
+                    .foregroundStyle(.white.opacity(0.55))
+        }
+        return result
     }
 
     var body: some View {
@@ -140,6 +161,9 @@ class NotchContentState: ObservableObject {
 
     /// True while a live input-source change is preparing its new speech provider.
     @Published var isInputSourceSwitching: Bool = false
+    /// Short status shown after the processing dots, e.g. while a dictation
+    /// insertion waits for the previous clipboard paste to be consumed.
+    @Published var insertionStatusNote: String? = nil
 
     /// The PID of the app we should restore focus to after interacting with overlays.
     /// Captured at recording start to keep the target stable for the session.
@@ -199,6 +223,8 @@ class NotchContentState: ObservableObject {
     func setProcessing(_ processing: Bool) {
         if processing {
             self.clearAIProcessingFailure()
+        } else {
+            self.insertionStatusNote = nil
         }
         self.isProcessing = processing
     }
@@ -1044,7 +1070,8 @@ struct NotchExpandedView: View {
                                 isProcessing: self.contentState.isProcessing,
                                 maxWidth: self.previewMaxWidth,
                                 textFontSize: 10,
-                                truncatesToSingleLine: false
+                                truncatesToSingleLine: false,
+                                statusNote: self.contentState.insertionStatusNote
                             )
                                 .font(.system(size: 10, weight: .medium))
                                 .foregroundStyle(.white.opacity(0.75))
@@ -1077,7 +1104,8 @@ struct NotchExpandedView: View {
                     text: "",
                     isProcessing: true,
                     maxWidth: self.previewMaxWidth,
-                    textFontSize: 10
+                    textFontSize: 10,
+                    statusNote: self.contentState.insertionStatusNote
                 )
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(.white.opacity(0.75))
@@ -1263,7 +1291,8 @@ struct NotchCompactBottomView: View {
                 text: self.compactPreviewText,
                 isProcessing: self.contentState.isProcessing,
                 maxWidth: self.previewWidth,
-                textFontSize: 9
+                textFontSize: 9,
+                statusNote: self.contentState.insertionStatusNote
             )
                 .font(.system(size: 9, weight: .medium))
                 .foregroundStyle(.white.opacity(0.82))

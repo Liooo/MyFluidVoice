@@ -2889,7 +2889,8 @@ struct BottomOverlayView: View {
                                                 isProcessing: self.contentState.isProcessing,
                                                 maxWidth: self.previewMaxWidth,
                                                 textFontSize: self.layout.transFontSize,
-                                                truncatesToSingleLine: false
+                                                truncatesToSingleLine: false,
+                                                statusNote: self.contentState.insertionStatusNote
                                             )
                                                 .font(.system(size: self.layout.transFontSize, weight: .medium))
                                                 .foregroundStyle(.white.opacity(0.9))
@@ -2919,7 +2920,8 @@ struct BottomOverlayView: View {
                                     text: "",
                                     isProcessing: true,
                                     maxWidth: self.previewMaxWidth,
-                                    textFontSize: self.layout.transFontSize
+                                    textFontSize: self.layout.transFontSize,
+                                    statusNote: self.contentState.insertionStatusNote
                                 )
                                     .font(.system(size: self.layout.transFontSize, weight: .medium))
                                     .foregroundStyle(.white.opacity(0.9))
@@ -2948,7 +2950,8 @@ struct BottomOverlayView: View {
                                             text: previewText,
                                             isProcessing: self.contentState.isProcessing,
                                             maxWidth: self.previewMaxWidth,
-                                            textFontSize: self.layout.transFontSize
+                                            textFontSize: self.layout.transFontSize,
+                                            statusNote: self.contentState.insertionStatusNote
                                         )
                                             .font(.system(size: self.layout.transFontSize, weight: .medium))
                                             .foregroundStyle(.white.opacity(0.9))
@@ -2963,7 +2966,8 @@ struct BottomOverlayView: View {
                                             isProcessing: self.contentState.isProcessing,
                                             maxWidth: self.previewMaxWidth,
                                             textFontSize: self.layout.transFontSize,
-                                            truncatesToSingleLine: false
+                                            truncatesToSingleLine: false,
+                                            statusNote: self.contentState.insertionStatusNote
                                         )
                                             .font(.system(size: self.layout.transFontSize, weight: .medium))
                                             .foregroundStyle(.white.opacity(0.9))
@@ -2982,7 +2986,8 @@ struct BottomOverlayView: View {
                                     text: "",
                                     isProcessing: true,
                                     maxWidth: self.previewMaxWidth,
-                                    textFontSize: self.layout.transFontSize
+                                    textFontSize: self.layout.transFontSize,
+                                    statusNote: self.contentState.insertionStatusNote
                                 )
                                     .font(.system(size: self.layout.transFontSize, weight: .medium))
                                     .foregroundStyle(.white.opacity(0.9))

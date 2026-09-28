@@ -61,6 +61,8 @@ final class NotchOverlayManager {
         case idle
         case showing
         case visible
+        /// Only used by the regular notch. The command-output panel retires
+        /// synchronously, so `commandOutputState` never enters this case.
         case hiding
     }
 
@@ -93,6 +95,7 @@ final class NotchOverlayManager {
     private var hideWaiters: [CheckedContinuation<RecordingOverlayHideOutcome, Never>] = []
     private var notchAnimationTask: Task<Void, Never>?
     private var notchPresentationTask: Task<Void, Never>?
+    private var commandOutputShowTask: Task<Void, Never>?
 
     // Cancel shortcut monitors for dismissing notch / overlay
     private var globalEscapeMonitor: Any?
@@ -508,16 +511,20 @@ final class NotchOverlayManager {
     /// Show expanded command output notch
     func showExpandedCommandOutput() {
         guard self.canShowExpandedCommandOutput else { return }
+        guard self.commandOutputState == .idle else { return }
 
         // Hide regular notch first if visible
         if self.notch != nil {
             self.hide()
         }
 
-        // Wait a bit for cleanup
-        Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
-            await self?.showExpandedCommandOutputInternal()
+        // The task is tracked so a later hide can cancel a show that has not
+        // fired yet. No fixed delay: both notches retire their panels
+        // synchronously, so waiting here only opened a drop window.
+        self.commandOutputShowTask?.cancel()
+        self.commandOutputShowTask = Task { @MainActor [weak self] in
+            guard let self, !Task.isCancelled else { return }
+            await self.showExpandedCommandOutputInternal()
         }
     }
 
@@ -592,7 +599,15 @@ final class NotchOverlayManager {
             await newNotch.expand()
         }
 
-        guard self.commandOutputGeneration == currentGeneration else { return }
+        guard self.commandOutputGeneration == currentGeneration else {
+            // A hide superseded this show while expand was suspended. If the
+            // hide ran before expand's synchronous prefix, its orderOut hit a
+            // nil windowController — the panel may be on screen now, so retire
+            // it here.
+            newNotch.windowController?.window?.orderOut(nil)
+            Task { await newNotch.hide() }
+            return
+        }
         self.commandOutputState = .visible
     }
 
@@ -618,8 +633,12 @@ final class NotchOverlayManager {
 
     /// Hide expanded command output notch - force close regardless of hover state
     func hideExpandedCommandOutput() {
+        // The bump also invalidates an in-flight expand: its post-await guard
+        // then skips the .visible write. Cancelling the pending show task only
+        // covers shows that have not started yet.
         self.commandOutputGeneration &+= 1
-        let currentGeneration = self.commandOutputGeneration
+        self.commandOutputShowTask?.cancel()
+        self.commandOutputShowTask = nil
 
         // Force cleanup state immediately
         self.isCommandOutputExpanded = false
@@ -632,17 +651,16 @@ final class NotchOverlayManager {
             return
         }
 
-        self.commandOutputState = .hiding
-
-        // Store reference and nil out immediately to prevent hover from keeping it alive
-        let notchToHide = currentNotch
+        // Retire the panel synchronously so a rapid re-show never waits on
+        // DynamicNotchKit's ~0.4s closing sequence; finish cleanup in the
+        // background. The window is ordered out, so the async fade runs
+        // offscreen.
+        currentNotch.windowController?.window?.orderOut(nil)
         self.commandOutputNotch = nil
+        self.commandOutputState = .idle
 
-        Task { [weak self] in
-            // Try to hide gracefully, but we've already removed our reference
-            await notchToHide.hide()
-            guard let self = self, self.commandOutputGeneration == currentGeneration else { return }
-            self.commandOutputState = .idle
+        Task {
+            await currentNotch.hide()
         }
     }
 

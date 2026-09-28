@@ -76,6 +76,12 @@ struct FocusedInputAssessment: Equatable {
         return Self.inherentlyWritableRoles.contains(self.role ?? "")
     }
 
+    var diagnosticDescription: String {
+        "role=\(self.role ?? "nil") subrole=\(self.subrole ?? "nil") enabled=\(self.isEnabled) " +
+            "editable=\(self.isEditable.map { String($0) } ?? "nil") valueSettable=\(self.isValueSettable) " +
+            "selectedTextSettable=\(self.isSelectedTextSettable) secureInput=\(self.isSecureInputEnabled)"
+    }
+
     private static let inherentlyWritableRoles: Set<String> = [
         "AXTextField",
         "AXTextArea",

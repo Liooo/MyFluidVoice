@@ -165,6 +165,13 @@ final class KeyboardInputSourceChangeMonitor: ObservableObject {
     @Published private(set) var changeTick: UInt64 = 0
     @Published private(set) var sourceSnapshot: KeyboardInputSourceSnapshot?
 
+    /// Invoked on the main actor after every resolved input-source change.
+    /// SwiftUI `.onChange` stops firing once the owning view leaves the
+    /// rendered hierarchy (e.g. the main window is closed while dictation
+    /// continues), so the recording switch path is driven through this hook
+    /// instead of view observation.
+    var changeHandler: (@MainActor (KeyboardInputSourceSnapshot?) -> Void)?
+
     private var observer: NSObjectProtocol?
     private var sourceObservationTask: Task<Void, Never>?
     private var recordingObservationTask: Task<Void, Never>?
@@ -272,6 +279,7 @@ final class KeyboardInputSourceChangeMonitor: ObservableObject {
             "Selected keyboard input source resolved: \(currentSource?.id ?? "none")",
             source: "KeyboardInputSourceChangeMonitor"
         )
+        self.changeHandler?(currentSource)
     }
 }
 

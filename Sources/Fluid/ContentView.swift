@@ -451,9 +451,6 @@ struct ContentView: View {
             .onChange(of: self.audioObserver.inputAvailabilityTick) { _, _ in
                 self.refreshInputDevices()
             }
-            .onChange(of: self.inputSourceChangeMonitor.changeTick) { _, _ in
-                self.handleInputSourceChange(for: self.inputSourceChangeMonitor.sourceSnapshot)
-            }
             .onDisappear {
                 Task { await self.cancelActiveRecordingWithoutTranscription() }
                 self.cancelPrewarmDictationIfNeeded()
@@ -2982,6 +2979,9 @@ struct ContentView: View {
         DebugLogger.shared.debug(
             "Typing decision → frontmost: \(frontmostName), fluidFrontmost: \(isFluidFrontmost), " +
                 "editorFocused: \(self.isTranscriptionFocused), target: \(String(describing: outputTarget)), " +
+                "targetPID: \(typingTarget.pid.map(String.init) ?? "nil"), " +
+                "recordingTargetPID: \(NotchContentState.shared.recordingTargetPID.map(String.init) ?? "nil"), " +
+                "externalTarget: \(hasExternalTarget), " +
                 "willTypeExternally: \(outputRouting.shouldTypeExternally)",
             source: "ContentView"
         )
@@ -3989,6 +3989,9 @@ struct ContentView: View {
         }
         NotchContentState.shared.onCancelRequested = {
             _ = self.handleCancelShortcut()
+        }
+        self.inputSourceChangeMonitor.changeHandler = { inputSource in
+            self.handleInputSourceChange(for: inputSource)
         }
         NotchContentState.shared.onDictationPromptSelectionRequested = { selection in
             let privateAIAvailable = PrivateAIProviderPromptFormat.isAvailable()
