@@ -15,6 +15,7 @@ stop_preview() {
 
 reset_preview() {
     stop_preview
+    defaults delete "${PREVIEW_BUNDLE_ID}" 2>/dev/null || true
     if [ -d "${PREVIEW_HOME}" ]; then
         rm -rf "${PREVIEW_HOME}"
     fi
