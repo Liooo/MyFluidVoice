@@ -666,7 +666,6 @@ struct OnboardingFlowView: View {
     @State private var modelPreparationTask: Task<Void, Never>?
     @State private var languageSearchText = ""
     @FocusState private var isLanguageSearchFocused: Bool
-    @State private var hasPlayedLandingWelcomeSound = false
     @State private var landingGlowCenter = UnitPoint(x: 0.5, y: 0.18)
     @State private var lastLandingGlowLocation = CGPoint(x: -1000, y: -1000)
     private let landingGlowMovementThreshold: CGFloat = 24
@@ -944,7 +943,6 @@ struct OnboardingFlowView: View {
         .onAppear {
             self.isOnboardingFlowVisible = true
             self.syncOnboardingSelectionFromSettings()
-            self.playLandingWelcomeSoundIfNeeded()
             self.refreshOnboardingMicrophoneAuthorization(checkModels: true)
         }
         .onChange(of: self.currentStep) { _, _ in
@@ -956,7 +954,6 @@ struct OnboardingFlowView: View {
             } else {
                 self.stopOnboardingMicrophonePreview()
             }
-            self.playLandingWelcomeSoundIfNeeded()
         }
         .onChange(of: self.isMicrophoneReady) { _, isReady in
             guard self.step == .permissions else { return }
@@ -1134,20 +1131,6 @@ struct OnboardingFlowView: View {
 
         withAnimation(.easeOut(duration: 0.35)) {
             self.landingGlowCenter = UnitPoint(x: 0.5, y: 0.18)
-        }
-    }
-
-    private func playLandingWelcomeSoundIfNeeded() {
-        guard self.step == .landing, !self.hasPlayedLandingWelcomeSound else { return }
-        Task { @MainActor in
-            await AudioStartupGate.shared.scheduleOpenAfterInitialUISettled()
-            await AudioStartupGate.shared.waitUntilOpen()
-            guard self.isOnboardingFlowVisible,
-                  self.step == .landing,
-                  self.hasPlayedLandingWelcomeSound == false
-            else { return }
-            self.hasPlayedLandingWelcomeSound = true
-            OnboardingSoundPlayer.shared.playWelcomeSound()
         }
     }
 
