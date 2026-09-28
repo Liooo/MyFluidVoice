@@ -30,9 +30,12 @@ enum KeychainServiceRollbackError: Error, LocalizedError {
 /// Keys retain FluidVoice's service identity so existing installations keep access after upgrade.
 final class KeychainService {
     static let shared = KeychainService()
+    static let serviceName = ProcessInfo.processInfo.environment["MYFLUIDVOICE_ONBOARDING_PREVIEW"] == "1"
+        ? "com.fluidvoice.provider-api-keys.onboarding-preview"
+        : "com.fluidvoice.provider-api-keys"
 
     // Keep the upstream service identity so an in-place fork upgrade retains API keys.
-    private let service = "com.fluidvoice.provider-api-keys"
+    private let service = KeychainService.serviceName
     private let account = "fluidApiKeys"
 
     private init() {}
