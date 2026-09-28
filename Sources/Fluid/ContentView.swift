@@ -2846,6 +2846,7 @@ struct ContentView: View {
                 self.settings.playgroundUsed = true
                 self.playgroundUsed = true
             }
+            await self.finishProcessingAndHideOverlayIfCurrent(context.overlayLifecycleID)
             return
         }
 
