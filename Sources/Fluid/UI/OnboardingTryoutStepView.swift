@@ -202,7 +202,15 @@ struct OnboardingTryoutStepView: View {
                 )
         )
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Dictation shortcut \(self.shortcutDisplay). Press once to start. Press again to stop.")
+        .accessibilityLabel("Dictation shortcut \(self.shortcutDisplay). \(self.actionHint)")
+    }
+
+    private var actionHint: String {
+        switch SettingsStore.shared.hotkeyMode {
+        case .toggle: return "Press once to start. Press again to stop."
+        case .hold: return "Hold to talk. Release to stop."
+        case .automatic: return "Tap to start and stop, or hold to talk."
+        }
     }
 
     private var changeShortcutButton: some View {
@@ -253,7 +261,7 @@ struct OnboardingTryoutStepView: View {
     }
 
     private var actionHintRow: some View {
-        Text("Press once to start. Press again to stop.")
+        Text(self.actionHint)
             .font(self.theme.typography.captionStrong)
             .foregroundStyle(Color.white.opacity(0.62))
             .multilineTextAlignment(.center)
@@ -342,9 +350,9 @@ struct OnboardingTryoutStepView: View {
             .font(.system(size: 20, weight: .semibold))
             .foregroundStyle(.white)
             .lineLimit(1)
-            .minimumScaleFactor(0.62)
-            .padding(.horizontal, 14)
-            .frame(width: 112, height: 74)
+            .fixedSize(horizontal: true, vertical: false)
+            .padding(.horizontal, 22)
+            .frame(minWidth: 112, minHeight: 74, maxHeight: 74)
             .background(
                 shape
                     .fill(Color.white.opacity(isListening ? 0.115 : 0.075))

@@ -42,6 +42,32 @@ final class TranscriptionSoundSettingsTests: XCTestCase {
         XCTAssertNil(SettingsStore.TranscriptionEndSound.none.soundFileName)
     }
 
+    func testFreshInstallSeedsMacOSBlowAndPopCues() throws {
+        let suiteName = "TranscriptionSoundSeed-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        SettingsStore.seedDefaultTranscriptionSoundsIfNeeded(in: defaults)
+
+        XCTAssertEqual(defaults.string(forKey: self.transcriptionStartSystemSoundNameKey), "Blow")
+        XCTAssertEqual(defaults.string(forKey: self.transcriptionEndSystemSoundNameKey), "Pop")
+        XCTAssertEqual(defaults.string(forKey: self.transcriptionStartSoundKey), SettingsStore.TranscriptionStartSound.none.rawValue)
+        XCTAssertEqual(defaults.string(forKey: self.transcriptionEndSoundKey), SettingsStore.TranscriptionEndSound.none.rawValue)
+    }
+
+    func testSeedingKeepsAnExistingCueChoice() throws {
+        let suiteName = "TranscriptionSoundSeed-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(SettingsStore.TranscriptionStartSound.fluidSfx2.rawValue, forKey: self.transcriptionStartSoundKey)
+
+        SettingsStore.seedDefaultTranscriptionSoundsIfNeeded(in: defaults)
+
+        XCTAssertEqual(defaults.string(forKey: self.transcriptionStartSoundKey), SettingsStore.TranscriptionStartSound.fluidSfx2.rawValue)
+        XCTAssertNil(defaults.string(forKey: self.transcriptionStartSystemSoundNameKey))
+        XCTAssertNil(defaults.string(forKey: self.transcriptionEndSystemSoundNameKey))
+    }
+
     func testTranscriptionSoundToggleDoesNotOverwriteSelections() {
         self.withRestoredDefaults(keys: [self.enableTranscriptionSoundsKey, self.transcriptionStartSoundKey]) {
             let defaults = UserDefaults.standard

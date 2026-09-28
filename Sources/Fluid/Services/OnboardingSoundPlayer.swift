@@ -11,7 +11,9 @@ final class OnboardingSoundPlayer {
 
     func playWelcomeSound() {
         let settings = SettingsStore.shared
-        guard settings.enableTranscriptionSounds, settings.transcriptionStartSound != .none else { return }
+        guard settings.enableTranscriptionSounds,
+              settings.transcriptionStartSound != .none || settings.transcriptionStartSystemSoundName != nil
+        else { return }
         guard let url = Bundle.main.url(forResource: "onboarding_welcome", withExtension: "m4a") else {
             DebugLogger.shared.error("Missing sound resource: onboarding_welcome.m4a", source: "OnboardingSoundPlayer")
             return

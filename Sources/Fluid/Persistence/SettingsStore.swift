@@ -35,6 +35,7 @@ final class SettingsStore: ObservableObject {
         "MyFluidVoice reflects the actual macOS login item state. Unsigned or development builds may fail to enable this."
 
     private init() {
+        Self.seedDefaultTranscriptionSoundsIfNeeded(in: self.defaults)
         self.migrateTranscriptionEndSoundIfNeeded()
         self.ensureDebugLoggingDefaults()
         self.migrateProviderAPIKeysIfNeeded()
@@ -1740,7 +1741,13 @@ final class SettingsStore: ObservableObject {
     }
 
     private static var defaultPrimaryDictationShortcut: HotkeyShortcut {
-        HotkeyShortcut(keyCode: 61, modifierFlags: [], gesture: .doubleTap)
+        HotkeyShortcut(
+            keyCode: 60,
+            modifierFlags: [],
+            modifierKeyCodes: [60],
+            gesture: .doubleTap,
+            includeBothModifierSides: true
+        )
     }
 
     private var legacyHotkeyShortcut: HotkeyShortcut {
@@ -1819,7 +1826,14 @@ final class SettingsStore: ObservableObject {
     }
 
     var hotkeyMode: HotkeyActivationMode {
-        get { self.defaults.string(forKey: Keys.hotkeyMode).flatMap(HotkeyActivationMode.init(rawValue:)) ?? (self.defaults.bool(forKey: Keys.pressAndHoldMode) ? .hold : .toggle) }
+        get {
+            if let mode = self.defaults.string(forKey: Keys.hotkeyMode).flatMap(HotkeyActivationMode.init(rawValue:)) {
+                return mode
+            }
+            // Legacy boolean predates the three-way mode; a fresh install taps or holds.
+            guard self.defaults.object(forKey: Keys.pressAndHoldMode) != nil else { return .automatic }
+            return self.defaults.bool(forKey: Keys.pressAndHoldMode) ? .hold : .toggle
+        }
         set { objectWillChange.send(); self.defaults.set(newValue.rawValue, forKey: Keys.hotkeyMode); self.defaults.set(newValue == .hold, forKey: Keys.pressAndHoldMode) }
     }
 
@@ -3705,6 +3719,25 @@ final class SettingsStore: ObservableObject {
             "Failed to persist provider API keys: \(error.localizedDescription)",
             source: "SettingsStore"
         )
+    }
+
+    static let defaultTranscriptionStartSystemSoundName = "Blow"
+    static let defaultTranscriptionEndSystemSoundName = "Pop"
+
+    /// A fresh install (no cue ever chosen) starts on the macOS Blow / Pop cues.
+    /// Any stored cue key means the user or a legacy default already decided.
+    static func seedDefaultTranscriptionSoundsIfNeeded(in defaults: UserDefaults) {
+        let cueKeys = [
+            Keys.transcriptionStartSound,
+            Keys.transcriptionEndSound,
+            Keys.transcriptionStartSystemSoundName,
+            Keys.transcriptionEndSystemSoundName,
+        ]
+        guard cueKeys.allSatisfy({ defaults.object(forKey: $0) == nil }) else { return }
+        defaults.set(TranscriptionStartSound.none.rawValue, forKey: Keys.transcriptionStartSound)
+        defaults.set(TranscriptionEndSound.none.rawValue, forKey: Keys.transcriptionEndSound)
+        defaults.set(Self.defaultTranscriptionStartSystemSoundName, forKey: Keys.transcriptionStartSystemSoundName)
+        defaults.set(Self.defaultTranscriptionEndSystemSoundName, forKey: Keys.transcriptionEndSystemSoundName)
     }
 
     private func migrateTranscriptionEndSoundIfNeeded() {

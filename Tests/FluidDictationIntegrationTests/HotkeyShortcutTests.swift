@@ -1311,6 +1311,20 @@ final class HotkeyShortcutTests: XCTestCase {
         }
     }
 
+    func testHotkeyModeDefaultsToAutomaticAndKeepsLegacyPressAndHold() throws {
+        try self.withRestoredDefaults(keys: ["HotkeyMode", "PressAndHoldMode"]) {
+            UserDefaults.standard.removeObject(forKey: "HotkeyMode")
+            UserDefaults.standard.removeObject(forKey: "PressAndHoldMode")
+            XCTAssertEqual(SettingsStore.shared.hotkeyMode, .automatic)
+
+            UserDefaults.standard.set(false, forKey: "PressAndHoldMode")
+            XCTAssertEqual(SettingsStore.shared.hotkeyMode, .toggle)
+
+            UserDefaults.standard.set(true, forKey: "PressAndHoldMode")
+            XCTAssertEqual(SettingsStore.shared.hotkeyMode, .hold)
+        }
+    }
+
     func testPasteLastTranscriptionShortcutDefaultsToUnboundAndDisabled() throws {
         try self.withRestoredDefaults(keys: [
             self.pasteLastTranscriptionShortcutKey,
