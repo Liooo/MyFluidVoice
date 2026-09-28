@@ -16,9 +16,9 @@ final class SettingsStore: ObservableObject {
     static let shared = SettingsStore()
     static let transcriptionPreviewCharLimitRange: ClosedRange<Int> = 50...800
     static let transcriptionPreviewCharLimitStep = 50
-    static let defaultTranscriptionPreviewCharLimit = 150
+    static let defaultTranscriptionPreviewCharLimit = 350
     static let transcriptionPreviewMaxLinesRange: ClosedRange<Int> = 1...30
-    static let defaultTranscriptionPreviewMaxLines = 3
+    static let defaultTranscriptionPreviewMaxLines = 30
     static let privateAIContextTokenLimitRange: ClosedRange<Int> = 2048...8192
     static let privateAIContextTokenLimitStep = 512
     static let defaultPrivateAIContextTokenLimit = 4096
