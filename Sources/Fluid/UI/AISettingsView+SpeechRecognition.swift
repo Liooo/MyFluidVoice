@@ -151,12 +151,6 @@ extension VoiceEngineSettingsView {
 
                         Divider().padding(.vertical, 4)
 
-                        if selectedModel.isCloudSpeechModel || self.viewModel.showSonioxSetup {
-                            self.sonioxCredentialSettingsSection
-
-                            Divider().padding(.vertical, 4)
-                        }
-
                         self.inputSourceModelAssignmentsSection
 
                         Divider().padding(.vertical, 4)
@@ -599,188 +593,206 @@ extension VoiceEngineSettingsView {
             ? isConfiguredActive && self.viewModel.sonioxCredentialState == .ready
             : isConfiguredActive && model.isInstalled && self.viewModel.asr.isAsrReady
 
-        return HStack(alignment: .top, spacing: 10) {
-            Circle()
-                .fill(isSelected ? Color.fluidGreen : self.theme.palette.cardBorder.opacity(0.25))
-                .frame(width: 8, height: 8)
-                .overlay(
-                    Circle()
-                        .stroke(isSelected ? Color.fluidGreen : self.theme.palette.cardBorder.opacity(0.5), lineWidth: 1)
-                )
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 10) {
+                Circle()
+                    .fill(isSelected ? Color.fluidGreen : self.theme.palette.cardBorder.opacity(0.25))
+                    .frame(width: 8, height: 8)
+                    .overlay(
+                        Circle()
+                            .stroke(isSelected ? Color.fluidGreen : self.theme.palette.cardBorder.opacity(0.5), lineWidth: 1)
+                    )
 
-            self.speechModelLogoView(for: model)
-                .frame(width: 28, height: 28)
+                self.speechModelLogoView(for: model)
+                    .frame(width: 28, height: 28)
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text(model.humanReadableName)
-                    .font(self.theme.typography.bodyStrong)
-                    .foregroundStyle(self.voiceEngineTitleText)
-                Text(self.speechModelSubtitle(for: model))
-                    .font(self.theme.typography.body)
-                    .foregroundStyle(self.voiceEngineSecondaryText)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(model.humanReadableName)
+                        .font(self.theme.typography.bodyStrong)
+                        .foregroundStyle(self.voiceEngineTitleText)
+                    Text(self.speechModelSubtitle(for: model))
+                        .font(self.theme.typography.body)
+                        .foregroundStyle(self.voiceEngineSecondaryText)
 
-                HStack(spacing: 12) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "bolt.fill")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.yellow)
-                        Text("Speed \(Int(model.speedPercent * 100))%")
-                            .font(self.theme.typography.bodyStrong)
-                            .foregroundStyle(self.voiceEngineSecondaryText)
-                    }
-
-                    HStack(spacing: 4) {
-                        Image(systemName: "target")
-                            .font(.system(size: 11))
-                            .foregroundStyle(Color.fluidGreen)
-                        Text("Acc \(Int(model.accuracyPercent * 100))%")
-                            .font(self.theme.typography.bodyStrong)
-                            .foregroundStyle(self.voiceEngineSecondaryText)
-                    }
-
-                    if isSelected && !isActive {
-                        Text("Previewing")
-                            .font(self.theme.typography.bodyStrong)
-                            .foregroundStyle(self.voiceEngineSecondaryText)
-                    }
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            // Cloud models never enter the local download/cache/delete state machine.
-            if model.isCloudSpeechModel {
-                self.sonioxCardAction(isActive: isActive)
-            } else if self.viewModel.downloadingModel == model {
-                // This specific model is currently being downloaded
-                HStack(spacing: 8) {
-                    VStack(alignment: .trailing, spacing: 4) {
-                        if self.viewModel.isCancellingModelDownload {
-                            ProgressView()
-                                .controlSize(.mini)
-                            Text("Cancelling…")
-                                .font(self.theme.typography.bodySmall)
+                    HStack(spacing: 12) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "bolt.fill")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.yellow)
+                            Text("Speed \(Int(model.speedPercent * 100))%")
+                                .font(self.theme.typography.bodyStrong)
                                 .foregroundStyle(self.voiceEngineSecondaryText)
-                        } else if self.viewModel.asr.modelPreparationPhase == .downloading,
-                                  let progress = self.viewModel.asr.downloadProgress
-                        {
-                            ProgressView(value: progress)
-                                .progressViewStyle(.linear)
-                                .frame(width: 90)
-                            Text("\(Int(progress * 100))%")
-                                .font(self.theme.typography.bodySmall)
+                        }
+
+                        HStack(spacing: 4) {
+                            Image(systemName: "target")
+                                .font(.system(size: 11))
+                                .foregroundStyle(Color.fluidGreen)
+                            Text("Acc \(Int(model.accuracyPercent * 100))%")
+                                .font(self.theme.typography.bodyStrong)
                                 .foregroundStyle(self.voiceEngineSecondaryText)
-                        } else {
-                            ProgressView()
-                                .controlSize(.mini)
-                            Text(self.viewModel.asr.modelPreparationStatusText)
-                                .font(self.theme.typography.bodySmall)
+                        }
+
+                        if isSelected && !isActive {
+                            Text("Previewing")
+                                .font(self.theme.typography.bodyStrong)
                                 .foregroundStyle(self.voiceEngineSecondaryText)
                         }
                     }
-
-                    Button(self.viewModel.isCancellingModelDownload ? "Cancelling…" : "Cancel") {
-                        self.viewModel.cancelSpeechModelDownload()
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .disabled(self.viewModel.isCancellingModelDownload)
                 }
-            } else if (self.viewModel.asr.isDownloadingModel
-                || self.viewModel.asr.isLoadingModel
-                || self.viewModel.asr.isCancellingModelPreparation)
-                && isConfiguredActive
-                && !self.viewModel.asr.isAsrReady
-            {
-                // Active model is loading/downloading (for Activate flow)
-                HStack(spacing: 8) {
-                    VStack(alignment: .trailing, spacing: 4) {
-                        if self.viewModel.asr.isCancellingModelPreparation {
-                            ProgressView()
-                                .controlSize(.mini)
-                            Text("Cancelling…")
-                                .font(self.theme.typography.bodySmall)
-                                .foregroundStyle(self.voiceEngineSecondaryText)
-                        } else if self.viewModel.asr.isDownloadingModel,
-                                  self.viewModel.asr.modelPreparationPhase == .downloading,
-                                  let progress = self.viewModel.asr.downloadProgress
-                        {
-                            ProgressView(value: progress)
-                                .progressViewStyle(.linear)
-                                .frame(width: 90)
-                            Text("\(Int(progress * 100))%")
-                                .font(self.theme.typography.bodySmall)
-                                .foregroundStyle(self.voiceEngineSecondaryText)
-                        } else {
-                            ProgressView()
-                                .controlSize(.mini)
-                            Text(self.viewModel.asr.modelPreparationStatusText)
-                                .font(self.theme.typography.bodySmall)
-                                .foregroundStyle(self.voiceEngineSecondaryText)
-                        }
-                    }
+                .frame(maxWidth: .infinity, alignment: .leading)
 
-                    Button(self.viewModel.asr.isCancellingModelPreparation ? "Cancelling…" : "Cancel") {
-                        self.viewModel.cancelActiveModelPreparation()
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .disabled(self.viewModel.asr.isCancellingModelPreparation)
-                }
-            } else if model.isInstalled {
-                HStack(spacing: 8) {
-                    if isActive {
-                        self.speechModelLanguagePicker(for: model)
-                            .disabled(self.viewModel.areSpeechModelActionsBlocked)
-
-                        Text("Active")
-                            .font(self.theme.typography.bodySmallStrong)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 4)
-                            .background(Capsule().fill(Color.fluidGreen.opacity(0.25)))
-                            .foregroundStyle(Color.fluidGreen)
-                    } else {
-                        Button("Activate") {
-                            self.viewModel.activateSpeechModel(model)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.small)
-                        .tint(Color.fluidGreen)
-                        .fontWeight(.semibold)
-                        .shadow(color: Color.fluidGreen.opacity(0.35), radius: 4, x: 0, y: 1)
-                        .disabled(self.viewModel.areSpeechModelActionsBlocked)
-                    }
-
-                    if !model.usesAppleLogo {
-                        if isSelected {
-                            Button {
-                                self.viewModel.deleteSpeechModel(model)
-                            } label: {
-                                Image(systemName: "trash")
-                                    .font(.system(size: 15))
-                                    .foregroundStyle(.red.opacity(0.7))
+                // Cloud models never enter the local download/cache/delete state machine.
+                if model.isCloudSpeechModel {
+                    self.sonioxCardAction(isActive: isActive)
+                } else if self.viewModel.downloadingModel == model {
+                    // This specific model is currently being downloaded
+                    HStack(spacing: 8) {
+                        VStack(alignment: .trailing, spacing: 4) {
+                            if self.viewModel.isCancellingModelDownload {
+                                ProgressView()
+                                    .controlSize(.mini)
+                                Text("Cancelling…")
+                                    .font(self.theme.typography.bodySmall)
+                                    .foregroundStyle(self.voiceEngineSecondaryText)
+                            } else if self.viewModel.asr.modelPreparationPhase == .downloading,
+                                      let progress = self.viewModel.asr.downloadProgress
+                            {
+                                ProgressView(value: progress)
+                                    .progressViewStyle(.linear)
+                                    .frame(width: 90)
+                                Text("\(Int(progress * 100))%")
+                                    .font(self.theme.typography.bodySmall)
+                                    .foregroundStyle(self.voiceEngineSecondaryText)
+                            } else {
+                                ProgressView()
+                                    .controlSize(.mini)
+                                Text(self.viewModel.asr.modelPreparationStatusText)
+                                    .font(self.theme.typography.bodySmall)
+                                    .foregroundStyle(self.voiceEngineSecondaryText)
                             }
-                            .buttonStyle(.plain)
-                            .disabled(self.viewModel.areSpeechModelActionsBlocked)
-                            .offset(x: isSelected ? 0 : 12)
-                            .opacity(isSelected ? 1 : 0)
                         }
+
+                        Button(self.viewModel.isCancellingModelDownload ? "Cancelling…" : "Cancel") {
+                            self.viewModel.cancelSpeechModelDownload()
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .disabled(self.viewModel.isCancellingModelDownload)
                     }
-                }
-            } else {
-                ZStack(alignment: .trailing) {
-                    if model.requiresExternalArtifacts {
-                        HStack(spacing: 8) {
-                            if model.externalCoreMLSpec?.sourceURL != nil {
+                } else if (self.viewModel.asr.isDownloadingModel
+                    || self.viewModel.asr.isLoadingModel
+                    || self.viewModel.asr.isCancellingModelPreparation)
+                    && isConfiguredActive
+                    && !self.viewModel.asr.isAsrReady
+                {
+                    // Active model is loading/downloading (for Activate flow)
+                    HStack(spacing: 8) {
+                        VStack(alignment: .trailing, spacing: 4) {
+                            if self.viewModel.asr.isCancellingModelPreparation {
+                                ProgressView()
+                                    .controlSize(.mini)
+                                Text("Cancelling…")
+                                    .font(self.theme.typography.bodySmall)
+                                    .foregroundStyle(self.voiceEngineSecondaryText)
+                            } else if self.viewModel.asr.isDownloadingModel,
+                                      self.viewModel.asr.modelPreparationPhase == .downloading,
+                                      let progress = self.viewModel.asr.downloadProgress
+                            {
+                                ProgressView(value: progress)
+                                    .progressViewStyle(.linear)
+                                    .frame(width: 90)
+                                Text("\(Int(progress * 100))%")
+                                    .font(self.theme.typography.bodySmall)
+                                    .foregroundStyle(self.voiceEngineSecondaryText)
+                            } else {
+                                ProgressView()
+                                    .controlSize(.mini)
+                                Text(self.viewModel.asr.modelPreparationStatusText)
+                                    .font(self.theme.typography.bodySmall)
+                                    .foregroundStyle(self.voiceEngineSecondaryText)
+                            }
+                        }
+
+                        Button(self.viewModel.asr.isCancellingModelPreparation ? "Cancelling…" : "Cancel") {
+                            self.viewModel.cancelActiveModelPreparation()
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .disabled(self.viewModel.asr.isCancellingModelPreparation)
+                    }
+                } else if model.isInstalled {
+                    HStack(spacing: 8) {
+                        if isActive {
+                            self.speechModelLanguagePicker(for: model)
+                                .disabled(self.viewModel.areSpeechModelActionsBlocked)
+
+                            Text("Active")
+                                .font(self.theme.typography.bodySmallStrong)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 4)
+                                .background(Capsule().fill(Color.fluidGreen.opacity(0.25)))
+                                .foregroundStyle(Color.fluidGreen)
+                        } else {
+                            Button("Activate") {
+                                self.viewModel.activateSpeechModel(model)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+                            .tint(Color.fluidGreen)
+                            .fontWeight(.semibold)
+                            .shadow(color: Color.fluidGreen.opacity(0.35), radius: 4, x: 0, y: 1)
+                            .disabled(self.viewModel.areSpeechModelActionsBlocked)
+                        }
+
+                        if !model.usesAppleLogo {
+                            if isSelected {
                                 Button {
-                                    self.viewModel.openExternalModelSource(for: model)
+                                    self.viewModel.deleteSpeechModel(model)
                                 } label: {
-                                    Image(systemName: "arrow.up.right.square")
-                                        .font(.system(size: 14))
+                                    Image(systemName: "trash")
+                                        .font(.system(size: 15))
+                                        .foregroundStyle(.red.opacity(0.7))
                                 }
                                 .buttonStyle(.plain)
-                                .foregroundStyle(self.voiceEngineTertiaryText)
+                                .disabled(self.viewModel.areSpeechModelActionsBlocked)
+                                .offset(x: isSelected ? 0 : 12)
+                                .opacity(isSelected ? 1 : 0)
+                            }
+                        }
+                    }
+                } else {
+                    ZStack(alignment: .trailing) {
+                        if model.requiresExternalArtifacts {
+                            HStack(spacing: 8) {
+                                if model.externalCoreMLSpec?.sourceURL != nil {
+                                    Button {
+                                        self.viewModel.openExternalModelSource(for: model)
+                                    } label: {
+                                        Image(systemName: "arrow.up.right.square")
+                                            .font(.system(size: 14))
+                                    }
+                                    .buttonStyle(.plain)
+                                    .foregroundStyle(self.voiceEngineTertiaryText)
+                                    .disabled(self.viewModel.areSpeechModelActionsBlocked)
+                                }
+
+                                Button("Download") {
+                                    self.viewModel.previewSpeechModel = model
+                                    self.viewModel.downloadSpeechModel(model)
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .controlSize(.small)
+                                .tint(.blue)
                                 .disabled(self.viewModel.areSpeechModelActionsBlocked)
                             }
+                            .offset(x: isSelected ? 0 : 16)
+                            .opacity(isSelected ? 1 : 0)
+                        } else {
+                            Text("Not downloaded")
+                                .font(self.theme.typography.bodySmall)
+                                .foregroundStyle(self.voiceEngineTertiaryText)
+                                .opacity(isSelected ? 0 : 1)
 
                             Button("Download") {
                                 self.viewModel.previewSpeechModel = model
@@ -790,28 +802,22 @@ extension VoiceEngineSettingsView {
                             .controlSize(.small)
                             .tint(.blue)
                             .disabled(self.viewModel.areSpeechModelActionsBlocked)
+                            .offset(x: isSelected ? 0 : 16)
+                            .opacity(isSelected ? 1 : 0)
                         }
-                        .offset(x: isSelected ? 0 : 16)
-                        .opacity(isSelected ? 1 : 0)
-                    } else {
-                        Text("Not downloaded")
-                            .font(self.theme.typography.bodySmall)
-                            .foregroundStyle(self.voiceEngineTertiaryText)
-                            .opacity(isSelected ? 0 : 1)
-
-                        Button("Download") {
-                            self.viewModel.previewSpeechModel = model
-                            self.viewModel.downloadSpeechModel(model)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.small)
-                        .tint(.blue)
-                        .disabled(self.viewModel.areSpeechModelActionsBlocked)
-                        .offset(x: isSelected ? 0 : 16)
-                        .opacity(isSelected ? 1 : 0)
                     }
+                    .frame(width: model.requiresExternalArtifacts ? 150 : 120, alignment: .trailing)
                 }
-                .frame(width: model.requiresExternalArtifacts ? 150 : 120, alignment: .trailing)
+            }
+            .contentShape(Rectangle())
+            .onTapGesture {
+                self.viewModel.previewSpeechModel = model
+            }
+
+            if model.isCloudSpeechModel,
+               self.settings.selectedSpeechModel.isCloudSpeechModel || self.viewModel.showSonioxSetup
+            {
+                self.sonioxCredentialSettingsSection
             }
         }
         .padding(.horizontal, 12)
@@ -830,9 +836,6 @@ extension VoiceEngineSettingsView {
                         .stroke(isActive ? Color.fluidGreen.opacity(0.9) : .clear, lineWidth: 2)
                 )
         )
-        .onTapGesture {
-            self.viewModel.previewSpeechModel = model
-        }
         .opacity(self.viewModel.asr.isRunning ? 0.6 : 1.0)
         .allowsHitTesting(!self.viewModel.asr.isRunning)
     }
