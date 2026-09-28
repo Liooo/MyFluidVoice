@@ -170,10 +170,6 @@ extension VoiceEngineSettingsView {
             HStack(spacing: 8) {
                 Image(systemName: "key.fill")
                     .foregroundStyle(self.theme.palette.accent)
-                Text("Soniox v5 Realtime")
-                    .font(self.theme.typography.sectionTitle)
-                    .foregroundStyle(self.voiceEngineTitleText)
-                Spacer()
                 Text(self.viewModel.sonioxCredentialState.displayName)
                     .font(self.theme.typography.bodySmallStrong)
                     .foregroundStyle(
@@ -814,10 +810,9 @@ extension VoiceEngineSettingsView {
                 self.viewModel.previewSpeechModel = model
             }
 
-            if model.isCloudSpeechModel,
-               self.settings.selectedSpeechModel.isCloudSpeechModel || self.viewModel.showSonioxSetup
-            {
+            if model.isCloudSpeechModel {
                 self.sonioxCredentialSettingsSection
+                    .padding(.leading, 56)
             }
         }
         .padding(.horizontal, 12)
@@ -844,13 +839,7 @@ extension VoiceEngineSettingsView {
     private func sonioxCardAction(isActive: Bool) -> some View {
         switch self.viewModel.sonioxCredentialState {
         case .apiKeyRequired:
-            Button("Configure") {
-                self.viewModel.requestSonioxSetup()
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.small)
-            .tint(.blue)
-            .disabled(self.viewModel.sonioxCredentialMutationBlocked)
+            EmptyView()
         case .verifying:
             HStack(spacing: 6) {
                 ProgressView()
